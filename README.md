@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.8 implements the Picasso GC9.1/SDMA4.1 execution foundation for
-R4OS 0.80.11. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.9 implements the Picasso GC9.1/SDMA4.1 execution foundation for
+R4OS 0.80.12. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -34,6 +34,12 @@ and scratch ranges cannot overlap between live contexts. Each submission has
 bounded packet storage, a deadline and its exact canonical resource owner.
 The compiler must supply the full shader/resource state and GFX9 scratch
 relocations; compiler/render/Vulkan admission follows in later milestones.
+
+Before queue activation AMDGPU also publishes an IMAGE_V1 architecture
+record: GC/SDMA identity, verified external ASIC revision, actual post-golden
+GB_ADDR_CONFIG, 4 KB BO binding alignment, 64 MB limit and memory generation.
+The readback comparison respects Raven's reserved-bit mask. R4GFX consumes
+this record for real AddrLib image admission; it does not invent topology.
 
 R4AMD's allocation-free SDMA and PM4 encoders are shared source dependencies.
 GC9 fences include cache actions and the GFX9 ZPASS_DONE EOP workaround.

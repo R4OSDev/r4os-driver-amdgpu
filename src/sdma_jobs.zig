@@ -120,6 +120,17 @@ pub const Owner = struct {
             .operations = (@as(u64, 1) << a.gfx_queue_operation_copy) | (@as(u64, 1) << a.gfx_queue_operation_copy_rows),
             .notify_callback = @intFromPtr(&@import("queue_runtime.zig").Owner.notify), .context = @intFromPtr(self.runtime.?) }, &profile, &self.binding) != 1) return error.Unsupported;
         self.registered = true;
+        const graphics = self.graphics orelse return error.Unconfirmed;
+        const chip = native.chip orelse return error.Unconfirmed;
+        if (graphics.engine.phase != .ready or graphics.engine.gb_addr_config == 0) return error.Unconfirmed;
+        const architecture: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture),
+            .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0,
+            .gb_addr_config = graphics.engine.gb_addr_config, .chip_revision = chip.external_revision,
+            .bind_alignment = 4096, .memory_generation = self.memory.?.epoch, .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
+        var properties: a.GfxBackendProperties = .{ .interface_id_lo = amd.image_v1_header.interface_id_lo,
+            .interface_id_hi = amd.image_v1_header.interface_id_hi, .revision = 1, .data_bytes = @sizeOf(amd.R4AmdArchitecture) };
+        @memcpy(properties.data[0..@sizeOf(amd.R4AmdArchitecture)], std.mem.asBytes(&architecture));
+        if (queue.publishProperties(&self.binding, &properties) != 1) return error.Unsupported;
         try self.runtime.?.prepare(&ctx, self.memory.?, &native.snapshot, self.binding, .{ .memory_epoch = self.memory.?.epoch, .boot_held = true, .engines_quiesced = false });
         try self.runtime.?.start(&native.snapshot, .{ .context = self.self_address, .work = work, .event = event, .quiesce = quiesce, .before_poll = beforePoll, .irq_ready = irqReady });
         self.active = true;

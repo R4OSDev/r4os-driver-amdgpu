@@ -10,7 +10,7 @@ const boot = @import("boot_snapshot.zig");
 pub const Error = @import("start_common.zig").Error || boot.Error;
 pub const Owner = struct {
     self_address: usize = 0, memory: ?*mem.Owner = null, ctx: ?r4os.r4dev.DriverContext = null,
-    snapshot: identity.Snapshot = .{}, pci_changed: bool = false, old_command: u16 = 0,
+    snapshot: identity.Snapshot = .{}, chip: ?identity.Chip = null, pci_changed: bool = false, old_command: u16 = 0,
     flow: @import("start_flow.zig").Flow = .{}, storage: @import("start_storage.zig").Owner = .{},
     hold: boot.Snapshot = .{}, guard: @import("start_guard.zig").Guard = .{},
     pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner,
@@ -23,7 +23,7 @@ pub const Owner = struct {
         if (!std.meta.eql(profile, store.profile.?) or memory.registers.window.value.physical_address != snapshot.bars[5].base) return error.Stale;
         const map = memory.layout.?;
         if (boot_offset >= map.mc.bytes or expected.byte_length > map.mc.bytes - boot_offset) return error.Invalid;
-        self.self_address = @intFromPtr(self); self.ctx = ctx.*; self.memory = memory; self.snapshot = snapshot.*; memory.start_users += 1;
+        self.self_address = @intFromPtr(self); self.ctx = ctx.*; self.memory = memory; self.snapshot = snapshot.*; self.chip = chip; memory.start_users += 1;
         // Caller routes every preparation error through close(); uncertain API
         // releases leave this entire resident owner and its callback intact.
         try self.storage.prepare(memory);

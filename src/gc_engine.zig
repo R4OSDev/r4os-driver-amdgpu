@@ -39,7 +39,7 @@ pub const Owner = struct {
     phase: Phase = .empty, touched: bool = false, faulted: bool = false, selftest_round: u8 = 0,
     rings: [3]Ring = @splat(.{}), deadline: c.Deadline = .{}, park: @import("start_engines.zig").Park = .{},
     saved_bank: u32 = 0, saved_index: u32 = 0, saved_gfx_lower: u32 = 0, saved_gfx_upper: u32 = 0,
-    saved_mec_lower: u32 = 0, saved_mec_upper: u32 = 0, cu_mask: u32 = 0, rb_mask: u32 = 0,
+    saved_mec_lower: u32 = 0, saved_mec_upper: u32 = 0, cu_mask: u32 = 0, rb_mask: u32 = 0, gb_addr_config: u32 = 0,
     kiq_live: bool = false, compute_mapped: bool = false, stop_started: bool = false, kiq_dequeue: bool = false,
     commands: [1024]u32 = undefined,
     pub fn begin(self: *Owner, io: anytype, arena: anytype, gate: Gate) Error!void {
@@ -92,6 +92,9 @@ pub const Owner = struct {
                 try io.write(entry.address, (old & ~entry.clear) | entry.set);
             }
         }
+        self.gb_addr_config = try c.read(io, r.GB_ADDR_CONFIG);
+        // Raven's golden mask deliberately preserves reserved bits 11/15.
+        if (self.gb_addr_config == 0 or ((self.gb_addr_config ^ try c.read(io, r.GB_ADDR_CONFIG_READ)) & 0xffff77ff) != 0) return error.Unconfirmed;
         try set(io, "GRBM_CNTL", "READ_TIMEOUT", 0xff);
         try io.write(r.GRBM_GFX_INDEX, r.GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK);
         self.cu_mask = (~((try c.read(io, r.CC_GC_SHADER_ARRAY_CONFIG) | try c.read(io, r.GC_USER_SHADER_ARRAY_CONFIG)) >> r.CC_GC_SHADER_ARRAY_CONFIG__INACTIVE_CUS__SHIFT)) & 0x7ff;
