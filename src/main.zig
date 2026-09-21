@@ -9,6 +9,7 @@ var probe: @import("probe.zig").Capture = .{};
 pub var firmware_package: @import("firmware_store.zig").Store = .{};
 pub var firmware: @import("bios_source.zig").Capture = .{};
 pub var memory_runtime: @import("memory_owner.zig").Owner = .{};
+pub var queue_runtime: @import("queue_runtime.zig").Owner = .{};
 pub var memory_layout: ?@import("memory_layout.zig").Layout = null;
 pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
 // Resident bounded snapshots never copy a large pool onto the init stack.
@@ -123,7 +124,7 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
 }
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
-    if (!memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
+    if (!queue_runtime.close(null) or !memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
         ctx.logError("AMDGPU unbind: cleanup=retained module-release=blocked");
         return -1;
     }

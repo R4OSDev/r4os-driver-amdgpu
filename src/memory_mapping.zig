@@ -13,18 +13,28 @@ pub const Mapping = struct {
     self_address: usize = 0, memory: ?r4os.driver_memory.Context = null,
     reference: a.GfxBufferReference = .{}, cpu: a.GfxBufferMap = .{}, dma: a.GfxDeviceLease = .{}, gpu: a.GfxDeviceLease = .{},
     adapter: u32 = 0, epoch: u64 = 0, address: u64 = 0, bytes: u64 = 0, vmid: u4 = 0,
-    native_owner: u32 = 0,
+    native_owner: u32 = 0, dma_only: bool = false,
     physical: []u64 = &.{}, prepared: bool = false, write_allowed: bool = false, ready: bool = false, translated: bool = false, flush_pending: bool = false,
     uses: [8]a.GfxFence = @splat(.{}),
     pub fn prepare(self: *Mapping, owner: *@import("memory_owner.zig").Owner, source: ?a.GfxBufferHandle,
         address: u64, bytes: u64, vmid: u4, physical: []u64) Error!void
     {
+        return self.prepareSystem(owner, source, address, bytes, vmid, physical, false);
+    }
+    /// Retained canonical system BO plus actual DMA segments without inventing
+    /// a GPU virtual address. Used for direct NBIO/IH auxiliary DMA reads.
+    pub fn prepareDma(self: *Mapping, owner: *@import("memory_owner.zig").Owner, source: ?a.GfxBufferHandle, bytes: u64, physical: []u64) Error!void {
+        return self.prepareSystem(owner, source, 0, bytes, 0, physical, true);
+    }
+    fn prepareSystem(self: *Mapping, owner: *@import("memory_owner.zig").Owner, source: ?a.GfxBufferHandle,
+        address: u64, bytes: u64, vmid: u4, physical: []u64, dma_only: bool) Error!void
+    {
         if (self.self_address != 0 or !owner.prepared or owner.self_address != @intFromPtr(owner) or owner.mapping_users >= 128) return error.Busy;
         const memory = owner.memory.?; const adapter = owner.adapter; const epoch = owner.epoch;
         _ = try l.pages(address, bytes, l.address_limit);
-        if (adapter == 0 or epoch == 0 or vmid > 1 or address == 0 or bytes / 4096 != physical.len) return error.Invalid;
+        if (adapter == 0 or epoch == 0 or vmid > 1 or (!dma_only and address == 0) or bytes / 4096 != physical.len) return error.Invalid;
         self.* = .{ .owner = owner, .self_address = @intFromPtr(self), .memory = memory, .adapter = adapter, .epoch = epoch, .address = address,
-            .bytes = bytes, .vmid = vmid, .physical = physical };
+            .bytes = bytes, .vmid = vmid, .physical = physical, .dma_only = dma_only };
         owner.mapping_users += 1;
         if (source) |handle| {
             if (!valid(handle) or memory.bufferImport(&handle, &self.reference) != 1) return error.Unsupported;
@@ -91,7 +101,7 @@ pub const Mapping = struct {
             lease.address_space == @as(u32, if (access == 3) 1 else 0);
     }
     pub fn publish(self: *Mapping, tables: anytype, io: anytype, write: bool, execute: bool) Error!void {
-        if (!self.prepared or self.owner == null or !self.owner.?.controller.enabled or self.owner.?.controller.epoch != self.epoch or (write and !self.write_allowed) or self.self_address != @intFromPtr(self) or self.ready or self.translated or self.cpu.lease.id != 0 or (self.native_owner == 0 and !self.leaseValid(self.dma, 4, 0))) return error.Busy;
+        if (self.dma_only or !self.prepared or self.owner == null or !self.owner.?.controller.enabled or self.owner.?.controller.epoch != self.epoch or (write and !self.write_allowed) or self.self_address != @intFromPtr(self) or self.ready or self.translated or self.cpu.lease.id != 0 or (self.native_owner == 0 and !self.leaseValid(self.dma, 4, 0))) return error.Busy;
         try tables.map(self.address, self.physical, .{ .system = self.native_owner == 0, .write = write, .execute = execute });
         self.translated = true; self.flush_pending = true;
         try hubs.flush(io, self.vmid); self.flush_pending = false;

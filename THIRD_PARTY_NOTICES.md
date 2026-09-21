@@ -57,3 +57,14 @@ amdgpu_vm.h, amdgpu_vm.c, amdgpu_gmc.c and vega10_enum.h. Original complete
 notices remain in the unchanged source files and in the exported
 AMDGPU-SOURCE-NOTICES.txt. No Linux scheduler, TTM, DRM or runtime is linked.
 The new owner, allocation, lifetime and SDK integration is R4OS code.
+
+## IH, queues and doorbells (0.80.8)
+
+Ten additional unchanged AMD MIT files from Linux 7.2.4 bring the original
+catalog to 56 files. They cover Vega10 IH setup, IV decoding, doorbell and
+source IDs, OSSSYS4 register definitions, and the direct-DMA dummy page.
+queue_ih.zig ports the relevant vega10_ih.c, amdgpu_ih.c and nbio_v7_0.c
+sequences and retains their full original notices in its source. All original
+notices and file hashes are also exported to AMDGPU-SOURCE-NOTICES.txt.
+The bounded mailbox, worker, ring accounting and canonical R4OS lifecycle
+integration are original R4OS code. No Linux kernel/runtime is linked.

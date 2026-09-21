@@ -324,6 +324,76 @@
       "sha256": "cb4d03b3ee3fa28a240434f8742434facafb9b670f3dec9b49c1295a4d70a83d",
       "license": "MIT (embedded notice)",
       "role": "GMC9 PTE physical address and memory type reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/vega10_ih.c",
+      "sha256": "ee4b395d6fc517acc2d0ac4aeb39870d2984580d45a1e22b315463d92d736128",
+      "bytes": 18355,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_ih.c",
+      "sha256": "680b3a963673e3fd8de3e48e30d4374489df9edab0c11fe9905df8ffdab9dc93",
+      "bytes": 8937,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_ih.h",
+      "sha256": "a40a0310c00c69adaf0c845c2917294c02cea65aafc7f3e51f66680593d5a3fc",
+      "bytes": 4514,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_doorbell.h",
+      "sha256": "43baa3fc530e3a22f458b2202c1b16db974de53b6d35e45d88514791ee4680a6",
+      "bytes": 15468,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/soc15_ih_clientid.h",
+      "sha256": "9797586db00d3d6e0b080032a40b94e266f4290816164d2638602fbf12541ecd",
+      "bytes": 3902,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/ivsrcid/gfx/irqsrcs_gfx_9_0.h",
+      "sha256": "13e07aaaf33c04e23329eabe7deedd23a87bff9e350600f0673fbe1f287f6fea",
+      "bytes": 3380,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/ivsrcid/sdma0/irqsrcs_sdma0_4_0.h",
+      "sha256": "c0215fa8740e4f7a7bfe6708bd45ea07b860fe954091fd698b07a85569b44137",
+      "bytes": 3561,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/oss/osssys_4_0_offset.h",
+      "sha256": "3343107366a30a6bb689ec78ead4c46ddbe46fbbcc6b1d59b6060cc062ddb046",
+      "bytes": 33295,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/oss/osssys_4_0_sh_mask.h",
+      "sha256": "9f996a052720a34d5d4d8e06cdc17c72190ed6443c159bbae78fd3879d964c6e",
+      "bytes": 125610,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_gart.c",
+      "sha256": "46471329ed522132a732e6fa2c809a66e92947b793cafe4171bdb61ccae07741",
+      "bytes": 14753,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
     }
   ],
   "patches": []

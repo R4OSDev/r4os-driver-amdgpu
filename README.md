@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
 AMDGPU is the external R4OS AMD graphics driver owner, targeting the
-Picasso/Vega 8 laptop profile. Version 0.1.4 implements bounded read-only
+Picasso/Vega 8 laptop profile. Version 0.1.5 implements bounded read-only
 PCI/ASIC/UMA identification, VFCT/ATOMBIOS board data acquisition and an
 immutable boot-frame snapshot through the existing display hold.
 The pinned firmware package is validated and retained in driver-owned CPU memory.
@@ -82,7 +82,8 @@ invented. WINSVC keeps its adapter/memory-generation/device-local contract.
 The GMC9/ATHUB controller requires parked engines and a held boot display.
 These production primitives and their real SDK/MMIO adapters are exercised
 with host fixtures. The passive entry point only admits the measured layout;
-engine start and firmware execution are wired in 0.80.9, queues in 0.80.8.
+engine start and firmware execution are wired in 0.80.9. The queue foundation
+is present in 0.80.8 and remains inactive during passive admission.
 No new GPU capability is advertised here. A four-CPU QEMU probe validates the
 real generic reserved-span API, old ABI prefixes and common BO/SG lifetime;
 it does not emulate Picasso memory hardware. Full evidence:
@@ -90,6 +91,26 @@ it does not emulate Picasso memory hardware. Full evidence:
 
 The firmware display label is `linux-firmware-2b8daaf611fb`; the complete
 40-character revision and exact file hashes remain in the package lock.
+
+The queue runtime partitions the 1 MB UMA ring arena into a 64 KB IH ring,
+writeback page, three 64 KB engine rings, and 64 fixed 8 KB IB slots. It maps
+one UC doorbell page and keeps a separate canonical 4 KB system BO with its
+real DMA segment for NBIO's dummy read. This address is not a VRAM MC alias.
+The Vega10 IH controller uses pinned AMD definitions, a bounded resident
+mailbox, MSI or validated INTx, and a nonblocking 1 ms stop/drain interval.
+
+A dedicated worker consumes IRQ metadata, polls exact per-job writebacks,
+and publishes canonical fence results after resource cleanup. Tokens are
+never recycled within a runtime; memory, queue and reset generations stay
+separate. Lost IRQs, ring wrap, stale values, overflow, deadline and partial
+teardown are covered by three integrated host cases. Failure retains DMA,
+BOs, IRQ callbacks and task handles until their respective owners confirm
+retirement. A closed notification gate remains resident until the outer
+native owner unregisters the canonical backend; only then may it reset this
+runtime or unload the module. No new global test gate or kernel ABI is added.
+See `Docs/Drivers/AMDQueues08008.txt` and its JSON evidence in the workspace.
+Engine-specific packet emission/ring launch follows in 0.80.10/11; neither
+an IRQ fixture nor a host-written test writeback is physical GPU execution.
 
 `IMAGE_SCOPE=none` remains deliberate. The DCN1 math object is not linked
 into the runtime yet; its full link/SIMD/assertion contract belongs to

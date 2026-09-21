@@ -1,6 +1,7 @@
 // Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0
 const std = @import("std");
 const t = std.testing;
+comptime { _ = @import("queue_test.zig"); }
 const a = @import("r4os").abi;
 const driver = @import("main.zig");
 const identity = @import("identity.zig");

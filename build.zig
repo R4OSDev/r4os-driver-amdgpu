@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
     memory_check.has_side_effects = true;
     memory_check.step.dependOn(&verify.step);
     artifact.code.generated.file.step.dependOn(&memory_check.step);
+    const queue_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
+    queue_check.addFileArg(b.path("Tools/VerifyQueue.ps1"));
+    queue_check.has_side_effects = true;
+    queue_check.step.dependOn(&verify.step);
+    artifact.code.generated.file.step.dependOn(&queue_check.step);
     const firmware_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     firmware_check.addFileArg(b.path("Tools/VerifyFirmware.ps1"));
     firmware_check.has_side_effects = true;
@@ -36,6 +41,7 @@ pub fn build(b: *std.Build) void {
     host.addAnonymousImport("firmware_samples", .{ .root_source_file = samples.add("samples.zig", sample_source.items) });
     const tests = b.addTest(.{ .root_module = host });
     tests.step.dependOn(&memory_check.step);
+    tests.step.dependOn(&queue_check.step);
     tests.step.dependOn(&firmware_check.step);
     const run = b.addRunArtifact(tests);
     const test_step = b.step("test", "Check AMD probe ownership and original freestanding DCN1 dependency");
