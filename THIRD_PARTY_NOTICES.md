@@ -9,3 +9,11 @@ is compiled in this foundation. The native object is not in AMDGPU.R4D yet.
 
 `Port/Include/os_types.h` and the module/build integration are original R4OS
 code under Apache License 2.0. No third-party code is relicensed.
+
+## AMD identity and UMA probe references (0.80.4)
+
+The pinned Linux 7.2.4 MIT sources and register headers listed in
+`ThirdParty/Sources.json` also document the read-only PCI/ASIC revision and
+UMA framebuffer address rules. Their original AMD and other copyright and
+permission notices remain byte-for-byte in `ThirdParty/Linux7.2.4/Original`.
+These reference translation units are not linked as a Linux driver.

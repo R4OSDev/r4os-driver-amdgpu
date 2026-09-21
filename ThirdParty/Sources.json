@@ -16,6 +16,76 @@
       "sha256": "197baec4d0046cd7d9989d59aca71f78eb44e805c8a76ff8e1a50a7ff3a2fd69",
       "bytes": 1903,
       "license": "MIT (embedded notice)"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_device.c",
+      "sha256": "e60d22301a9b7157706d85696574d765c3bf7db2be77af45f26be23e7d1f9f86",
+      "bytes": 193163,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_discovery.c",
+      "sha256": "2a53ce988fe75f16a00bd010c5c199449596936d7869223e65fc39917ae52be8",
+      "bytes": 103039,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/soc15.c",
+      "sha256": "71fb536fb5aac30bdb397026dea5201a9b302d8c9f246607c204fdf4ece7697b",
+      "bytes": 45894,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/nbio_v7_0.c",
+      "sha256": "e53aab4123ce736ce0c3f95f15ed35bc91887c709f05820188aa04ed6d754ee7",
+      "bytes": 11387,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/gfxhub_v1_0.c",
+      "sha256": "a04d17771f745969618ff23e7ebce3e3c9b9bfa2cdc94589299f08703ec05651",
+      "bytes": 16482,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/gmc_v9_0.c",
+      "sha256": "5ac3ec94fbbafb3f7b92ca04989e68d7157f7ca715b41ecedddaeafa1ba4509e",
+      "bytes": 65757,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/vega10_ip_offset.h",
+      "sha256": "0eafce93ac395bf5d20fdb2a227fc320ec21d3d67be8c4f0d252cfe1ee9dbead",
+      "bytes": 55954,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/nbio/nbio_7_0_offset.h",
+      "sha256": "18264c4027683062be8abf22ec2b57b4e9f83a11fdf17ed722381116d955e582",
+      "bytes": 495783,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/nbio/nbio_7_0_sh_mask.h",
+      "sha256": "e18e184fe11d7def00674d8e145a4f7040df448d4186ab0051fa130002b87bbc",
+      "bytes": 12748346,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/gc/gc_9_1_offset.h",
+      "sha256": "7a5be67205990a7b2ae7979c6abdec4ac3ac35fe0a109d4eca046a8142b61961",
+      "bytes": 787072,
+      "license": "MIT (embedded notice)",
+      "role": "identity and UMA probe reference; not compiled as a Linux driver"
     }
   ],
   "patches": []
