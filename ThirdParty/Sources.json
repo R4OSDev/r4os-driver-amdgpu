@@ -86,6 +86,62 @@
       "bytes": 787072,
       "license": "MIT (embedded notice)",
       "role": "identity and UMA probe reference; not compiled as a Linux driver"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/atomfirmware.h",
+      "sha256": "b389f8aed3dc383b9a3273bb7ea2c46234c48febe1e00d35405821ae2d6fee97",
+      "bytes": 176062,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/atombios.h",
+      "sha256": "2f543d5518d0a2bfd3a20c0220faac6edf1f1023279c952d503edffc02667dc0",
+      "bytes": 461344,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/pptable.h",
+      "sha256": "a3f907e51ad17ce79300ddb7498c0813e929f3fd1afad0817a558d83c3e4be90",
+      "bytes": 27512,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_bios.c",
+      "sha256": "4d1ddb4c26dbaa1e9f0bed4833a692623182cd22186da7d8a882eb7b52fa2c1f",
+      "bytes": 16000,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_atomfirmware.c",
+      "sha256": "8fd0f4888d995db48516e2e70fdf248310e7cf38d95d30bfb008c207658e8bb9",
+      "bytes": 33631,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/ObjectID.h",
+      "sha256": "8f5a5dc001686ddae347332547f8767b83f33981a953877b95fabd8ca1313d4a",
+      "bytes": 48025,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/bios/bios_parser2.c",
+      "sha256": "e556865f43beb1d80d8de6a5f25df6164379b8e18881ee4455ffe50295267161",
+      "bytes": 115921,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM/VFCT data layouts and board parser reference; no firmware execution"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/atomfirmwareid.h",
+      "sha256": "9e6bd22e466b4b0d608a61ffb9a424c1b8fcf8b9430fefa2b8671ef356387817",
+      "bytes": 3259,
+      "license": "MIT (embedded notice)",
+      "role": "ATOM firmware header dependency; data constants only"
     }
   ],
   "patches": []

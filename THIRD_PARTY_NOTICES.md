@@ -17,3 +17,12 @@ The pinned Linux 7.2.4 MIT sources and register headers listed in
 UMA framebuffer address rules. Their original AMD and other copyright and
 permission notices remain byte-for-byte in `ThirdParty/Linux7.2.4/Original`.
 These reference translation units are not linked as a Linux driver.
+
+## ATOMBIOS and VFCT board data (0.80.5)
+
+The original AMD MIT headers atomfirmware.h, atomfirmwareid.h, atombios.h and pptable.h
+provide compiled data layouts. amdgpu_bios.c, amdgpu_atomfirmware.c,
+ObjectID.h and bios_parser2.c are read-only implementation references.
+These files come from the same pinned Linux 7.2.4 archive. Original
+notices remain intact; paths, roles and SHA256 are in ThirdParty/Sources.json.
+No x86 option-ROM code or Linux driver runtime is executed or linked.

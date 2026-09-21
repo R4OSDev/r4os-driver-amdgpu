@@ -6,6 +6,8 @@ const identity = @import("identity.zig");
 const boot = @import("boot.zig");
 var driver_api: ?*const a.DriverApi = null;
 var probe: @import("probe.zig").Capture = .{};
+pub var firmware: @import("bios_source.zig").Capture = .{};
+pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
 // Resident bounded snapshots never copy a large pool onto the init stack.
 var devices: [8]boot.Device = undefined;
 var device_count: usize = 0;
@@ -75,12 +77,35 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     };
     boot_association = selected;
     log("AMDGPU boot: adapter={x} generation={d} source={s} uma-offset={x} boot-writers=untouched", .{ selected.adapter, selected.generation, @tagName(selected.path), selected.uma_offset });
-    ctx.logInfo("AMDGPU bind: identity-only mappings=0 queues=0 firmware=unsubmitted native-writes=0 fallback=preserved");
+    const device = &devices[selected.index];
+    firmware.capture(&ctx, &device.snapshot) catch |err| {
+        log("AMDGPU board: rejected={s} acpi={s} native-writes=0 fallback=preserved", .{ @errorName(err), @tagName(firmware.acpi) });
+        return -9;
+    };
+    // Reconfirm the complete device and boot identity after source acquisition.
+    var reader: Reader = .{ .ctx = ctx, .pci = device.snapshot.pci };
+    if (!identity.stable(&device.snapshot, &reader)) return reject("pci-changed-after-vbios", -5);
+    if (firmware.board.reservation) |reservation| {
+        const uma = device.measured.uma orelse return reject("board-uma-unavailable", -9);
+        if (reservation.offset > uma.bytes or reservation.bytes > uma.bytes - reservation.offset or
+            reservation.driver_bytes > reservation.offset) return reject("board-reservation-outside-uma", -9);
+    }
+    boot_snapshot.capture(&ctx, selected.adapter, final) catch |err| {
+        log("AMDGPU boot capture: rejected={s} cleanup={s} native-writes=0", .{ @errorName(err), if (boot_snapshot.close()) @as([]const u8, "OK") else "retained" });
+        return -10;
+    };
+    log("AMDGPU board: source={s} bytes={d} paths={d} panel={s} integrated={s} checksum={x}",
+        .{ @tagName(firmware.source), firmware.board.image.len, firmware.board.path_count,
+            if (firmware.board.panel != null) @as([]const u8, "present") else "absent",
+            if (firmware.board.integrated != null) @as([]const u8, "present") else "absent", firmware.sha256 });
+    log("AMDGPU boot capture: generation={d} bytes={d} hash={x} writers=resumed snapshot=retained effects=0", .{
+        boot_snapshot.boot.generation, boot_snapshot.read.byte_length, boot_snapshot.sha256 });
+    ctx.logInfo("AMDGPU bind: board-data-only mappings=0 queues=0 firmware=unsubmitted native-writes=0 fallback=preserved");
     return 0;
 }
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
-    if (!probe.close(&ctx)) {
+    if (!boot_snapshot.close() or !firmware.close() or !probe.close(&ctx)) {
         ctx.logError("AMDGPU unbind: cleanup=retained module-release=blocked");
         return -1;
     }

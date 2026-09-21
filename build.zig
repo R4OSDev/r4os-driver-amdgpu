@@ -13,6 +13,7 @@ pub fn build(b: *std.Build) void {
     artifact.output.generated.file.step.dependOn(&native.step);
     const host = b.createModule(.{ .root_source_file = b.path("src/test.zig"), .target = b.graph.host, .optimize = .ReleaseSafe });
     host.addImport("r4os", sdk.createR4osModule(b.graph.host, .ReleaseSafe));
+    host.addIncludePath(b.path("ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/include"));
     const tests = b.addTest(.{ .root_module = host });
     tests.step.dependOn(&verify.step);
     const run = b.addRunArtifact(tests);
