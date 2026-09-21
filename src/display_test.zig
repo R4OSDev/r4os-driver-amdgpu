@@ -155,6 +155,9 @@ const Runtime = struct {
     var ran = false;
     var live = false;
     var heap_live = false;
+    var panel_heap_live = false;
+    var panel_bytes: [@sizeOf(@import("panel_runtime.zig").Runtime)]u8 align(16) = undefined;
+    var rom: [4096]u8 = undefined;
     var thread_result: i32 = 0;
     var fail_join = false;
     var fail_release = false;
@@ -172,6 +175,7 @@ const Runtime = struct {
         ran = false;
         live = false;
         heap_live = false;
+        panel_heap_live = false;
         thread_result = 0;
         fail_join = false;
         fail_release = false;
@@ -221,7 +225,7 @@ const Runtime = struct {
         F.words[d.control[0] / 4] = hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK | hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK;
         try native.guard.capture(&memory.registers, mode.mc_address, mode.pitch_bytes);
         @memcpy(&F.original, &F.words);
-        board = undefined;
+        board = .{ .image = &.{}, .tables = @splat(std.mem.zeroes(@import("bios.zig").Table)) };
         board.integrated = std.mem.zeroes(@import("bios.zig").Integrated);
         board.integrated.?.uma_channels = 2;
     }
@@ -285,13 +289,21 @@ const Runtime = struct {
         return F.now(null);
     }
     fn allocate(bytes: u64, alignment: u32, out: *a.DriverHeapAllocation) callconv(.c) i32 {
-        std.debug.assert(running and !heap_live and bytes <= F.bytes.len);
+        if (heap_live) {
+            std.debug.assert(running and !panel_heap_live and bytes == panel_bytes.len);
+            panel_heap_live = true;
+            out.* = .{ .handle = 2, .cpu_address = @intFromPtr(&panel_bytes), .byte_length = bytes, .alignment = alignment };
+            return if (partial_heap) -1 else 0;
+        }
+        std.debug.assert(running and bytes <= F.bytes.len);
         heap_live = true;
         out.* = .{ .handle = 1, .cpu_address = @intFromPtr(&F.bytes), .byte_length = bytes, .alignment = alignment };
         return if (partial_heap) -1 else 0;
     }
-    fn free(_: u64) callconv(.c) i32 {
+    fn free(handle: u64) callconv(.c) i32 {
         if (fail_heap) return -1;
+        if (handle == 2) { panel_heap_live = false; return 0; }
+        std.debug.assert(!panel_heap_live);
         heap_live = false;
         return 0;
     }
@@ -369,5 +381,17 @@ test "DCN1 SIMD task holds boot memory across prepare commit abort and failed re
     try t.expect(!R.owner.close());
     R.run();
     try t.expect(R.owner.close());
+    // Panel allocation is independent, task-owned and released first even
+    // when parsing or the allocator fails after returning a live handle.
+    for ([_]bool{ false, true }) |partial| {
+        try R.reset(); try R.open(); R.run(); try t.expect(R.owner.poll());
+        R.partial_heap = partial;
+        try R.owner.bindPanel(); R.run(); try t.expect(R.owner.poll());
+        try t.expect(R.owner.result != 0 and R.panel_heap_live and R.heap_live);
+        R.fail_heap = true;
+        try t.expect(!R.owner.close() and R.memory.engine_users == 2 and R.heap_live);
+        R.fail_heap = false;
+        try t.expect(R.owner.close() and !R.panel_heap_live and !R.heap_live and R.memory.engine_users == 1);
+    }
     std.debug.print("[amd-dcn1-owner] actual driver Task/heap boundary; delayed joins/releases; partial allocation; failed clock/link prepare; restore ACK retains boot hold\n", .{});
 }

@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.11 adds the native DCN1 frontend and original display bandwidth
-planner for R4OS 0.80.15. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.12 adds direct eDP, AUX/DDC, ATOM command execution and confirmed
+panel brightness for R4OS 0.80.16. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -73,14 +73,14 @@ restarted after replacing their firmware.
 Build with `./Build.sh` on Linux or `Build.bat` on Windows, using PowerShell 7.
 The normal build verifies pinned originals/generated registers, runs the
 component tests and audits all sixteen unchanged firmware resources in the
-R4D container. The DCN1 archive links 23 original Linux 7.2.4 AMD DC/DML units
-and three private bridges into the R4D. The source closure contains frontend
+R4D container. The DCN1 archive links 26 original Linux 7.2.4 AMD DC/DML units
+and four private bridges into the R4D. The source closure contains frontend
 resources, HUBP/HUBBUB/DPP/OPP/MPC/timing, request/deadline registers and
 watermarks. A heap-owned DC context runs only in a dedicated SIMD-capable
 driver Task. Planning performs no MMIO. Commit requires confirmed clocks
 and all four pipes blank/disabled; Abort retains memory until restoration ACK.
-The initial runtime retains the original boot plane. Connector preparation,
-output enable and pageflip follow in 0.80.16-0.80.18. No activation hook is
+The initial runtime retains the original boot plane. HDMI,
+output enable and pageflip follow in 0.80.17-0.80.18. No activation hook is
 installed by a normal probe. The grouped host tests execute the real archive
 against explicit register/Task/heap responses; they do not emulate a GPU.
 
@@ -88,3 +88,26 @@ See workspace `Docs/Drivers/AMDGFXQueues08011.txt` and its JSON evidence,
 plus the earlier AMD board, firmware, memory, queue, startup and SDMA records.
 Original code is Apache-2.0; derived AMD/Mesa code retains MIT notices in its
 sources, catalog and distribution legal exports.
+
+Panel control uses board-selected direct UNIPHY/AUX/HPD routes, complete EDID
+native timing and bounded DPCD link training with rate fallback. No bridge,
+unknown PHY wiring, source spread spectrum or unsupported ATOM revision is
+invented. The bounded ATOM interpreter runs the actual board command table
+(revision 1.6 transmitter ABI) in the same SIMD worker, with separate heap
+scratch and explicit MMIO operations; it executes no x86 firmware code.
+
+The panel owner enforces power/backlight delays, observes HPD and actual
+video enable before lighting the panel, and supports receiver AUX8/AUX16 or
+original PWM. It reads back the programmed level before marking it known.
+Direct PWM refuses active DMCU/ABM ownership and invalid period data; this
+milestone does not upload DMCU firmware or pretend to support adaptive
+backlight. Ordinary AUX timeouts release bus arbitration through a documented
+patch, while uncertain MMIO effects retain the owner and restoration duty.
+
+The common brightness API carries distinct intent and driver receipt serials.
+AMDGPU's private worker bridge is ready for /18 native output publication.
+Desktop restores stable per-receiver BRIGHTNESS.R4S choices; Appearance saves
+levels and shows confirmed state. Current input/ACPI/EC paths provide no
+brightness-key event, explicitly reported by the page. Panel identity,
+electrical training, visible brightness and Lenovo Fn events remain untested
+until /39. See Docs/Drivers/AMDPanel08016.txt for the exact software evidence.

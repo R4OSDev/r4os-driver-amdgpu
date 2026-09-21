@@ -129,3 +129,20 @@ Keith Packard's permissive grant, preserved and exported in full as well.
 `AMDGPU-SOURCE-NOTICES.txt`. No GPL Linux kernel primitives, DRM runtime,
 scheduler, FPU switcher or device manager are linked. The private R4OS
 worker, heap and MMIO adaptation is original Apache-2.0 code.
+
+## Panel, AUX and ATOM (0.80.16)
+
+The current catalog contains 301 unchanged originals. The linked archive
+has 26 original C translation units and four R4OS bridges. Added compiled
+units are dce_aux.c, dce_panel_cntl.c and dcn10_link_encoder.c. The bridge
+construction and register selections retain AMD MIT notices. atom_vm.zig
+and atom_opcodes.zig derive their instruction and operand semantics from
+AMD's 2008 MIT atom.c and carry its full notice. There is no Linux interpreter,
+GPIO service, scheduler or DRM runtime in the resulting module.
+
+0002-aux-timeout-release.patch changes only the ordinary AUX reply timeout
+in the copied build tree: a bounded loop returns the upstream timeout result
+and permits release_engine. It does not swallow MMIO faults or emulate an ACK.
+The original source bytes remain unchanged and both patches are catalogued.
+The existing legal exporter includes all 301 source notices, the original
+MIT text and unchanged firmware licenses in the Distribution.

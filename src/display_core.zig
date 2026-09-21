@@ -7,9 +7,9 @@ const r4os = @import("r4os");
 const a = r4os.abi;
 const mem = @import("memory_owner.zig");
 const start = @import("start_runtime.zig");
-pub const c = @cImport({
-    @cInclude("dcn_api.h");
-});
+const panel = @import("panel_runtime.zig");
+const atom = @import("atom_vm.zig");
+pub const c = panel.c;
 pub const Error = error{ Busy, Invalid, Unsupported, Stale, Capacity, State };
 pub const Phase = enum { empty, preparing, planned, programming, programmed, retained, aborted };
 pub const Hooks = struct {
@@ -32,13 +32,18 @@ pub const Owner = struct {
     threads: ?r4os.r4dev.DriverThreadContext = null,
     clock: ?r4os.r4dev.DriverResourceContext = null,
     allocation: a.DriverHeapAllocation = .{},
+    panel_allocation: a.DriverHeapAllocation = .{},
+    board: ?*const @import("bios.zig").Board = null,
+    panel_operation: panel.Operation = .discover,
+    panel_value: u16 = 0,
+    panel_identity: a.GfxOutputId = .{},
     initialized: bool = false,
     thread: u64 = 0,
     joined: bool = false,
     worker_result: i32 = 0,
     result: i32 = 0,
     phase: Phase = .empty,
-    action: enum { prepare, commit, abort } = .prepare,
+    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work } = .prepare,
     limits: c.struct_r4dcn_limits = std.mem.zeroes(c.struct_r4dcn_limits),
     mode: c.struct_r4dcn_mode = std.mem.zeroes(c.struct_r4dcn_mode),
     plan: c.struct_r4dcn_plan = std.mem.zeroes(c.struct_r4dcn_plan),
@@ -69,6 +74,7 @@ pub const Owner = struct {
         self.self_address = @intFromPtr(self);
         self.memory = memory;
         self.native = native;
+        self.board = board;
         self.ctx = ctx.*;
         self.threads = threads;
         self.heap = heap;
@@ -83,6 +89,38 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .planned) return error.State;
         self.hooks = hooks;
         try self.launch(.commit);
+    }
+    pub fn bindPanel(self: *Owner) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or
+            self.phase != .planned or self.panel_allocation.handle != 0) return error.State;
+        try self.launch(.panel_bind);
+    }
+    pub fn panelCommand(self: *Owner, operation: panel.Operation, value: u16) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.hooks == null or
+            (self.phase != .planned and self.phase != .programmed) or self.panel_allocation.handle == 0) return error.State;
+        self.panel_operation = operation;
+        self.panel_value = value;
+        try self.launch(.panel_work);
+    }
+    /// Called by the native output worker after publication/activation. The
+    /// private operation does not grant native output ownership on its own.
+    pub fn brightnessCommand(self: *Owner, identity: a.GfxOutputId) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.hooks == null or
+            (self.phase != .programmed and self.phase != .retained) or self.panel_allocation.handle == 0) return error.State;
+        self.panel_identity = identity;
+        try self.launch(.brightness_work);
+    }
+    /// Modeset hooks may use the panel only inside this admitted worker, after
+    /// installing complete boot restoration. No nested task or C entry occurs.
+    pub fn panelInWorker(self: *Owner, operation: panel.Operation, value: u16) Error!void {
+        if (workerCheck(self) != 1 or self.hooks == null or self.panel_allocation.handle == 0 or
+            (self.action != .commit and self.action != .panel_work)) return error.State;
+        const runtime: *panel.Runtime = @ptrFromInt(self.panel_allocation.cpu_address);
+        if (runtime.self_address != @intFromPtr(runtime)) return error.State;
+        self.effects = true;
+        self.frontend_attempted = true;
+        self.quiet = false;
+        runtime.run(operation, value) catch return error.State;
     }
     fn launch(self: *Owner, action: @FieldType(Owner, "action")) Error!void {
         if (self.thread != 0 or self.self_address != @intFromPtr(self)) return error.Busy;
@@ -119,6 +157,10 @@ pub const Owner = struct {
             self.launch(.abort) catch return false;
             return false;
         }
+        if (self.panel_allocation.handle != 0) {
+            if (self.heap.?.release(self.panel_allocation.handle) != 0) return false;
+            self.panel_allocation = .{};
+        }
         if (self.allocation.handle != 0) {
             if (self.heap.?.release(self.allocation.handle) != 0) return false;
             self.allocation = .{};
@@ -137,6 +179,41 @@ pub const Owner = struct {
         const self: *Owner = @ptrFromInt(raw);
         if (self.self_address != raw or workerCheck(self) != 1) return c.R4DCN_STATE;
         switch (self.action) {
+            .panel_bind => {
+                if (!self.initialized or self.phase != .planned or self.board == null or self.panel_allocation.handle != 0) return c.R4DCN_STATE;
+                const bytes = @sizeOf(panel.Runtime);
+                if (self.heap.?.allocate(bytes, 16, &self.panel_allocation) != 0) return c.R4DCN_IO;
+                const allocation = self.panel_allocation;
+                if (allocation.version != 1 or allocation.size < @sizeOf(a.DriverHeapAllocation) or allocation.handle == 0 or
+                    allocation.cpu_address == 0 or allocation.cpu_address % 16 != 0 or allocation.byte_length != bytes or
+                    allocation.cpu_address > std.math.maxInt(u64) - bytes or allocation.alignment < 16 or allocation.reserved != 0) return c.R4DCN_INVALID;
+                const runtime: *panel.Runtime = @ptrFromInt(allocation.cpu_address);
+                runtime.* = .{};
+                runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }, self.mode.pipe) catch {
+                    self.result = c.R4DCN_UNSUPPORTED;
+                    return 0;
+                };
+                self.result = 0;
+            },
+            .panel_work => {
+                self.result = 0;
+                self.panelInWorker(self.panel_operation, self.panel_value) catch {
+                    self.result = c.R4DCN_IO;
+                    self.phase = .retained;
+                };
+            },
+            .brightness_work => {
+                self.result = 0;
+                const runtime: *panel.Runtime = @ptrFromInt(self.panel_allocation.cpu_address);
+                if (runtime.self_address != @intFromPtr(runtime) or runtime.protocol == null) return c.R4DCN_STATE;
+                const outputs = self.ctx.?.graphicsOutputs() orelse return c.R4DCN_UNSUPPORTED;
+                if (!outputs.supportsBrightness()) return c.R4DCN_UNSUPPORTED;
+                self.effects = true; self.frontend_attempted = true; self.quiet = false;
+                runtime.brightness.service(&runtime.protocol.?, &outputs, self.panel_identity, atomNow(@intFromPtr(self))) catch {
+                    self.result = c.R4DCN_IO;
+                };
+                if (runtime.protocol.?.phase == .retained) self.phase = .retained;
+            },
             .prepare => {
                 self.phase = .preparing;
                 const bytes = c.r4dcn_size();
@@ -206,13 +283,32 @@ pub const Owner = struct {
     }
     fn write(raw: ?*anyopaque, offset: u32, value: u32) callconv(.c) c_int {
         const self = from(raw);
-        if (workerCheck(raw) != 1 or !self.effects or self.action != .commit) return -1;
+        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .abort)) return -1;
         self.memory.?.registers.write(offset, value) catch return -1;
         self.memory.?.registers.barrier() catch return -1;
         return 0;
     }
     fn now(raw: ?*anyopaque) callconv(.c) u64 {
         return from(raw).clock.?.nowNs();
+    }
+    fn atomRead(raw: usize, space: atom.Space, index: u32) atom.Error!u32 {
+        if (space != .mmio or index > std.math.maxInt(u32) / 4) return error.Unsupported;
+        var value: u32 = 0;
+        if (read(@ptrFromInt(raw), index * 4, &value) != 0) return error.Io;
+        return value;
+    }
+    fn atomWrite(raw: usize, space: atom.Space, index: u32, value: u32) atom.Error!void {
+        if (space != .mmio or index > std.math.maxInt(u32) / 4) return error.Unsupported;
+        if (write(@ptrFromInt(raw), index * 4, value) != 0) return error.Io;
+    }
+    fn atomWorker(raw: usize) bool {
+        return workerCheck(@ptrFromInt(raw)) == 1;
+    }
+    fn atomNow(raw: usize) u64 {
+        return now(@ptrFromInt(raw));
+    }
+    fn atomDelay(raw: usize, us: u32) atom.Error!void {
+        if (delay(@ptrFromInt(raw), us) != 0) return error.Deadline;
     }
     fn delay(raw: ?*anyopaque, us: u32) callconv(.c) c_int {
         const self = from(raw);

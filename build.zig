@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const pm4_path = libraries.namedLazyPath("r4amd_pm4");
     const binding_path = libraries.namedLazyPath("r4amd_zig_binding");
     const driver_path = libraries.namedLazyPath("r4amd_driver");
+    const edid_path = libraries.namedLazyPath("r4gfx_edid");
     const render_build = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     render_build.addFileArg(libraries.namedLazyPath("r4amd_native_build"));
     render_build.addArg("-OutputRoot");
@@ -18,7 +19,7 @@ pub fn build(b: *std.Build) void {
     native.addArg("-OutputRoot");
     const dcn_archives = native.addOutputDirectoryArg("dcn-native");
     native.has_side_effects = true;
-    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path, pm4_path, driver_path }, .native_archives = &.{ render_archives.path(b, "R4AMD-Addr.a"), dcn_archives.path(b, "AMDGPU-DCN1.a") } });
+    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path, pm4_path, driver_path, edid_path }, .native_archives = &.{ render_archives.path(b, "R4AMD-Addr.a"), dcn_archives.path(b, "AMDGPU-DCN1.a") } });
     const verify = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     verify.addFileArg(b.path("Tools/VerifyIdentity.ps1"));
     verify.has_side_effects = true;
@@ -50,6 +51,7 @@ pub fn build(b: *std.Build) void {
     const host = b.createModule(.{ .root_source_file = b.path("src/test.zig"), .target = b.graph.host, .optimize = .ReleaseSafe });
     const host_sdk = sdk.createR4osModule(b.graph.host, .ReleaseSafe);
     host.addImport("r4os", host_sdk);
+    host.addImport("r4gfx_edid", b.createModule(.{ .root_source_file = edid_path, .target = b.graph.host, .optimize = .ReleaseSafe }));
     host.addImport("r4amd_copy", b.createModule(.{ .root_source_file = copy_path, .target = b.graph.host, .optimize = .ReleaseSafe }));
     host.addImport("r4amd_pm4", b.createModule(.{ .root_source_file = pm4_path, .target = b.graph.host, .optimize = .ReleaseSafe }));
     const amd_binding = b.createModule(.{ .root_source_file = binding_path, .target = b.graph.host, .optimize = .ReleaseSafe });

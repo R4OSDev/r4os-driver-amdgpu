@@ -1893,6 +1893,223 @@
       "bytes": 13411,
       "license": "MIT (embedded notice)",
       "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/atom.c",
+      "sha256": "6e0ac3c07f253aec46db2d44682ccfc7d4304bdca1df3ed6dfcb452edd70b9ee",
+      "bytes": 41907,
+      "license": "MIT (embedded notice)",
+      "role": "Original ATOM command and indirect-IO semantics; bounded Zig port, no x86 or Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/atom.h",
+      "sha256": "4b028d9e48a82a115078b8689e22b8c47ee8fe0c8a9b1f842e792f3d893ca00c",
+      "bytes": 5129,
+      "license": "MIT (embedded notice)",
+      "role": "Original ATOM command and indirect-IO semantics; bounded Zig port, no x86 or Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/atom-bits.h",
+      "sha256": "d885526a0ebf5f47c4a0daadf3a0c9c6f3281b46d88cc857a98c01e893df6301",
+      "bytes": 1882,
+      "license": "MIT (embedded notice)",
+      "role": "Original ATOM command and indirect-IO semantics; bounded Zig port, no x86 or Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/atom-names.h",
+      "sha256": "e197bec3d065d70d7a9d4955ae4cceb5988f0a3ebc36646352d8539659176b61",
+      "bytes": 4758,
+      "license": "MIT (embedded notice)",
+      "role": "Original ATOM command and indirect-IO semantics; bounded Zig port, no x86 or Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_atombios.c",
+      "sha256": "13e13445a9ba48906001b38cd4cf2acd784cea98753f45d62d5855a596e1cc9e",
+      "bytes": 60707,
+      "license": "MIT (embedded notice)",
+      "role": "Original ATOM command and indirect-IO semantics; bounded Zig port, no x86 or Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/bios/command_table2.c",
+      "sha256": "4ef1ea20ed242ac4f44c699641572d413e6741b8ae029837ba48edcab4684eb2",
+      "bytes": 34024,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_aux.c",
+      "sha256": "ad50527a4c7e324fa5826a48dad72e9510e499b5af666384fc54eac1ebddfb9c",
+      "bytes": 33851,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_aux.h",
+      "sha256": "c67e0af1209eeba981ca353ec82a262d371e824c2d672214372d6b6269f8f063",
+      "bytes": 12689,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_link_encoder.c",
+      "sha256": "0952d9b84c844fc2400ea009d2b18e3315caa7d4df4ddf176e969bb7c0b0cc05",
+      "bytes": 59878,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_link_encoder.h",
+      "sha256": "345203d5668c6abe8358817c4cfc4cf386bb41593d5b1842d809365553b62f40",
+      "bytes": 10074,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_panel_cntl.c",
+      "sha256": "a2090016b9ec8fee93428d1d41e5c95527d06ce593a2be429b260572e5f80521",
+      "bytes": 9560,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_panel_cntl.h",
+      "sha256": "69cf4373a1b4aa1353257b2e5501a66afc1606b5d3aee41f3a9511e0ff050da8",
+      "bytes": 4652,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c",
+      "sha256": "b75eeb1376698557a8c61dfe9098ec9d89aacb45738f788e87502320b2a28123",
+      "bytes": 41294,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.h",
+      "sha256": "693af9155ae97a6c0717e31fd5bf081f0855e6743faf5c9b6b2966fd2410fbda",
+      "bytes": 22073,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dm_event_log.h",
+      "sha256": "bc3191943d9f3f6785a2d6c13f96b21a2e8525e88770c78a426c528e2e23cab7",
+      "bytes": 1457,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/gpio/dcn10/hw_translate_dcn10.c",
+      "sha256": "05e6f7e9213d777b65992512bd75db84bc23a43e9c022337262210c584acadc5",
+      "bytes": 10326,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/gpio/hw_ddc.c",
+      "sha256": "83b6a26f3617deacd521d5dc02790aa4f2dfddacce35cbaab6e406738307ab56",
+      "bytes": 6461,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/gpio/hw_gpio.c",
+      "sha256": "6ae0a60a5e2ade42972d7fde7f7a3df5b29eaff79f897d034425195a14ba3a04",
+      "bytes": 5287,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hwss/dce110/dce110_hwseq.c",
+      "sha256": "d90ae0e585afb60fdb0fcdc67daf30a5ade65ba44ededc8672dfeb5e7833f1b0",
+      "bytes": 111024,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/aux_engine.h",
+      "sha256": "0e98e068fe783203ec4b6928a4d1e093515d1a6337aa1a4ab149c28acf56371c",
+      "bytes": 5096,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/gpio.h",
+      "sha256": "7f0a7c4637bae6468eda849b5384b06644b503172159e08cf88cacfb8c8f0392",
+      "bytes": 2581,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/link_factory.c",
+      "sha256": "1fd16f0ebdb50dc4c75574fb50412d5acc6fcab34c184347c5ed49b0663b13db",
+      "bytes": 35604,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training.c",
+      "sha256": "a016303a6c3c163a25081d22b1c5c716959fe1e2cdcc81d19dcf921098c085b3",
+      "bytes": 57638,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/protocols/link_dp_training_8b_10b.c",
+      "sha256": "58d89efce1705b7b04e9df7c07b9b52ba308c757e3d05f3f4dbc98334758b682",
+      "bytes": 16454,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/protocols/link_edp_panel_control.c",
+      "sha256": "f7b1c81c95574bc45bc4d1b00cb9abda879bbf09962d9a315b1483c3f048f518",
+      "bytes": 39588,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/gpio_interface.h",
+      "sha256": "9351c9f66d6a739d1d27d67f384e5200d14368d4d8a4073c9cff0c128c5ebd4f",
+      "bytes": 2983,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/gpio_service_interface.h",
+      "sha256": "1c779424a58a5726cedc94ad8b12a091eaf9b4083bfdf79923084c543da61022",
+      "bytes": 3259,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/dce/dce_11_0_d.h",
+      "sha256": "2481a7c7a22be120626b161284f9f0851d18b1493a55cbbe2707475020f91253",
+      "bytes": 663601,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/dce/dce_11_0_enum.h",
+      "sha256": "f9d5eace60c8f2dd9b35277fa55da4c6cb8dbeee962df478545066fb9007a2d4",
+      "bytes": 333123,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/dce/dce_11_0_sh_mask.h",
+      "sha256": "e42e3bd9d4f80347e63894b7876cbd3b6fb00a9dbe441ac3c71f91827984c3d5",
+      "bytes": 1209088,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/atom-types.h",
+      "sha256": "ca242c70b270fa2fe3e182dce87e7838fe909c44ec8ddefd0df546b1f851e223",
+      "bytes": 1430,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
     }
   ],
   "patches": [
@@ -1900,6 +2117,11 @@
       "path": "ThirdParty/Patches/0001-dcn1-legacy-scaler.patch",
       "sha256": "a8481d6e1b628ea6ec60d31894fbb6b8442ffadce4f79e03774f8f133a341514",
       "reason": "DCN1 uses original DPP1 scaling; exclude SPL dispatch for DCN2 and newer."
+    },
+    {
+      "path": "ThirdParty/Patches/0002-aux-timeout-release.patch",
+      "sha256": "37bdfd6bd04e3f838257e2cfad71bb793a856bac17c6d25d0aeb82039a1bfe63",
+      "reason": "A software AUX timeout returns normally so the owning path releases hardware arbitration."
     }
   ],
   "additional_licenses": [

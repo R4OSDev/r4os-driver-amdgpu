@@ -11,6 +11,22 @@
 #include "opp/dcn10/dcn10_opp.h"
 #include "mpc/dcn10/dcn10_mpc.h"
 #include "dcn10/dcn10_ipp.h"
+#include "dce/dce_aux.h"
+#include "dce/dce_panel_cntl.h"
+#include "dio/dcn10/dcn10_link_encoder.h"
+#include "dc_bios_types.h"
+#include "ddc_service_types.h"
+struct r4dcn_link {
+ struct r4dcn_route route;
+ struct r4dcn_atom atom;
+ struct dcn10_link_encoder encoder;
+ struct aux_engine_dce110 aux;
+ struct dc_link link;
+ struct ddc_service ddc;
+ struct dc_link_settings settings;
+ unsigned bound,pads_held,initialized,enabled;
+ uint32_t pad_mask,hpd_mask;
+};
 struct r4dcn {
  struct r4dcn_io io;
  struct r4dcn_limits limits;
@@ -32,6 +48,10 @@ struct r4dcn {
  struct optc tgs[R4DCN_PIPES];
  struct dcn10_hubbub hubbub;
  struct dcn10_mpc mpc;
+ struct dc_bios bios;
+ struct r4dcn_link links[R4DCN_PIPES];
+ struct dce_panel_cntl panel;
+ unsigned panel_constructed;
 };
 extern struct r4dcn *r4dcn_current;
 int r4dcn_enter(struct r4dcn *);

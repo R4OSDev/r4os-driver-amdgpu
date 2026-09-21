@@ -44,4 +44,34 @@ int r4dcn_program(void *);
 int r4dcn_quiesce(void *);
 int r4dcn_fault(const void *);
 void r4dcn_destroy(void *);
+/* Private connector interface. Route addresses are DWORD register indices
+ * from validated board GPIO records; bind verifies them against DCN1. */
+struct r4dcn_route {
+ uint32_t connector,encoder,phy,aux,hpd,caps;
+ uint32_t ddc_a,hpd_a,hpd_shift,hpd_active;
+};
+struct r4dcn_atom {
+ void *context;
+ int (*execute)(void *,uint32_t command,uint32_t *parameters,uint32_t words);
+};
+struct r4dcn_aux {
+ uint32_t address,length,flags; /* bit0 read, bit1 I2C, bit2 MOT, bit3 status request */
+ uint8_t data[16];
+ uint32_t reply,transferred,status;
+};
+struct r4dcn_panel_state {
+ uint32_t powered,lit,pwm_valid,firmware_busy,pwm,period;
+};
+enum r4dcn_link_action { R4DCN_LINK_INIT=0,R4DCN_PANEL_ON,R4DCN_PANEL_OFF,
+ R4DCN_BACKLIGHT_ON,R4DCN_BACKLIGHT_OFF,R4DCN_LINK_DISABLE };
+int r4dcn_link_bind(void *,uint32_t,const struct r4dcn_route *,const struct r4dcn_atom *);
+int r4dcn_link_action(void *,uint32_t,uint32_t);
+int r4dcn_link_aux(void *,uint32_t,struct r4dcn_aux *);
+int r4dcn_link_enable(void *,uint32_t,uint32_t rate,uint32_t lanes,uint32_t spread);
+int r4dcn_link_train(void *,uint32_t,uint32_t pattern,const uint8_t lane_settings[4]);
+int r4dcn_link_hpd(void *,uint32_t,uint32_t *);
+int r4dcn_link_restore_pads(void *,uint32_t);
+int r4dcn_panel_read(void *,struct r4dcn_panel_state *);
+int r4dcn_panel_pwm(void *,uint32_t);
+int r4dcn_link_video(void *,uint32_t,uint32_t pipe,uint32_t *);
 #endif

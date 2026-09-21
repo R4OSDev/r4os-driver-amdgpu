@@ -1,0 +1,27 @@
+--- a/drivers/gpu/drm/amd/display/dc/dce/dce_aux.c
++++ b/drivers/gpu/drm/amd/display/dc/dce/dce_aux.c
+@@ -353,8 +353,13 @@
+ 	*returned_bytes = 0;
+ 
+ 	/* poll to make sure that SW_DONE is asserted */
+-	REG_WAIT(AUX_SW_STATUS, AUX_SW_DONE, 1,
+-				10, aux110->polling_timeout_period/10);
++	/* R4OS: an ordinary AUX reply timeout must not latch the global
++	 * MMIO fault and suppress release_engine(). */
++	for (unsigned i = 0; i <= aux110->polling_timeout_period / 10; i++) {
++		if (REG_READ(AUX_SW_STATUS) & AUX_SW_STATUS__AUX_SW_DONE_MASK)
++			break;
++		udelay(10);
++	}
+ 
+ 	value = REG_READ(AUX_SW_STATUS);
+ 	/* in case HPD is LOW, exit AUX transaction */
+@@ -396,7 +401,7 @@
+ 		/*time_elapsed >= aux_engine->timeout_period
+ 		 *  AUX_SW_STATUS__AUX_SW_HPD_DISCON = at this point
+ 		 */
+-		ASSERT_CRITICAL(false);
++		/* R4OS: a bounded bus timeout is recoverable; release the engine. */
+ 		return AUX_RET_ERROR_TIMEOUT;
+ 	}
+ }

@@ -204,3 +204,20 @@ pub export fn amdgpu_display_poll() callconv(.c) i32 {
     if (!display_runtime.poll()) return 1;
     return display_runtime.result;
 }
+pub export fn amdgpu_panel_bind() callconv(.c) i32 {
+    display_runtime.bindPanel() catch return -1;
+    return 0;
+}
+pub export fn amdgpu_panel_operation(operation: u32, value: u32) callconv(.c) i32 {
+    if (operation < 1 or operation > 5) return -1;
+    const tag: @import("panel_runtime.zig").Operation = @enumFromInt(operation);
+    if (value > 65535) return -1;
+    display_runtime.panelCommand(tag, @intCast(value)) catch return -1;
+    return 0;
+}
+
+pub export fn amdgpu_panel_brightness(output_id: *const a.GfxOutputId) callconv(.c) i32 {
+    if (@intFromPtr(output_id) == 0 or @intFromPtr(output_id) % @alignOf(a.GfxOutputId) != 0) return -1;
+    display_runtime.brightnessCommand(output_id.*) catch return -1;
+    return 0;
+}

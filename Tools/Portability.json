@@ -63,7 +63,8 @@
     "-DCONFIG_DRM_AMD_DC_FP",
     "-std=gnu11",
     "-fno-strict-aliasing",
-    "-Wno-initializer-overrides"
+    "-Wno-initializer-overrides",
+    "-I${source}/drivers/gpu/drm/amd/amdgpu"
   ],
   "units": [
     {
@@ -198,8 +199,29 @@
       "source": "Port/dcn_frontend.c",
       "language": "c",
       "owner_source": true
+    },
+    {
+      "name": "dce_aux",
+      "source": "drivers/gpu/drm/amd/display/dc/dce/dce_aux.c",
+      "language": "c"
+    },
+    {
+      "name": "dce_panel_cntl",
+      "source": "drivers/gpu/drm/amd/display/dc/dce/dce_panel_cntl.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_link_encoder",
+      "source": "drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_link_encoder.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_link",
+      "source": "Port/dcn_link.c",
+      "language": "c",
+      "owner_source": true
     }
   ],
-  "followup": "0.80.16-0.80.18: connectors and final modeset/present handover",
-  "scope": "Linked DCN1 frontend resource/timing/register and original DML planning closure; no Linux runtime. One unscaled linear RGB plane per pipe; links and output activation follow in /16-/18."
+  "followup": "0.80.17 HDMI/hotplug; 0.80.18 output activation and restoration handover",
+  "scope": "Original DCN1 frontend/DML plus native AUX/link/PWM objects; no Linux runtime. R4OS bounded ATOM1.6 command owner and direct eDP protocol. DMCU/ABM-owned PWM remains unavailable; native output activation and full restoration retain /18."
 }

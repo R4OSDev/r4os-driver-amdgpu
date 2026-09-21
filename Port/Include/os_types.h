@@ -22,6 +22,7 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
 #define __printf(a,b) __attribute__((format(printf,a,b)))
 #define noinline __attribute__((noinline))
 #define __maybe_unused __attribute__((unused))
+#define fallthrough __attribute__((fallthrough))
 #define BIT(n) (1ul << (n))
 #define BIT_ULL(n) (1ull << (n))
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
@@ -51,6 +52,7 @@ _Noreturn void r4amd_dcn_assert(const char*,const char*,unsigned);
 void *kzalloc(size_t,unsigned); void *kmalloc(size_t,unsigned); void *kcalloc(size_t,size_t,unsigned); void kfree(const void*);
 void *kvzalloc(size_t,unsigned); void kvfree(const void*);
 void udelay(unsigned long);void msleep(unsigned int);void usleep_range(unsigned long,unsigned long);
+static inline void fsleep(unsigned long us) { udelay(us); }
 int snprintf(char*,size_t,const char*,...);int vsnprintf(char*,size_t,const char*,va_list);
 void r4amd_dcn_log(const char*,...);
 #define pr_debug(...) r4amd_dcn_log(__VA_ARGS__)

@@ -104,6 +104,7 @@ pub const Path = struct {
     i2c_id: ?u8 = null, i2c_slave: u8 = 0, i2c_hardware: bool = false, i2c_engine: u8 = 0, aux_ddc_line: ?u8 = null,
     i2c_pin: ?Pin = null, hpd_id: ?u8 = null, hpd_active: u8 = 0, hpd_pin: ?Pin = null,
     aux_ddc_lut: ?[8]u8 = null, hpd_lut: ?[8]u8 = null,
+    encoder_caps: ?u32 = null,
 };
 pub const ExternalPath = struct {
     connector: u16, encoder: u16, device_tag: u16, acpi_device: u16,
@@ -303,7 +304,9 @@ fn parsePaths(board: *Board, table: Table) Error!void {
         for (board.paths[0..board.path_count]) |existing| if (existing.connector == path.connector) return error.Ambiguous;
         try records(table.bytes, try field(P, "disp_recordoffset", data), &ranges, &path);
         if (table.bytes[3] == 4) {
-            try records(table.bytes, try field(P, "encoder_recordoffset", data), &ranges, null);
+            var encoder_records: Path = .{};
+            try records(table.bytes, try field(P, "encoder_recordoffset", data), &ranges, &encoder_records);
+            path.encoder_caps = encoder_records.encoder_caps;
             try records(table.bytes, try field(P, "extencoder_recordoffset", data), &ranges, null);
         }
         if (path.i2c_id) |id| {
@@ -325,6 +328,10 @@ fn records(bytes: []const u8, start: u16, ranges: *Ranges, path: ?*Path) Error!v
         if (header[1] < 2) return error.Length;
         const data = try part(bytes, offset, header[1]);
         if (path) |p| switch (header[0]) {
+            c.ATOM_ENCODER_CAP_RECORD_TYPE => {
+                if (p.encoder_caps != null) return error.Ambiguous;
+                p.encoder_caps = try field(c.struct_atom_encoder_caps_record, "encodercaps", data);
+            },
             c.ATOM_I2C_RECORD_TYPE => {
                 if (data.len < @sizeOf(c.struct_atom_i2c_record)) return error.Short;
                 if (p.i2c_id != null) return error.Ambiguous;
