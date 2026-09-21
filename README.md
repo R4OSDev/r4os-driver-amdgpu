@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
 AMDGPU is the external R4OS AMD graphics driver owner, targeting the
-Picasso/Vega 8 laptop profile. Version 0.1.5 implements bounded read-only
+Picasso/Vega 8 laptop profile. Version 0.1.6 implements bounded read-only
 PCI/ASIC/UMA identification, VFCT/ATOMBIOS board data acquisition and an
 immutable boot-frame snapshot through the existing display hold.
 The pinned firmware package is validated and retained in driver-owned CPU memory.
@@ -39,7 +39,8 @@ pinned hashes and generated register constants, compile the original DCN1
 math dependency and run the actual init/shutdown and pure-parser host cases.
 `Build.sh test` / `Build.bat test` runs these component checks explicitly.
 Regenerate registers only with `Tools/VerifyIdentity.ps1 -Write` and
-`Tools/VerifyMemory.ps1 -Write`.
+`Tools/VerifyMemory.ps1 -Write`, `Tools/VerifyQueue.ps1 -Write` and
+`Tools/VerifyStart.ps1 -Write`.
 
 The package pins linux-firmware commit
 `2b8daaf611fbade74f26a5b58ec1defe6a02f5e0`: thirteen unchanged binaries,
@@ -82,8 +83,9 @@ invented. WINSVC keeps its adapter/memory-generation/device-local contract.
 The GMC9/ATHUB controller requires parked engines and a held boot display.
 These production primitives and their real SDK/MMIO adapters are exercised
 with host fixtures. The passive entry point only admits the measured layout;
-engine start and firmware execution are wired in 0.80.9. The queue foundation
-is present in 0.80.8 and remains inactive during passive admission.
+the internal PSP/SMU start entry is implemented in 0.80.9. SDMA/GFX ring
+launch and GMC/IH activation are composed by the subsequent engine owners.
+The queue foundation remains inactive during passive admission.
 No new GPU capability is advertised here. A four-CPU QEMU probe validates the
 real generic reserved-span API, old ABI prefixes and common BO/SG lifetime;
 it does not emulate Picasso memory hardware. Full evidence:
@@ -111,6 +113,36 @@ runtime or unload the module. No new global test gate or kernel ABI is added.
 See `Docs/Drivers/AMDQueues08008.txt` and its JSON evidence in the workspace.
 Engine-specific packet emission/ring launch follows in 0.80.10/11; neither
 an IRQ fixture nor a host-written test writeback is physical GPU execution.
+
+The resident native-start owner uses a fresh canonical boot hold, validates
+actual linear DCN1 scanout/routing/timing registers and latches retention
+before PCI bus mastering or firmware effects. SMU10 version/interface replies
+must succeed (driver interface 6 or 7); GFXOFF exit and SDMA power-up precede
+confirmed CP/MEC/SDMA/RLC halts. The startup register generator uses the
+runtime IP_BASE table: the similarly named MP1 SEG0 macro has a different
+address and is not the table consumed by Linux SOC15.
+
+PSP10 gets its real 4 KB GPCOM ring, 4 KB command/fence pages, 512 KB staging
+and naturally aligned 4 MB TMR inside the reserved 16 MB UMA arena. Original
+C headers prove wire offsets, including the distinct MC/system-physical TMR
+addresses. Ordered uploads cover SDMA, CE/PFP/ME, both MECs and separate jump
+tables, the selected RLC restore sections and RLC, then ASD. Firmware-ready
+requires exact fence tokens and successful PSP responses for every image.
+VCN, DMCU and optional TAs remain with their later IP owners. Picasso's SOS
+and SMU come from platform firmware; modern RLC autoload and PSP Mode1 reset
+are not assumed. No display clocks, panel training or ATOM code are changed.
+
+Every startup failure enters the same bounded drain and reverse teardown.
+Late replies can be observed only for cleanup; unconfirmed DMA retains TMR,
+BOs, mappings and the boot hold. Successful teardown unloads ASD, destroys
+TMR, stops the PSP ring, restores PCI command bits and proves the unchanged
+original scanout before releasing boot writers. Recovery compares the actual
+pending generation/preparing-state callback ABI. Four grouped host cases
+exercise protocols, failures, DCN guard and real SDK/MMIO/hold integration.
+`beginNative` / `start_runtime.Owner` are internal start-worker entry points;
+firmware-ready is distinct from a ready device. `mode=native` remains gated
+until the subsequent ring/display owners complete their integration.
+See `Docs/Drivers/AMDStart08009.txt` and its JSON evidence in the workspace.
 
 `IMAGE_SCOPE=none` remains deliberate. The DCN1 math object is not linked
 into the runtime yet; its full link/SIMD/assertion contract belongs to

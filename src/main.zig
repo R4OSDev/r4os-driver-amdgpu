@@ -9,6 +9,7 @@ var probe: @import("probe.zig").Capture = .{};
 pub var firmware_package: @import("firmware_store.zig").Store = .{};
 pub var firmware: @import("bios_source.zig").Capture = .{};
 pub var memory_runtime: @import("memory_owner.zig").Owner = .{};
+pub var native_start: @import("start_runtime.zig").Owner = .{};
 pub var queue_runtime: @import("queue_runtime.zig").Owner = .{};
 pub var memory_layout: ?@import("memory_layout.zig").Layout = null;
 pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
@@ -122,9 +123,20 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     ctx.logInfo("AMDGPU bind: board-and-firmware-admission mappings=0 queues=0 firmware=unsubmitted native-writes=0 fallback=preserved");
     return 0;
 }
+/// Start worker entry used by the subsequent SDMA/GFX/display integration.
+/// The passive bind has already pinned one exact board/firmware generation.
+pub fn beginNative(memory_epoch: u64) !void {
+    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+    const selected = boot_association orelse return error.State;
+    if (!boot_snapshot.valid or memory_layout == null) return error.State;
+    const device = &devices[selected.index];
+    try memory_runtime.prepare(&ctx, &memory_layout.?, device.snapshot.bars[5].base, selected.adapter, memory_epoch);
+    try native_start.prepare(&ctx, &memory_runtime, &device.snapshot, device.measured.chip, &firmware_package,
+        boot_snapshot.boot, selected.uma_offset);
+}
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
-    if (!queue_runtime.close(null) or !memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
+    if (!queue_runtime.close(null) or !native_start.close() or !memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
         ctx.logError("AMDGPU unbind: cleanup=retained module-release=blocked");
         return -1;
     }

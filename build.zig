@@ -17,6 +17,11 @@ pub fn build(b: *std.Build) void {
     queue_check.has_side_effects = true;
     queue_check.step.dependOn(&verify.step);
     artifact.code.generated.file.step.dependOn(&queue_check.step);
+    const start_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
+    start_check.addFileArg(b.path("Tools/VerifyStart.ps1"));
+    start_check.has_side_effects = true;
+    start_check.step.dependOn(&verify.step);
+    artifact.code.generated.file.step.dependOn(&start_check.step);
     const firmware_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     firmware_check.addFileArg(b.path("Tools/VerifyFirmware.ps1"));
     firmware_check.has_side_effects = true;
@@ -28,6 +33,7 @@ pub fn build(b: *std.Build) void {
     const host = b.createModule(.{ .root_source_file = b.path("src/test.zig"), .target = b.graph.host, .optimize = .ReleaseSafe });
     host.addImport("r4os", sdk.createR4osModule(b.graph.host, .ReleaseSafe));
     host.addIncludePath(b.path("ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/include"));
+    host.addIncludePath(b.path("src"));
     const samples = b.addWriteFiles();
     const fw = @import("src/firmware.zig");
     var sample_source: std.ArrayList(u8) = .empty;
@@ -42,6 +48,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = host });
     tests.step.dependOn(&memory_check.step);
     tests.step.dependOn(&queue_check.step);
+    tests.step.dependOn(&start_check.step);
     tests.step.dependOn(&firmware_check.step);
     const run = b.addRunArtifact(tests);
     const test_step = b.step("test", "Check AMD probe ownership and original freestanding DCN1 dependency");

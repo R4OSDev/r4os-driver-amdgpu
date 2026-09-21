@@ -13,7 +13,7 @@ pub const Owner = struct {
         release: a.GfxOwnedBufferRelease = .{}, committed: bool = false,
     };
     self_address: usize = 0, memory: ?r4os.driver_memory.Context = null, layout: ?*l.Layout = null,
-    adapter: u32 = 0, epoch: u64 = 0, budget_live: bool = false, prepared: bool = false, mapping_users: u32 = 0, engine_users: u32 = 0,
+    adapter: u32 = 0, epoch: u64 = 0, budget_live: bool = false, prepared: bool = false, mapping_users: u32 = 0, engine_users: u32 = 0, firmware_users: u32 = 0, start_users: u32 = 0,
     registers: io.Registers = .{}, table_window: io.Window = .{}, context_window: io.Window = .{},
     gart: ?pages.Flat = null, virtual: pages.Virtual = .{}, controller: hubs.Controller = .{},
     records: [128]Record = @splat(.{}), orphan_release: a.GfxOwnedBufferRelease = .{},
@@ -128,7 +128,7 @@ pub const Owner = struct {
     pub fn close(self: *Owner, gate: hubs.Gate) bool {
         if (self.self_address == 0) return true;
         if (self.self_address != @intFromPtr(self)) return false;
-        if (self.mapping_users != 0 or self.engine_users != 0 or self.orphan_release.cookie != 0 or self.virtual.mapped_pages != 0) return false;
+        if (self.mapping_users != 0 or self.engine_users != 0 or self.firmware_users != 0 or self.start_users != 0 or self.orphan_release.cookie != 0 or self.virtual.mapped_pages != 0) return false;
         if (self.gart) |gart| if (gart.mapped_pages != 0) return false;
         if (!self.collect()) return false;
         for (&self.records) |*record| if (record.allocation.serial != 0) return false;

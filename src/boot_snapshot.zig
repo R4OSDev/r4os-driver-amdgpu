@@ -8,9 +8,13 @@ pub const Error = error{ Busy, Unsupported, BootChanged, Buffer, Hold, Map, Rele
 pub const Snapshot = struct {
     memory: ?r4os.driver_memory.Context = null, display: ?r4os.driver_display.Context = null,
     reference: a.GfxBufferReference = .{}, read: a.GfxBufferMap = .{}, held_generation: u64 = 0,
-    boot: a.GfxNativeBootInfo = .{}, sha256: [32]u8 = @splat(0), valid: bool = false,
+    boot: a.GfxNativeBootInfo = .{}, sha256: [32]u8 = @splat(0), valid: bool = false, effects: bool = false,
 
     pub fn capture(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext, adapter: u32, expected: a.GfxNativeBootInfo) Error!void {
+        try self.captureHeld(ctx, adapter, expected, @intFromPtr(&refuseRecovery), 0);
+        if (!self.releaseHold()) return error.Release;
+    }
+    pub fn captureHeld(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext, adapter: u32, expected: a.GfxNativeBootInfo, callback: u64, cookie: u64) Error!void {
         if (self.reference.reference.id != 0 or self.read.lease.id != 0 or self.held_generation != 0) return error.Busy;
         const memory = ctx.memory() orelse return error.Unsupported;
         const display = ctx.graphicsDisplay() orelse return error.Unsupported;
@@ -26,7 +30,7 @@ pub const Snapshot = struct {
         if (self.reference.reference.id == 0 or self.reference.reference.generation == 0) return error.Buffer;
         var state: a.GfxNativeState = .{};
         const status = display.bootHold(&.{ .adapter_id = adapter, .generation = current.generation,
-            .reference = self.reference.reference, .restore_callback = @intFromPtr(&refuseRecovery) }, &state);
+            .reference = self.reference.reference, .restore_callback = callback, .context = cookie }, &state);
         // Even a failed capture can retain a real kernel hold. Keep its token
         // until bootFinish confirms that all boot writers have been restored.
         if (state.retained != 0) self.held_generation = state.generation;
@@ -44,16 +48,22 @@ pub const Snapshot = struct {
         const pointer: [*]const u8 = @ptrFromInt(self.read.cpu_address);
         std.crypto.hash.sha2.Sha256.hash(pointer[0..bytes], &self.sha256, .{});
         self.boot = current;
-        if (!self.releaseHold()) return error.Release;
-        // Keep the BO and its read lease as evidence, but resume boot writers.
-        // Later native effects must acquire a fresh hold and DCN state first.
+        // Caller owns the hold until either abandon, native handover or a
+        // proven recovery; the immutable snapshot remains valid throughout.
         self.valid = true;
+    }
+    pub fn latchEffects(self: *Snapshot) bool {
+        if (!self.valid or self.held_generation == 0 or self.effects) return false;
+        self.effects = true; // must latch locally before a possibly partial call
+        var state: a.GfxNativeState = .{};
+        return self.display.?.bootFinish(self.held_generation, 1, &state) == a.gfx_output_ok and validState(state) and
+            state.retained == 1 and state.generation == self.held_generation and state.outcome == a.gfx_output_outcome_validated;
     }
     fn releaseHold(self: *Snapshot) bool {
         if (self.held_generation == 0) return true;
         const display = self.display orelse return false;
         var state: a.GfxNativeState = .{};
-        if (display.bootFinish(self.held_generation, 0, &state) != a.gfx_output_ok or !validState(state) or
+        if (display.bootFinish(self.held_generation, if (self.effects) 2 else 0, &state) != a.gfx_output_ok or !validState(state) or
             state.retained != 0 or state.outcome != a.gfx_output_outcome_old_preserved or state.state != a.display_state_bootfb) return false;
         self.held_generation = 0; return true;
     }

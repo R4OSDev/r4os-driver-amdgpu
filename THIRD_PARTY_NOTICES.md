@@ -68,3 +68,15 @@ sequences and retains their full original notices in its source. All original
 notices and file hashes are also exported to AMDGPU-SOURCE-NOTICES.txt.
 The bounded mailbox, worker, ring accounting and canonical R4OS lifecycle
 integration are original R4OS code. No Linux kernel/runtime is linked.
+
+## PSP10 / SMU10 startup (0.80.9)
+
+Seventeen further unchanged AMD MIT files bring Sources.json to 73 originals.
+They include PSP GPCOM layouts, runtime SOC15 bases, SMU10 source/messages,
+MP/PWR/SDMA4.1 registers and the DCN1 scanout register reference. The generated
+constants use the actual IP_BASE instance array, including MP1's different
+runtime base. start_psp, start_smu, start_engines and start_firmware port the
+relevant original sequences/sections and retain complete AMD notices.
+start_wire.h evaluates original C layouts without changing those originals.
+All original notices and hashes are also exported into the distribution.
+No Linux runtime is linked and no upstream material is relicensed.

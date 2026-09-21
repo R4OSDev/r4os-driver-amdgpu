@@ -394,6 +394,125 @@
       "bytes": 14753,
       "license": "MIT (embedded notice)",
       "role": "Picasso IH, source IDs, ring and doorbell reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/vega10_reg_init.c",
+      "sha256": "fcf1f2c8c8425676338755cfcc6ca0aa84ddad2e3900f2fc9a10c40c03a5fa2c",
+      "bytes": 5105,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/psp_gfx_if.h",
+      "sha256": "e12b7894cc9cb30a7de5e6707d7af60908941e85fcdcd562dc27b58a9d80f6ee",
+      "bytes": 26757,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_psp.h",
+      "sha256": "9bd9b9409869064d913c0f69dc655c637772d8dc4b18eb023f2be32eed90186f",
+      "bytes": 22703,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.c",
+      "sha256": "b720d8c369bda948d9949a8e1eb8bd8c1c336f5567451b7a99ba78f88598cb55",
+      "bytes": 78507,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/pm/powerplay/smumgr/smu10_smumgr.c",
+      "sha256": "86b8d759f57236a16ab1f5f25e6e40b6bff0d6c02be4734909ac182efdcfee49",
+      "bytes": 9323,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/pm/powerplay/hwmgr/smu10_hwmgr.c",
+      "sha256": "b2822212c9a1df5412a372ab2a5bdd5693f551c6d545a6da1122985d1ce1bb1d",
+      "bytes": 47573,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/pm/powerplay/inc/rv_ppsmc.h",
+      "sha256": "44d37e09f5c4d566f79debf8e43c022471f9b31ea8b41c431e9fe2a52a0c202f",
+      "bytes": 4368,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/pm/powerplay/inc/smu10_driver_if.h",
+      "sha256": "f84367ab6bc54521d3772f324d70b779bab8eea26fc0426697ca042d41e55282",
+      "bytes": 3266,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mp/mp_10_0_offset.h",
+      "sha256": "1ce01261b6a291367db3d08822e4dd8068b33f8878122806129890674387458c",
+      "bytes": 33774,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mp/mp_10_0_sh_mask.h",
+      "sha256": "29175648ced0989a4f0d72e536ba6ccc37ab57f632d93c56c349ab0cbdc4115b",
+      "bytes": 74530,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/pwr/pwr_10_0_offset.h",
+      "sha256": "2a429c1828bd00c18ea6c713a8e56112e31be635a2be327922b2e551ea3fc97f",
+      "bytes": 1411,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/pwr/pwr_10_0_sh_mask.h",
+      "sha256": "b2dcb7f2cba4176d1daf75afaf0091a035b83bed4c3d6e2fba3997d716cc232d",
+      "bytes": 1693,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/sdma0/sdma0_4_1_offset.h",
+      "sha256": "1d0a0960f5458eadce5d340f32297833eaacde4a64e34eb7d6d23bd83b876cd6",
+      "bytes": 47481,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/sdma0/sdma0_4_1_sh_mask.h",
+      "sha256": "104e32f83aac4d4b80ff0ffe178cbcc3872444650268daeaf9201623a5c503f6",
+      "bytes": 173576,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_1_0_offset.h",
+      "sha256": "7c650d2868b406d3a30eb71fd8c544ff68dcc64dcf6304e033f0c59de7c1d090",
+      "bytes": 1408345,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/dcn/dcn_1_0_sh_mask.h",
+      "sha256": "6490e16ac9ec0b73a2c617c6b109ff233e09e0308d8b2082c313d2def062ffb7",
+      "bytes": 5751342,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn10/dcn10_hubp.c",
+      "sha256": "04104b0e61cabd2ba31315cd0be21fadd39c3812e383b24244d52c7c715859ef",
+      "bytes": 44398,
+      "license": "MIT (embedded notice)",
+      "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
     }
   ],
   "patches": []
