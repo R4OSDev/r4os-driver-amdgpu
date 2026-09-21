@@ -7,6 +7,10 @@ pub fn build(b: *std.Build) void {
     verify.addFileArg(b.path("Tools/VerifyIdentity.ps1"));
     verify.has_side_effects = true;
     artifact.code.generated.file.step.dependOn(&verify.step);
+    const firmware_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
+    firmware_check.addFileArg(b.path("Tools/VerifyFirmware.ps1"));
+    firmware_check.has_side_effects = true;
+    artifact.code.generated.file.step.dependOn(&firmware_check.step);
     const native = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     native.addFileArg(b.path("Tools/BuildPort.ps1"));
     native.has_side_effects = true;
@@ -14,11 +18,29 @@ pub fn build(b: *std.Build) void {
     const host = b.createModule(.{ .root_source_file = b.path("src/test.zig"), .target = b.graph.host, .optimize = .ReleaseSafe });
     host.addImport("r4os", sdk.createR4osModule(b.graph.host, .ReleaseSafe));
     host.addIncludePath(b.path("ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/include"));
+    const samples = b.addWriteFiles();
+    const fw = @import("src/firmware.zig");
+    var sample_source: std.ArrayList(u8) = .empty;
+    sample_source.appendSlice(b.allocator, "pub const files = [_][]const u8{\n") catch @panic("OOM");
+    for (0..16) |i| {
+        const entry = if (i == 0) fw.Artifact{ .path = "src/firmware_lock.json", .resource = "AMD-FIRMWARE-LOCK.json", .bytes = 0, .sha256 = "", .upstream_path = "", .git_blob = "" } else if (i < 3) fw.lock.metadata[i - 1] else fw.lock.firmware[i - 3].artifact();
+        _ = samples.addCopyFile(b.path(entry.path), entry.resource);
+        sample_source.appendSlice(b.allocator, b.fmt("    @embedFile(\"{s}\"),\n", .{entry.resource})) catch @panic("OOM");
+    }
+    sample_source.appendSlice(b.allocator, "};\n") catch @panic("OOM");
+    host.addAnonymousImport("firmware_samples", .{ .root_source_file = samples.add("samples.zig", sample_source.items) });
     const tests = b.addTest(.{ .root_module = host });
     tests.step.dependOn(&verify.step);
+    tests.step.dependOn(&firmware_check.step);
     const run = b.addRunArtifact(tests);
     const test_step = b.step("test", "Check AMD probe ownership and original freestanding DCN1 dependency");
     test_step.dependOn(&native.step);
     test_step.dependOn(&run.step);
     artifact.output.generated.file.step.dependOn(&run.step);
+    const audit = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
+    audit.addFileArg(b.path("Tools/VerifyFirmware.ps1"));
+    audit.addArg("-ContainerPath");
+    audit.addFileArg(artifact.output);
+    audit.has_side_effects = true;
+    b.getInstallStep().dependOn(&audit.step);
 }

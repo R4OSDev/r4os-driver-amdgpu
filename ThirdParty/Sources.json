@@ -142,6 +142,69 @@
       "bytes": 3259,
       "license": "MIT (embedded notice)",
       "role": "ATOM firmware header dependency; data constants only"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_ucode.h",
+      "sha256": "222b508dfd40897ead5aecd207ab54c015c311c50e96246a962c1eb29c63b1e0",
+      "bytes": 21072,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_ucode.c",
+      "sha256": "42253cf0e7495c935adcd441a97786c25cf712aa3ddb12d95cddb93972821747",
+      "bytes": 55140,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_psp.c",
+      "sha256": "67cbf0f9b98d92fbd434d7bdf35f8619baad46a5c4c821746481c4c403c92be6",
+      "bytes": 139273,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/psp_v10_0.c",
+      "sha256": "000a18bbef17562424d6eed558d4f9a30c2a05b1153eddbbb0bf1af8eea42678",
+      "bytes": 5432,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/gfx_v9_0.c",
+      "sha256": "4bec93d751be194c4f52e4b96764a9f11934cacbee5ff29d60c296a8a1d4afda",
+      "bytes": 273401,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_rlc.c",
+      "sha256": "181a15cb184290a50b384f8e213b282ddef3a3b1862d1e1961c50871381bb70e",
+      "bytes": 21641,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/sdma_v4_0.c",
+      "sha256": "2511c61169e92be69b8ceb9291df5362f7b74e39d85f45e689ce342df3b2f1a6",
+      "bytes": 90196,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.c",
+      "sha256": "1437aff7a1df69d33406e39266764b88f7995c8eb5c54a9f1aa0562eb3e22f36",
+      "bytes": 45368,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c",
+      "sha256": "e8d467edc38614dc89c2609aa1a4c0baabeaae216b084844e335ece4ea4c1a52",
+      "bytes": 444168,
+      "license": "MIT (embedded notice)",
+      "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
     }
   ],
   "patches": []

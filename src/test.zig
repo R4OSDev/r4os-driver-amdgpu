@@ -6,6 +6,9 @@ const driver = @import("main.zig");
 const identity = @import("identity.zig");
 const boot = @import("boot.zig");
 const regs = @import("registers.zig");
+const fw = @import("firmware.zig");
+const package_store = @import("firmware_store.zig");
+const samples = @import("firmware_samples");
 const bios_fixture = @import("bios_fixture.zig");
 
 const Fixture = struct {
@@ -47,6 +50,22 @@ const Fixture = struct {
     var heap_bytes: [1024 * 1024]u8 align(16) = undefined;
     var shadow_bytes: [256 * 1024]u8 align(4096) = undefined;
     var pixels: [4096]u8 = undefined;
+    var package_bytes: [fw.max_package_bytes]u8 align(16) = undefined;
+    var package_allocated = false;
+    var package_missing: ?usize = null;
+    var package_bad_size = false;
+    var package_bad_generation = false;
+    var package_stale = false;
+    var package_short_read = false;
+    var package_corrupt = false;
+    var package_deadline = false;
+    var package_clock_regression = false;
+    var package_partial_allocation = false;
+    var package_fail_release = false;
+    var package_duplicate_handle = false;
+    var package_reads: usize = 0;
+    var package_stats: usize = 0;
+    var package_seen: [16]bool = @splat(false);
     var allocated = false;
     var buffer_live = false;
     var lease_live = false;
@@ -67,6 +86,10 @@ const Fixture = struct {
     fn reset() void {
         config = @splat(0); page = @splat(0);
         bios_fixture.vfct(&vfct); bios_fixture.rom(&shadow_bytes); pixels = @splat(0x5a);
+        package_allocated = false; package_missing = null; package_bad_size = false; package_bad_generation = false;
+        package_stale = false; package_short_read = false; package_corrupt = false; package_deadline = false;
+        package_clock_regression = false; package_partial_allocation = false; package_fail_release = false;
+        package_duplicate_handle = false; package_reads = 0; package_stats = 0; package_seen = @splat(false);
         allocated = false; buffer_live = false; lease_live = false; held = false;
         acpi_status = 0; fail_read = false; fail_heap_release = false; fail_hold = false; fail_finish = false;
         fail_buffer_unmap = false; fail_buffer_release = false; fail_buffer_map = false; expire = false;
@@ -183,16 +206,55 @@ const Fixture = struct {
         out.* = .{ .allocate = @intFromPtr(&allocate), .release = @intFromPtr(&heapRelease) }; return 0;
     }
     fn allocate(bytes: u64, alignment: u32, out: *a.DriverHeapAllocation) callconv(.c) i32 {
+        if (bytes > heap_bytes.len) {
+            std.debug.assert(!package_allocated and bytes <= package_bytes.len and alignment == 16);
+            package_allocated = true; heap_calls += 1;
+            out.* = .{ .handle = 0x100000002, .cpu_address = @intFromPtr(&package_bytes), .byte_length = bytes, .alignment = 16 };
+            return if (package_partial_allocation) -1 else 0;
+        }
         std.debug.assert(!allocated and bytes <= heap_bytes.len and alignment == 16); allocated = true; heap_calls += 1;
         out.* = .{ .handle = 0x100000001, .cpu_address = @intFromPtr(&heap_bytes), .byte_length = bytes, .alignment = 16 }; return 0;
     }
     fn heapRelease(handle: u64) callconv(.c) i32 {
+        if (handle == 0x100000002) {
+            std.debug.assert(package_allocated);
+            if (package_fail_release) return -1;
+            package_allocated = false; return 0;
+        }
         std.debug.assert(allocated and handle == 0x100000001); if (fail_heap_release) return -1; allocated = false; return 0;
     }
     fn resourceQuery(out: *a.DriverResourceApi) callconv(.c) i32 {
-        out.* = .{ .now_ns = @intFromPtr(&now), .acpi_stat = @intFromPtr(&acpiStat), .acpi_read_at = @intFromPtr(&acpiRead) }; return 0;
+        out.* = .{ .stat = @intFromPtr(&fileStat), .read_at = @intFromPtr(&fileRead), .now_ns = @intFromPtr(&now), .acpi_stat = @intFromPtr(&acpiStat), .acpi_read_at = @intFromPtr(&acpiRead) }; return 0;
     }
-    fn now() callconv(.c) u64 { return if (expire and resource_calls > 2) 999999999 else 1000; }
+    fn now() callconv(.c) u64 {
+        if (package_reads > 0) {
+            if (package_deadline) return 3000001000;
+            if (package_clock_regression) return 500;
+        }
+        return if (expire and resource_calls > 2) 999999999 else 1000;
+    }
+    fn fileStat(name: [*]const u8, bytes: u32, out: *a.DriverResourceInfo) callconv(.c) i32 {
+        package_stats += 1;
+        for (0..package_store.count) |i| {
+            if (!std.mem.eql(u8, name[0..bytes], package_store.artifact(i).resource)) continue;
+            package_seen[i] = true;
+            if (package_missing == i) return a.driver_resource_error_not_found;
+            out.* = .{ .handle = 0x300000001 + @as(u64, if (package_duplicate_handle) 0 else i), .byte_length = samples.files[i].len,
+                .module_generation = if ((package_bad_generation and i == 3) or (package_stale and package_reads > 0)) 4 else 3 };
+            if (package_bad_size) out.byte_length += 1;
+            return 0;
+        }
+        return a.driver_resource_error_not_found;
+    }
+    fn fileRead(handle: u64, offset: u64, out: [*]u8, bytes: u32, deadline: u64) callconv(.c) i32 {
+        std.debug.assert(handle >= 0x300000001 and handle < 0x300000001 + package_store.count and bytes > 0 and bytes <= 65536 and deadline == 2000001000);
+        const i: usize = @intCast(handle - 0x300000001);
+        std.debug.assert(offset <= samples.files[i].len and bytes <= samples.files[i].len - offset);
+        package_reads += 1;
+        @memcpy(out[0..bytes], samples.files[i][offset..][0..bytes]);
+        if (package_corrupt and offset == 0) out[0] ^= 1;
+        return @intCast(if (package_short_read) bytes - 1 else bytes);
+    }
     fn acpiStat(signature: u32, index: u32, out: *a.DriverFirmwareTableInfo) callconv(.c) i32 {
         std.debug.assert(signature == std.mem.readInt(u32, "VFCT", .little)); resource_calls += 1;
         if (acpi_status != 0) return acpi_status;
@@ -236,7 +298,7 @@ const Fixture = struct {
     fn stop() !void {
         try t.expectEqual(@as(i32, 0), driver.amdgpu_shutdown());
         try t.expectEqual(@as(i32, 0), driver.amdgpu_shutdown());
-        try t.expect(!live and !partial and !allocated and !buffer_live and !lease_live and !held and driver.boot_association == null);
+        try t.expect(!live and !partial and !allocated and !package_allocated and !buffer_live and !lease_live and !held and driver.boot_association == null);
     }
 };
 
@@ -341,7 +403,7 @@ test "AMD actual init and unbind preserve software boot and bound source-backed 
     try t.expectEqual(@as(i32, -3), driver.amdgpu_init(&f.api)); try t.expect(f.maps == 0); try f.stop();
 }
 
-test { _ = @import("bios_test.zig"); }
+test { _ = @import("bios_test.zig"); _ = @import("firmware_test.zig"); }
 
 test "AMD board acquisition and boot capture retain failed cleanup and never execute firmware" {
     const f = Fixture;
@@ -398,4 +460,50 @@ test "AMD board acquisition and boot capture retain failed cleanup and never exe
     try t.expectEqual(@as(i32, -10), driver.amdgpu_init(&f.api)); try t.expect(f.held and f.buffer_live and driver.boot_snapshot.held_generation != 0);
     try t.expectEqual(@as(i32, -1), driver.amdgpu_shutdown());
     f.fail_finish = false; try f.stop();
+}
+
+
+test "AMD actual firmware package admission enforces profile, bytes, epochs, deadlines and retained ownership" {
+    const f = Fixture;
+    defer { f.package_fail_release = false; f.fail_heap_release = false; _ = driver.amdgpu_shutdown(); }
+    for ([_]u8{ 0xa1, 0xc7, 0xc8, 0xcf, 0xd0, 0xd7, 0xd8, 0xdf, 0xe0 }) |revision| {
+        f.reset(); f.config[2] = 0x03000000 | @as(u32, revision);
+        try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api));
+        const store = &driver.firmware_package;
+        try t.expect(store.valid and store.generation == 3 and f.package_allocated);
+        const am4 = (revision >= 0xc8 and revision <= 0xcf) or (revision >= 0xd8 and revision <= 0xdf);
+        try t.expectEqual(if (am4) fw.Socket.am4 else .fp5, store.profile.?.socket);
+        try t.expect((store.container(.rlc_am4) != null) == am4);
+        try t.expect((store.container(.rlc) != null) != am4);
+        for (fw.lock.firmware, 0..) |entry, i| try t.expectEqual(store.profile.?.includes(entry.role), f.package_seen[i + 3]);
+        try f.stop();
+    }
+    // Every selected entry, including both legal files and the package lock,
+    // must be present before any CPU allocation/hold. The unused RLC is not read.
+    for (0..package_store.count) |missing| {
+        if (missing >= 3 and fw.lock.firmware[missing - 3].role == .rlc) continue;
+        f.reset(); f.package_missing = missing;
+        try t.expectEqual(@as(i32, -11), driver.amdgpu_init(&f.api));
+        try t.expect(!driver.firmware_package.valid and f.hold_calls == 0 and !f.package_allocated and f.package_reads == 0);
+        try t.expect(std.mem.indexOf(u8, f.saw_reason[0..f.reason_len], package_store.artifact(missing).resource) != null);
+        try f.stop();
+    }
+    inline for (.{ "package_bad_size", "package_bad_generation", "package_stale", "package_short_read", "package_corrupt", "package_deadline", "package_clock_regression", "package_partial_allocation", "package_duplicate_handle" }) |fault| {
+        f.reset(); @field(f, fault) = true;
+        try t.expectEqual(@as(i32, -11), driver.amdgpu_init(&f.api));
+        try t.expect(!driver.firmware_package.valid and driver.firmware_package.container(.asd) == null and f.hold_calls == 0);
+        try f.stop();
+    }
+    f.reset(); f.package_partial_allocation = true; f.package_fail_release = true;
+    try t.expectEqual(@as(i32, -11), driver.amdgpu_init(&f.api));
+    try t.expectEqual(@as(i32, -1), driver.amdgpu_shutdown());
+    try t.expect(f.package_allocated and f.allocated and driver.firmware_package.allocation.handle != 0);
+    try t.expectEqual(@as(i32, -1), driver.amdgpu_init(&f.api));
+    f.package_fail_release = false; try f.stop();
+    f.reset(); f.strap = 0x080015d8;
+    try t.expectEqual(@as(i32, -7), driver.amdgpu_init(&f.api));
+    try t.expect(f.package_stats == 0 and f.package_reads == 0); try f.stop();
+    f.reset(); f.boot_info.policy = 1;
+    try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api));
+    try t.expect(f.package_stats == 0 and f.package_reads == 0 and f.heap_calls == 0); try f.stop();
 }

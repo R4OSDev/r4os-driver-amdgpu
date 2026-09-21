@@ -26,3 +26,22 @@ ObjectID.h and bios_parser2.c are read-only implementation references.
 These files come from the same pinned Linux 7.2.4 archive. Original
 notices remain intact; paths, roles and SHA256 are in ThirdParty/Sources.json.
 No x86 option-ROM code or Linux driver runtime is executed or linked.
+
+## AMD firmware package (0.80.6)
+
+Firmware/amdgpu contains thirteen unchanged original binaries from
+linux-firmware commit 2b8daaf611fbade74f26a5b58ec1defe6a02f5e0.
+Firmware/LICENSES/LICENSE.amdgpu and Firmware/WHENCE retain the original
+AMD binary redistribution terms and provenance. WHENCE's historical
+LICENSE.amdgpu basename refers to the preserved file under LICENSES/.
+They are shipped as named R4M0 resources with the package lock. Firmware
+is not relicensed, disassembled, modified or executed by the host tools.
+All original file identities and metadata are in src/firmware_lock.json.
+
+Nine additional unchanged MIT sources from Linux 7.2.4 document firmware
+headers, names, RLC selection, PSP/TA, VCN/SDMA and DMCU dependencies.
+Their notices and SHA256 identities are preserved in ThirdParty/Sources.json.
+The format parser implements bounded reads of public container layouts;
+it does not incorporate a Linux driver runtime or reverse engineer microcode.
+Tools/ExportLegal.ps1 emits the complete original source notices and copies
+both original firmware legal files for distribution images.
