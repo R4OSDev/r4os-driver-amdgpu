@@ -5,6 +5,7 @@ const a = @import("r4os").abi;
 const driver = @import("main.zig");
 const identity = @import("identity.zig");
 const boot = @import("boot.zig");
+const memregs = @import("memory_registers.zig");
 const regs = @import("registers.zig");
 const fw = @import("firmware.zig");
 const package_store = @import("firmware_store.zig");
@@ -156,9 +157,12 @@ const Fixture = struct {
     }
     fn memoryQuery(output: *a.GfxDriverMemoryApi) callconv(.c) i32 {
         output.* = .{ .mmio_map = @intFromPtr(&map), .mmio_unmap = @intFromPtr(&unmap), .collect = @intFromPtr(&collect),
-            .buffer_create = @intFromPtr(&bufferCreate), .buffer_map = @intFromPtr(&bufferMap),
+            .reserved_span = @intFromPtr(&reservedSpan), .buffer_create = @intFromPtr(&bufferCreate), .buffer_map = @intFromPtr(&bufferMap),
             .buffer_unmap = @intFromPtr(&bufferUnmap), .buffer_release = @intFromPtr(&bufferRelease) };
         return a.gfx_buffer_result_ok;
+    }
+    fn reservedSpan(base: u64, bytes: u64) callconv(.c) i32 {
+        return if (base == @as(u64, fb_offset) << 24 and bytes == @as(u64, megabytes) * 1024 * 1024) 1 else -1;
     }
     fn map(request: *const a.GfxMmioRequest, output: *a.GfxMmioWindow) callconv(.c) i32 {
         if (request.resource_base == 0xd0000000) {
@@ -171,7 +175,7 @@ const Fixture = struct {
                 .physical_address = request.resource_base, .byte_length = shadow_bytes.len, .cache_policy = request.cache_policy };
             return a.gfx_buffer_result_ok;
         }
-        std.debug.assert(!live and !partial and request.resource_base == 0xf0000000 and request.resource_bytes == regs.required_prefix and
+        std.debug.assert(!live and !partial and request.resource_base == 0xf0000000 and request.resource_bytes == memregs.required_prefix and
             request.byte_length == 4096 and request.cache_policy == a.gfx_buffer_cache_uncached and request.resource_flags == 0);
         maps += 1;
         if (maps == fail_map) { partial = true; return -1; }
@@ -179,7 +183,12 @@ const Fixture = struct {
         if (request.byte_offset == regs.strap & ~@as(u64, 0xfff)) {
             page[regs.strap % 4096 / 4] = if (unstable and maps >= 3) strap + 0x1000000 else strap;
             page[regs.memsize % 4096 / 4] = megabytes;
+        } else if (request.byte_offset == memregs.mm.MC_VM_FB_LOCATION_BASE & ~@as(u64, 0xfff)) {
+            page[memregs.mm.MC_VM_FB_LOCATION_BASE % 4096 / 4] = 0x100;
+            page[memregs.mm.MC_VM_FB_LOCATION_TOP % 4096 / 4] = 0x11f;
         } else {
+            page[memregs.gfx.MC_VM_FB_LOCATION_BASE % 4096 / 4] = 0x100;
+            page[memregs.gfx.MC_VM_FB_LOCATION_TOP % 4096 / 4] = 0x11f;
             std.debug.assert(request.byte_offset == regs.fb_offset & ~@as(u64, 0xfff));
             page[regs.fb_offset % 4096 / 4] = fb_offset;
         }
@@ -308,7 +317,7 @@ test "AMD actual init and unbind preserve software boot and bound source-backed 
     // PCI revision C8 is not ASIC revision 8: the two identities are separate.
     f.reset();
     try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api));
-    try t.expect(f.saw_picasso and !f.saw_raven2 and f.maps == 3 and f.unmaps == 3 and !f.live);
+    try t.expect(f.saw_picasso and !f.saw_raven2 and f.maps == 4 and f.unmaps == 4 and !f.live);
     try t.expectEqual(boot.Path.uma_direct, driver.boot_association.?.path);
     try t.expectEqual(@as(u64, 0x100000), driver.boot_association.?.uma_offset);
     try t.expectEqual(@as(i32, -1), driver.amdgpu_init(&f.api));
@@ -348,14 +357,14 @@ test "AMD actual init and unbind preserve software boot and bound source-backed 
     f.reset(); f.strap = 0xffffffff;
     try t.expectEqual(@as(i32, -6), driver.amdgpu_init(&f.api)); try t.expect(!f.live); try f.stop();
     f.reset(); f.unstable = true;
-    try t.expectEqual(@as(i32, -6), driver.amdgpu_init(&f.api)); try t.expect(!f.live and f.unmaps == 3); try f.stop();
+    try t.expectEqual(@as(i32, -6), driver.amdgpu_init(&f.api)); try t.expect(!f.live and f.unmaps == 4); try f.stop();
     f.reset(); f.pci_loss = true;
     try t.expectEqual(@as(i32, -5), driver.amdgpu_init(&f.api)); try t.expect(!f.live); try f.stop();
     f.reset(); f.pm_loss = true;
     try t.expectEqual(@as(i32, -5), driver.amdgpu_init(&f.api)); try t.expect(!f.live); try f.stop();
     f.reset(); f.boot_loss = true;
     try t.expectEqual(@as(i32, -3), driver.amdgpu_init(&f.api)); try t.expect(driver.boot_association == null); try f.stop();
-    for (1..4) |failure| {
+    for (1..5) |failure| {
         f.reset(); f.fail_map = failure;
         try t.expectEqual(@as(i32, -6), driver.amdgpu_init(&f.api));
         try t.expect(!f.live and !f.partial and f.maps == failure); try f.stop();
@@ -372,7 +381,7 @@ test "AMD actual init and unbind preserve software boot and bound source-backed 
     try t.expect(f.partial and !f.live and f.saw_retained); try t.expectEqual(@as(i32, -1), driver.amdgpu_shutdown());
     f.fail_collect = false; try f.stop();
     f.reset(); f.count = 2;
-    try t.expectEqual(@as(i32, -7), driver.amdgpu_init(&f.api)); try t.expect(driver.boot_association == null and f.maps == 6); try f.stop();
+    try t.expectEqual(@as(i32, -7), driver.amdgpu_init(&f.api)); try t.expect(driver.boot_association == null and f.maps == 8); try f.stop();
     f.reset(); f.boot_info.physical_address = 0xd0100000;
     try t.expectEqual(@as(i32, -7), driver.amdgpu_init(&f.api)); try f.stop(); // BAR base alone is no proof.
     f.reset(); f.config[0x100 / 4] = 0x00010015; f.config[0x104 / 4] = 1 << 12; f.config[0x108 / 4] = (8 << 8) | (1 << 5);
@@ -403,7 +412,7 @@ test "AMD actual init and unbind preserve software boot and bound source-backed 
     try t.expectEqual(@as(i32, -3), driver.amdgpu_init(&f.api)); try t.expect(f.maps == 0); try f.stop();
 }
 
-test { _ = @import("bios_test.zig"); _ = @import("firmware_test.zig"); }
+test { _ = @import("bios_test.zig"); _ = @import("firmware_test.zig"); _ = @import("memory_test.zig"); }
 
 test "AMD board acquisition and boot capture retain failed cleanup and never execute firmware" {
     const f = Fixture;
@@ -433,12 +442,12 @@ test "AMD board acquisition and boot capture retain failed cleanup and never exe
     f.reset(); f.api.heap_query = null;
     try t.expectEqual(@as(i32, -9), driver.amdgpu_init(&f.api)); try t.expect(f.resource_calls == 0); try f.stop();
     f.reset(); f.acpi_status = a.driver_resource_error_source; f.measuredBar();
-    try t.expectEqual(@as(i32, -9), driver.amdgpu_init(&f.api)); try t.expect(f.maps == 3 and f.hold_calls == 0); try f.stop(); // damaged ACPI never falls through
+    try t.expectEqual(@as(i32, -9), driver.amdgpu_init(&f.api)); try t.expect(f.maps == 4 and f.hold_calls == 0); try f.stop(); // damaged ACPI never falls through
     f.reset(); f.acpi_status = a.driver_resource_error_not_found; f.measuredBar();
-    try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api)); try t.expect(driver.firmware.source == .measured_bar0_shadow and f.maps == 4 and f.unmaps == 4); try f.stop();
+    try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api)); try t.expect(driver.firmware.source == .measured_bar0_shadow and f.maps == 5 and f.unmaps == 5); try f.stop();
     f.reset(); f.acpi_status = a.driver_resource_error_not_found; f.measuredBar(); f.shadow_bytes[0] = 0;
     try t.expectEqual(@as(i32, -9), driver.amdgpu_init(&f.api)); try t.expect(f.live and f.hold_calls == 0); try f.stop();
-    f.reset(); f.acpi_status = a.driver_resource_error_not_found; f.measuredBar(); f.fail_map = 4;
+    f.reset(); f.acpi_status = a.driver_resource_error_not_found; f.measuredBar(); f.fail_map = 5;
     try t.expectEqual(@as(i32, -9), driver.amdgpu_init(&f.api)); try t.expect(f.partial and f.allocated); f.fail_collect = true;
     try t.expectEqual(@as(i32, -1), driver.amdgpu_shutdown()); try t.expect(f.partial and f.allocated);
     f.fail_collect = false; try f.stop();

@@ -45,3 +45,15 @@ The format parser implements bounded reads of public container layouts;
 it does not incorporate a Linux driver runtime or reverse engineer microcode.
 Tools/ExportLegal.ps1 emits the complete original source notices and copies
 both original firmware legal files for distribution images.
+
+## GMC9, GFXHUB, MMHUB and ATHUB memory (0.80.7)
+
+The additional original AMD MIT Linux 7.2.4 files and register definitions
+are pinned in ThirdParty/Sources.json (46 original files in total).
+memory_hubs.zig ports the relevant Picasso hub programming and invalidation
+sequence from gfxhub_v1_0.c, mmhub_v1_0.c, athub_v1_0.c and gmc_v9_0.c.
+The page formats, physical-address conversion and memory types follow
+amdgpu_vm.h, amdgpu_vm.c, amdgpu_gmc.c and vega10_enum.h. Original complete
+notices remain in the unchanged source files and in the exported
+AMDGPU-SOURCE-NOTICES.txt. No Linux scheduler, TTM, DRM or runtime is linked.
+The new owner, allocation, lifetime and SDK integration is R4OS code.

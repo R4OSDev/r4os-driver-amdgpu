@@ -8,7 +8,7 @@ pub const Range = struct {
             base >= self.base and base - self.base < self.bytes and bytes <= self.bytes - (base - self.base);
     }
 };
-pub const Measurement = struct { chip: id.Chip, uma: ?Range = null };
+pub const Measurement = struct { chip: id.Chip, uma: ?Range = null, mc: ?Range = null };
 pub const Device = struct { snapshot: id.Snapshot, measured: Measurement };
 pub const Path = enum { uma_direct, measured_bar0_alias };
 pub const Association = struct { index: usize, adapter: u32, generation: u64, path: Path, uma_offset: u64 };

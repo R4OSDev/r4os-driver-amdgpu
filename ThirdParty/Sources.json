@@ -205,6 +205,125 @@
       "bytes": 444168,
       "license": "MIT (embedded notice)",
       "role": "firmware layout, profile and loading dependency reference; no Linux driver linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/mmhub_v1_0.c",
+      "bytes": 30094,
+      "sha256": "5fb631a7a26df618d1915b19825b8853370471ef151f2f6900f3d61bfff4dcae",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/athub_v1_0.c",
+      "bytes": 3164,
+      "sha256": "89686fad6b5589175f4d7d1f1bf093aa6961a82afca39173f1831a6ee10f8b2d",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_gmc.c",
+      "bytes": 50668,
+      "sha256": "3455c27f0d6f32ab1ee1afc6dd109d2805618855ebb15bdc6b1672e29707c79e",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_vm.h",
+      "bytes": 23220,
+      "sha256": "77e800c81b2efb28d279aba03385b0c06289999e8f71afcedf1ee9ace160b2dd",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_gmc.h",
+      "bytes": 16961,
+      "sha256": "6c1ead590e2c49fd80c1e6b17cd80bee0d926c80dce94e22c638d34ff95532af",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/hdp_v4_0.c",
+      "bytes": 6154,
+      "sha256": "69cd5621183f2c67b3218a117a9eaa300e9dfc9b5eb1433b47b2b21a307dde6d",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/gc/gc_9_1_sh_mask.h",
+      "bytes": 3303247,
+      "sha256": "d7b33d2cf0dbc76f1f920fdb29e71a9cb047b5c49cd3a2a2f8cf9603fd896897",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/gc/gc_9_0_default.h",
+      "bytes": 344221,
+      "sha256": "b6082aa57dd839f112161ea7ec20a47379bab592675296e298665ed6f46e4288",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_1_0_offset.h",
+      "bytes": 207676,
+      "sha256": "2d76d8351c78f4479dd7eb1cd74db2b1694dcb6ebe933fee3739d4ec8fd1e8ba",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_1_0_sh_mask.h",
+      "bytes": 1119149,
+      "sha256": "4826c68e3e7699f1ac7f0e7b07a67b14e54387630f0a37174798bdd11da53fe4",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_1_0_default.h",
+      "bytes": 88241,
+      "sha256": "c69eda47c0fd7f73900ac1cfc1a79ddeca5f353931e252887b2efe169bcb89fa",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/athub/athub_1_0_offset.h",
+      "bytes": 17878,
+      "sha256": "414141c749e6dbb4b740d0dc69b209b05e56f025fbf06dbd5f974864809768a0",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/athub/athub_1_0_sh_mask.h",
+      "bytes": 107516,
+      "sha256": "695d3f580890e6b1d5b10eb6f4016f23a8f43518db79d52a15f9cac76c9c8f84",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/hdp/hdp_4_0_offset.h",
+      "bytes": 8162,
+      "sha256": "5c806e71b11610d067fb781b2d9cec871f27dc4a4751d6dcae6798561fabd0bc",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/hdp/hdp_4_0_sh_mask.h",
+      "bytes": 30754,
+      "sha256": "8d2aac333fa607587d5adb6b88fd545556c423943ee92fd05cfcf50ff52b3555",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9/GFXHUB/MMHUB/ATHUB memory reference; original Linux driver not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_vm.c",
+      "bytes": 85884,
+      "sha256": "7dbbf815f5d8ecc8f7c96f2b18c9d27b6633853da4d6268f087d26df0a70e526",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9 PTE physical address and memory type reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/vega10_enum.h",
+      "bytes": 838592,
+      "sha256": "cb4d03b3ee3fa28a240434f8742434facafb9b670f3dec9b49c1295a4d70a83d",
+      "license": "MIT (embedded notice)",
+      "role": "GMC9 PTE physical address and memory type reference"
     }
   ],
   "patches": []

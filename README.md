@@ -1,14 +1,14 @@
 ﻿# AMDGPU
 
 AMDGPU is the external R4OS AMD graphics driver owner, targeting the
-Picasso/Vega 8 laptop profile. Version 0.1.3 implements bounded read-only
+Picasso/Vega 8 laptop profile. Version 0.1.4 implements bounded read-only
 PCI/ASIC/UMA identification, VFCT/ATOMBIOS board data acquisition and an
 immutable boot-frame snapshot through the existing display hold.
 The pinned firmware package is validated and retained in driver-owned CPU memory.
 Only PCI 1002:15d8 Picasso is admitted; Raven2 is identified separately.
 
 `OPTION AMDGPU mode=auto` (the default) and `mode=passive` perform this
-read/capture and firmware-admission path. `mode=native` reports that the native runtime is missing.
+read/capture, firmware admission and UMA reservation plan. `mode=native` reports that the native runtime is missing.
 The effective kernel software policy, including the one-shot boot-menu
 override, wins before PCI, MMIO, heap allocation or firmware reads.
 No BAR sizing writes, bus mastering, ROM commands, GPU queues or native
@@ -38,7 +38,8 @@ PowerShell 7 orchestration and local Settings.R4S. Normal builds verify all
 pinned hashes and generated register constants, compile the original DCN1
 math dependency and run the actual init/shutdown and pure-parser host cases.
 `Build.sh test` / `Build.bat test` runs these component checks explicitly.
-Regenerate registers only with `Tools/VerifyIdentity.ps1 -Write`.
+Regenerate registers only with `Tools/VerifyIdentity.ps1 -Write` and
+`Tools/VerifyMemory.ps1 -Write`.
 
 The package pins linux-firmware commit
 `2b8daaf611fbade74f26a5b58ec1defe6a02f5e0`: thirteen unchanged binaries,
@@ -60,6 +61,35 @@ resources fail before a display hold; failed release prevents module unload.
 `Tools/VerifyFirmware.ps1` checks the exact manifest/resource/hash set.
 `Tools/ExportLegal.ps1 -OutputDirectory PATH` exports original firmware
 notices and the complete source notices for distribution images.
+
+The memory owner distinguishes CPU virtual addresses, CPU-physical UMA,
+MC aperture addresses, pinned system DMA pages and GPU virtual addresses.
+GFXHUB and MMHUB framebuffer location must agree. The generic optional
+`reserved_span` API proves complete boot-map reservation before UMA admission;
+no pages are added to host RAM or charged twice. Boot/firmware reservations
+form a union. Separate 16 MB firmware, 2 MB GART-table, 1 MB ring and 2 MB
+context/table arenas leave the actual remainder as native BO budget.
+ATOM v2.1 driver scratch is a CPU-interpreter request, not a VRAM region.
+
+`memory_owner.zig` provides WC table windows, canonical native BO ownership,
+budgeting, flat 1 GB GART and four-level 48-bit GPU VA. `memory_mapping.zig`
+retains shared SG DMA or native UMA references, GPU-VA leases and exact fence
+identities. It removes translations and confirms both hub TLB acknowledgements
+before releasing backing; failures retain the owner. CPU-WB system mappings
+and CPU-WC UMA mappings remain separate; no app CPU map of device-local BOs is
+invented. WINSVC keeps its adapter/memory-generation/device-local contract.
+
+The GMC9/ATHUB controller requires parked engines and a held boot display.
+These production primitives and their real SDK/MMIO adapters are exercised
+with host fixtures. The passive entry point only admits the measured layout;
+engine start and firmware execution are wired in 0.80.9, queues in 0.80.8.
+No new GPU capability is advertised here. A four-CPU QEMU probe validates the
+real generic reserved-span API, old ABI prefixes and common BO/SG lifetime;
+it does not emulate Picasso memory hardware. Full evidence:
+`Docs/Drivers/AMDSpeicher08007.txt` and its JSON companion in the workspace.
+
+The firmware display label is `linux-firmware-2b8daaf611fb`; the complete
+40-character revision and exact file hashes remain in the package lock.
 
 `IMAGE_SCOPE=none` remains deliberate. The DCN1 math object is not linked
 into the runtime yet; its full link/SIMD/assertion contract belongs to

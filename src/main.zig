@@ -8,6 +8,8 @@ var driver_api: ?*const a.DriverApi = null;
 var probe: @import("probe.zig").Capture = .{};
 pub var firmware_package: @import("firmware_store.zig").Store = .{};
 pub var firmware: @import("bios_source.zig").Capture = .{};
+pub var memory_runtime: @import("memory_owner.zig").Owner = .{};
+pub var memory_layout: ?@import("memory_layout.zig").Layout = null;
 pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
 // Resident bounded snapshots never copy a large pool onto the init stack.
 var devices: [8]boot.Device = undefined;
@@ -21,7 +23,7 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(api);
     if (!ctx.apiCompatible() or driver_api != null) return -1;
     driver_api = api;
-    device_count = 0; boot_association = null;
+    device_count = 0; boot_association = null; memory_layout = null;
     // This is the effective kernel policy, including the one-shot software
     // boot-menu override. Never reconstruct it from a configuration string.
     const display = ctx.graphicsDisplay() orelse return reject("boot-policy-unavailable", -3);
@@ -62,8 +64,8 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
         const chip = measurement.chip;
         log("AMDGPU ip: gc={x} sdma={x} dcn={x} nbio={x} psp={x} smu={x} vcn={x} compiler={s} hardware-verified=no",
             .{ chip.gc, chip.sdma, chip.dcn, chip.nbio, chip.psp, chip.smu, chip.vcn, chip.compiler });
-        log("AMDGPU bar5={x} measured-bytes={d} probe-prefix=b000 mappings=0 native-writes=0", .{ snapshot.bars[5].base, snapshot.bars[5].bytes });
-        if (measurement.uma) |uma| log("AMDGPU uma: physical={x} bytes={d} source=mc-fb-offset+rcc-memsize allocation=unavailable", .{ uma.base, uma.bytes });
+        log("AMDGPU bar5={x} measured-bytes={d} probe-prefix=memory-hubs mappings=0 native-writes=0", .{ snapshot.bars[5].base, snapshot.bars[5].bytes });
+        if (measurement.uma) |uma| log("AMDGPU uma: physical={x} bytes={d} source=mc-fb-offset+rcc-memsize allocation=not-started", .{ uma.base, uma.bytes });
     }
     if (device_count == 0) return reject("target-absent", -4);
     for (devices[0..device_count]) |*device| {
@@ -88,8 +90,7 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     if (!identity.stable(&device.snapshot, &reader)) return reject("pci-changed-after-vbios", -5);
     if (firmware.board.reservation) |reservation| {
         const uma = device.measured.uma orelse return reject("board-uma-unavailable", -9);
-        if (reservation.offset > uma.bytes or reservation.bytes > uma.bytes - reservation.offset or
-            reservation.driver_bytes > reservation.offset) return reject("board-reservation-outside-uma", -9);
+        if (reservation.bytes != 0 and (reservation.offset >= uma.bytes or reservation.bytes > uma.bytes - reservation.offset)) return reject("board-reservation-outside-uma", -9);
     }
     firmware_package.load(&ctx, &device.snapshot, device.measured.chip) catch |err| {
         log("AMDGPU firmware: rejected={s} resource={s} native-writes=0", .{ @errorName(err), firmware_package.last_resource });
@@ -98,6 +99,15 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     if (!identity.stable(&device.snapshot, &reader)) return reject("pci-changed-after-firmware", -5);
     log("AMDGPU firmware: revision={s} profile=picasso-{s} files=12 bytes={d} epoch={d} CPU-only uploaded=0", .{
         @import("firmware.zig").lock.revision, @tagName(firmware_package.profile.?.socket), firmware_package.bytes, firmware_package.generation });
+    memory_layout = @import("memory_layout.zig").Layout.create(device.measured.uma.?, device.measured.mc.?, selected.uma_offset, final.byte_length, firmware.board.reservation) catch |err| {
+        log("AMDGPU memory plan: rejected={s} native-writes=0", .{@errorName(err)}); return -12;
+    };
+    const layout = &memory_layout.?;
+    const memory = ctx.memory() orelse return reject("memory-contract-unavailable", -12);
+    if (memory.reservedSpan(layout.physical.offset, layout.physical.bytes) != a.gfx_buffer_result_ok)
+        return reject("uma-not-fully-reserved", -12);
+    log("AMDGPU memory plan: cpu-physical={x} mc={x} gart={x} reserved={d} work={d} native-budget={d} physical-ram-added=0", .{
+        layout.physical.offset, layout.mc.offset, layout.gart.offset, layout.pool.reserved_bytes, layout.pool.allocated_bytes, layout.native_budget });
     boot_snapshot.capture(&ctx, selected.adapter, final) catch |err| {
         log("AMDGPU boot capture: rejected={s} cleanup={s} native-writes=0", .{ @errorName(err), if (boot_snapshot.close()) @as([]const u8, "OK") else "retained" });
         return -10;
@@ -113,11 +123,11 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
 }
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
-    if (!boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
+    if (!memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
         ctx.logError("AMDGPU unbind: cleanup=retained module-release=blocked");
         return -1;
     }
-    device_count = 0; boot_association = null;
+    device_count = 0; boot_association = null; memory_layout = null;
     driver_api = null;
     return 0;
 }

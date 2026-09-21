@@ -22,6 +22,8 @@ foreach($entry in @($pin.metadata)+@($pin.firmware)){
 if($bytes -gt 2MB -or @($resources).Count -ne $expected.Count -or @(Compare-Object $resources $expected).Count){throw 'AMD resource set differs from the package lock'}
 $version=@($manifest|Where-Object {$_.StartsWith('META=firmware.revision=')})
 if($version.Count -ne 1 -or $version[0] -cne ('META=firmware.revision='+$pin.revision)){throw 'AMD firmware revision metadata mismatch'}
+$label=@($manifest|Where-Object {$_.StartsWith('META=firmware.version=')})
+if($label.Count -ne 1 -or $label[0] -cne ('META=firmware.version=linux-firmware-'+$pin.revision.Substring(0,12))){throw 'AMD firmware display label mismatch'}
 if(!$whence.Contains('Licence: Redistributable. See LICENSE.amdgpu for details.')){throw 'AMD WHENCE license reference absent'}
 Write-Host "AMDGPU firmware package: 13 original binaries, WHENCE and AMD license verified; pinned $($pin.revision); no GPU execution."
 

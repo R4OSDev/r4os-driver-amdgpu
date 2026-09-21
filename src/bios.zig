@@ -121,7 +121,7 @@ pub const Panel = struct {
     misc: u16, bpc: u8, pwm_hz: u16, delays_ms: [7]u16, min_bl: u8, max_bl: u8, boot_bl: u8,
 };
 pub const Firmware = struct { revision: u32, core_clock_khz: u64, memory_clock_khz: u64, scratch_register: u32 };
-pub const Reservation = struct { offset: u64, bytes: u64, driver_bytes: u64 };
+pub const Reservation = struct { offset: u64, bytes: u64, driver_scratch_bytes: u64 };
 pub const Board = struct {
     image: []const u8, tables: [35]Table, integrated: ?Integrated = null, panel: ?Panel = null,
     firmware: ?Firmware = null, reservation: ?Reservation = null,
@@ -203,7 +203,7 @@ pub fn parse(bytes: []const u8, device: Device, board: *Board) Error!void {
         try table.revision(2, 1, @sizeOf(R));
         board.reservation = .{ .offset = @as(u64, try field(R, "start_address_in_kb", table.bytes)) * 1024,
             .bytes = @as(u64, try field(R, "used_by_firmware_in_kb", table.bytes)) * 1024,
-            .driver_bytes = @as(u64, try field(R, "used_by_driver_in_kb", table.bytes)) * 1024 };
+            .driver_scratch_bytes = @as(u64, try field(R, "used_by_driver_in_kb", table.bytes)) * 1024 };
     }
     if (board.table("displayobjectinfo")) |table| try parsePaths(board, table);
 }
