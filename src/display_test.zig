@@ -156,6 +156,8 @@ const Runtime = struct {
     var live = false;
     var heap_live = false;
     var panel_heap_live = false;
+    var hdmi_heap_live = false;
+    var hdmi_bytes: [@sizeOf(@import("hdmi_runtime.zig").Runtime)]u8 align(16) = undefined;
     var panel_bytes: [@sizeOf(@import("panel_runtime.zig").Runtime)]u8 align(16) = undefined;
     var rom: [4096]u8 = undefined;
     var thread_result: i32 = 0;
@@ -175,7 +177,7 @@ const Runtime = struct {
         ran = false;
         live = false;
         heap_live = false;
-        panel_heap_live = false;
+        panel_heap_live = false; hdmi_heap_live = false;
         thread_result = 0;
         fail_join = false;
         fail_release = false;
@@ -289,6 +291,13 @@ const Runtime = struct {
         return F.now(null);
     }
     fn allocate(bytes: u64, alignment: u32, out: *a.DriverHeapAllocation) callconv(.c) i32 {
+        if (heap_live and bytes == hdmi_bytes.len) {
+            std.debug.assert(running and !hdmi_heap_live);
+            hdmi_heap_live = true;
+            // Exercise a partial live handle with no accessible CPU pointer.
+            out.* = .{ .handle = 3, .cpu_address = if (partial_heap) 0 else @intFromPtr(&hdmi_bytes), .byte_length = bytes, .alignment = alignment };
+            return if (partial_heap) -1 else 0;
+        }
         if (heap_live) {
             std.debug.assert(running and !panel_heap_live and bytes == panel_bytes.len);
             panel_heap_live = true;
@@ -302,8 +311,9 @@ const Runtime = struct {
     }
     fn free(handle: u64) callconv(.c) i32 {
         if (fail_heap) return -1;
+        if (handle == 3) { hdmi_heap_live = false; return 0; }
         if (handle == 2) { panel_heap_live = false; return 0; }
-        std.debug.assert(!panel_heap_live);
+        std.debug.assert(!panel_heap_live and !hdmi_heap_live);
         heap_live = false;
         return 0;
     }
@@ -392,6 +402,16 @@ test "DCN1 SIMD task holds boot memory across prepare commit abort and failed re
         try t.expect(!R.owner.close() and R.memory.engine_users == 2 and R.heap_live);
         R.fail_heap = false;
         try t.expect(R.owner.close() and !R.panel_heap_live and !R.heap_live and R.memory.engine_users == 1);
+    }
+    for ([_]bool{ false, true }) |partial| {
+        try R.reset(); try R.open(); R.run(); try t.expect(R.owner.poll());
+        R.partial_heap = partial;
+        try R.owner.bindHdmi(); R.run(); try t.expect(R.owner.poll());
+        try t.expect(R.owner.result != 0 and R.hdmi_heap_live and R.heap_live);
+        R.fail_heap = true;
+        try t.expect(!R.owner.close() and R.memory.engine_users == 2);
+        R.fail_heap = false;
+        try t.expect(R.owner.close() and !R.hdmi_heap_live and !R.heap_live and R.memory.engine_users == 1);
     }
     std.debug.print("[amd-dcn1-owner] actual driver Task/heap boundary; delayed joins/releases; partial allocation; failed clock/link prepare; restore ACK retains boot hold\n", .{});
 }

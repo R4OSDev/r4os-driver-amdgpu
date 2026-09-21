@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.12 adds direct eDP, AUX/DDC, ATOM command execution and confirmed
-panel brightness for R4OS 0.80.16. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.13 adds direct HDMI1.4 DDC/TMDS/InfoFrames and generation-bound
+hotplug ownership for R4OS 0.80.17. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -73,14 +73,14 @@ restarted after replacing their firmware.
 Build with `./Build.sh` on Linux or `Build.bat` on Windows, using PowerShell 7.
 The normal build verifies pinned originals/generated registers, runs the
 component tests and audits all sixteen unchanged firmware resources in the
-R4D container. The DCN1 archive links 26 original Linux 7.2.4 AMD DC/DML units
-and four private bridges into the R4D. The source closure contains frontend
+R4D container. The DCN1 archive links 28 original Linux 7.2.4 AMD DC/DML units
+and five private bridges into the R4D. The source closure contains frontend
 resources, HUBP/HUBBUB/DPP/OPP/MPC/timing, request/deadline registers and
 watermarks. A heap-owned DC context runs only in a dedicated SIMD-capable
 driver Task. Planning performs no MMIO. Commit requires confirmed clocks
 and all four pipes blank/disabled; Abort retains memory until restoration ACK.
-The initial runtime retains the original boot plane. HDMI,
-output enable and pageflip follow in 0.80.17-0.80.18. No activation hook is
+The initial runtime retains the original boot plane. Native activation,
+pixel-clock handover, output enable and pageflip follow in 0.80.18. No activation hook is
 installed by a normal probe. The grouped host tests execute the real archive
 against explicit register/Task/heap responses; they do not emulate a GPU.
 
@@ -111,3 +111,24 @@ levels and shows confirmed state. Current input/ACPI/EC paths provide no
 brightness-key event, explicitly reported by the page. Panel identity,
 electrical training, visible brightness and Lenovo Fn events remain untested
 until /39. See Docs/Drivers/AMDPanel08016.txt for the exact software evidence.
+
+Direct HDMI uses the original DCN1 hardware I2C and stream encoders with
+bounded GPIO ownership, E-DDC block reads and ATOM1.5 encoder/1.6 transmitter
+commands. No Linux GPIO allocation, fake I2C success or guessed board clock
+is involved. Acquisition failure, NACK and ordinary timeout release hardware
+arbitration and restore the actual pad mask. MMIO failures retain effects.
+
+The source remains HDMI1.4 (340MHz ceiling) even when the receiver advertises
+HDMI2/FRL/deep color. Only complete EDID-confirmed RGB8 timings are selected;
+CTA modes needing an unimplemented limited-range transform stay excluded
+until /21. AVI checksum, full-range selection and video packets are generated;
+audio samples/InfoFrames stay muted for /22. Data-only USB-C is not an output.
+
+HPD stabilizes for 100ms before new admission. Observed disconnect or changed
+EDID fingerprints invalidate the old receiver; pause, drain, confirmed
+physical stop, completion settlement, common output withdrawal and resource
+release execute in order, with exact generation receipts and a 5s deadline.
+Busy or unsafe retirement retains resources; replacement cannot reuse old
+jobs or output identities. A disconnect during unpublished activation retains
+the restoration duty. Native run-loop activation/full restore belongs to /18.
+See Docs/Drivers/AMDHDMI08017.txt/.json for the software-only evidence.

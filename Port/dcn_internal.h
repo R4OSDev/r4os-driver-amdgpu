@@ -15,6 +15,8 @@
 #include "dce/dce_panel_cntl.h"
 #include "dio/dcn10/dcn10_link_encoder.h"
 #include "dc_bios_types.h"
+#include "dce/dce_i2c_hw.h"
+#include "dio/dcn10/dcn10_stream_encoder.h"
 #include "ddc_service_types.h"
 struct r4dcn_link {
  struct r4dcn_route route;
@@ -24,6 +26,11 @@ struct r4dcn_link {
  struct dc_link link;
  struct ddc_service ddc;
  struct dc_link_settings settings;
+ struct ddc gpio_ddc;
+ struct dce_i2c_hw i2c;
+ struct dcn10_stream_encoder stream;
+ unsigned i2c_ready,ddc_open,hdmi_configured,hdmi_pipe;
+ uint32_t ddc_saved_mask;
  unsigned bound,pads_held,initialized,enabled;
  uint32_t pad_mask,hpd_mask;
 };
@@ -53,6 +60,7 @@ struct r4dcn {
  struct dce_panel_cntl panel;
  unsigned panel_constructed;
 };
+enum bp_result r4dcn_hdmi_encoder(struct dc_bios *,struct bp_encoder_control *);
 extern struct r4dcn *r4dcn_current;
 int r4dcn_enter(struct r4dcn *);
 void r4dcn_leave(struct r4dcn *);

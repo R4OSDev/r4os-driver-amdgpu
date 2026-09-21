@@ -9,6 +9,7 @@ const mem = @import("memory_owner.zig");
 const start = @import("start_runtime.zig");
 const panel = @import("panel_runtime.zig");
 const atom = @import("atom_vm.zig");
+const hdmi = @import("hdmi_runtime.zig");
 pub const c = panel.c;
 pub const Error = error{ Busy, Invalid, Unsupported, Stale, Capacity, State };
 pub const Phase = enum { empty, preparing, planned, programming, programmed, retained, aborted };
@@ -33,6 +34,9 @@ pub const Owner = struct {
     clock: ?r4os.r4dev.DriverResourceContext = null,
     allocation: a.DriverHeapAllocation = .{},
     panel_allocation: a.DriverHeapAllocation = .{},
+    hdmi_allocation: a.DriverHeapAllocation = .{},
+    hdmi_storage_valid: bool = false,
+    hdmi_operation: hdmi.Operation = .probe,
     board: ?*const @import("bios.zig").Board = null,
     panel_operation: panel.Operation = .discover,
     panel_value: u16 = 0,
@@ -43,7 +47,7 @@ pub const Owner = struct {
     worker_result: i32 = 0,
     result: i32 = 0,
     phase: Phase = .empty,
-    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work } = .prepare,
+    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work } = .prepare,
     limits: c.struct_r4dcn_limits = std.mem.zeroes(c.struct_r4dcn_limits),
     mode: c.struct_r4dcn_mode = std.mem.zeroes(c.struct_r4dcn_mode),
     plan: c.struct_r4dcn_plan = std.mem.zeroes(c.struct_r4dcn_plan),
@@ -94,6 +98,25 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or
             self.phase != .planned or self.panel_allocation.handle != 0) return error.State;
         try self.launch(.panel_bind);
+    }
+    pub fn bindHdmi(self: *Owner) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or
+            self.phase != .planned or self.hdmi_allocation.handle != 0) return error.State;
+        try self.launch(.hdmi_bind);
+    }
+    pub fn hdmiCommand(self: *Owner, operation: hdmi.Operation) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.hooks == null or
+            (self.phase != .planned and self.phase != .programmed) or self.hdmi_allocation.handle == 0) return error.State;
+        self.hdmi_operation = operation;
+        try self.launch(.hdmi_work);
+    }
+    pub fn hdmiInWorker(self: *Owner, operation: hdmi.Operation) Error!void {
+        if (workerCheck(self) != 1 or self.hooks == null or self.hdmi_allocation.handle == 0 or
+            (self.action != .commit and self.action != .hdmi_work and self.action != .abort)) return error.State;
+        const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
+        if (runtime.self_address != @intFromPtr(runtime)) return error.State;
+        self.effects = true; self.frontend_attempted = true; self.quiet = false;
+        runtime.run(operation, self.mode) catch return error.State;
     }
     pub fn panelCommand(self: *Owner, operation: panel.Operation, value: u16) Error!void {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.hooks == null or
@@ -157,6 +180,15 @@ pub const Owner = struct {
             self.launch(.abort) catch return false;
             return false;
         }
+        if (self.hdmi_allocation.handle != 0) {
+            if (self.hdmi_storage_valid) {
+                const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
+                if (runtime.self_address == @intFromPtr(runtime) and runtime.output.adapter_id != 0) return false;
+            }
+            if (self.heap.?.release(self.hdmi_allocation.handle) != 0) return false;
+            self.hdmi_allocation = .{};
+            self.hdmi_storage_valid = false;
+        }
         if (self.panel_allocation.handle != 0) {
             if (self.heap.?.release(self.panel_allocation.handle) != 0) return false;
             self.panel_allocation = .{};
@@ -194,6 +226,30 @@ pub const Owner = struct {
                     return 0;
                 };
                 self.result = 0;
+            },
+            .hdmi_bind => {
+                if (!self.initialized or self.phase != .planned or self.board == null or self.hdmi_allocation.handle != 0) return c.R4DCN_STATE;
+                const bytes = @sizeOf(hdmi.Runtime);
+                if (self.heap.?.allocate(bytes, 16, &self.hdmi_allocation) != 0) return c.R4DCN_IO;
+                const allocation = self.hdmi_allocation;
+                if (allocation.version != 1 or allocation.size < @sizeOf(a.DriverHeapAllocation) or allocation.handle == 0 or
+                    allocation.cpu_address == 0 or allocation.cpu_address % 16 != 0 or allocation.byte_length != bytes or
+                    allocation.cpu_address > std.math.maxInt(u64) - bytes or allocation.alignment < 16 or allocation.reserved != 0) return c.R4DCN_INVALID;
+                const runtime: *hdmi.Runtime = @ptrFromInt(allocation.cpu_address);
+                runtime.* = .{};
+                self.hdmi_storage_valid = true;
+                runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }) catch {
+                    self.result = c.R4DCN_UNSUPPORTED;
+                    return 0;
+                };
+                self.result = 0;
+            },
+            .hdmi_work => {
+                self.result = 0;
+                self.hdmiInWorker(self.hdmi_operation) catch { self.result = c.R4DCN_IO; };
+                // NACK, missing receiver and unplug are ordinary link events.
+                // A sticky native MMIO fault still retains the entire owner.
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
             .panel_work => {
                 self.result = 0;
@@ -283,7 +339,7 @@ pub const Owner = struct {
     }
     fn write(raw: ?*anyopaque, offset: u32, value: u32) callconv(.c) c_int {
         const self = from(raw);
-        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .abort)) return -1;
+        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .hdmi_work and self.action != .abort)) return -1;
         self.memory.?.registers.write(offset, value) catch return -1;
         self.memory.?.registers.barrier() catch return -1;
         return 0;

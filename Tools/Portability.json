@@ -220,8 +220,24 @@
       "source": "Port/dcn_link.c",
       "language": "c",
       "owner_source": true
+    },
+    {
+      "name": "dce_i2c_hw",
+      "source": "drivers/gpu/drm/amd/display/dc/dce/dce_i2c_hw.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_stream_encoder",
+      "source": "drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_hdmi",
+      "source": "Port/dcn_hdmi.c",
+      "language": "c",
+      "owner_source": true
     }
   ],
-  "followup": "0.80.17 HDMI/hotplug; 0.80.18 output activation and restoration handover",
-  "scope": "Original DCN1 frontend/DML plus native AUX/link/PWM objects; no Linux runtime. R4OS bounded ATOM1.6 command owner and direct eDP protocol. DMCU/ABM-owned PWM remains unavailable; native output activation and full restoration retain /18."
+  "followup": "0.80.18 native activation, pixel clocks, pageflip and complete boot restoration; 0.80.21 extended color",
+  "scope": "Original DCN1 frontend/DML, AUX/panel and HDMI/I2C/stream encoders; bounded R4OS ATOM1.6/1.5. Direct HDMI1.4 RGB8 and generation-bound retirement. No Linux runtime; visible activation/restoration belongs to /18."
 }

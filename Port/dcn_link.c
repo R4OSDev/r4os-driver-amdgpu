@@ -42,10 +42,6 @@ static struct graphics_object_id object(uint32_t raw) {
 static struct r4dcn_link *link_at(struct r4dcn *d,unsigned index) {
  return index<4 && d->links[index].bound ? &d->links[index] : NULL;
 }
-/* The selected raw AUX path has no Linux GPIO object. R4OS holds the actual
- * pad register until restore_pads; a non-null upstream object is an error. */
-void dal_ddc_close(struct ddc *ddc) { ASSERT(!ddc); }
-
 static enum bp_result transmitter(struct dc_bios *bios,struct bp_transmitter_control *ctl) {
  struct r4dcn *d=bios->ctx->driver_context;
  struct r4dcn_link *l=NULL;
@@ -70,7 +66,7 @@ static enum bp_result transmitter(struct dc_bios *bios,struct bp_transmitter_con
  if(l->atom.execute(l->atom.context,command,words,ARRAY_SIZE(words))!=0) { d->fault=R4DCN_IO; return BP_RESULT_FAILURE; }
  return BP_RESULT_OK;
 }
-static const struct dc_vbios_funcs bios_functions={.transmitter_control=transmitter};
+static const struct dc_vbios_funcs bios_functions={.transmitter_control=transmitter,.encoder_control=r4dcn_hdmi_encoder};
 static const struct link_encoder_funcs link_functions={.is_dig_enabled=dcn10_is_dig_enabled};
 int r4dcn_link_bind(void *storage,uint32_t index,const struct r4dcn_route *route,const struct r4dcn_atom *atom) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
@@ -113,7 +109,7 @@ int r4dcn_link_action(void *storage,uint32_t index,uint32_t action) {
    l->pad_mask=rd(d,ddc_mask[l->route.aux]);l->hpd_mask=rd(d,ADDR(DC_GPIO_HPD_MASK));
    if(!d->fault) {
     l->pads_held=1;
-    wr(d,ddc_mask[l->route.aux],(l->pad_mask&~(DC_GPIO_DDC1_MASK__DC_GPIO_DDC1CLK_MASK_MASK|DC_GPIO_DDC1_MASK__DC_GPIO_DDC1DATA_MASK_MASK))|DC_GPIO_DDC1_MASK__AUX_PAD1_MODE_MASK);
+    if((l->route.connector&255)==0x14) wr(d,ddc_mask[l->route.aux],(l->pad_mask&~(DC_GPIO_DDC1_MASK__DC_GPIO_DDC1CLK_MASK_MASK|DC_GPIO_DDC1_MASK__DC_GPIO_DDC1DATA_MASK_MASK))|DC_GPIO_DDC1_MASK__AUX_PAD1_MODE_MASK);
     wr(d,ADDR(DC_GPIO_HPD_MASK),l->hpd_mask&~(1u<<l->route.hpd_shift));
    }
   }
@@ -124,10 +120,10 @@ int r4dcn_link_action(void *storage,uint32_t index,uint32_t action) {
    * its explicit ATOM disable even if DIG never became active. */
   if(l->enabled && !dcn10_is_dig_enabled(&l->encoder.base)) {
    struct bp_transmitter_control ctl={.action=TRANSMITTER_CONTROL_DISABLE,
-    .transmitter=l->encoder.base.transmitter,.signal=SIGNAL_TYPE_EDP};
+    .transmitter=l->encoder.base.transmitter,.signal=(l->route.connector&255)==0x0c?SIGNAL_TYPE_HDMI_TYPE_A:SIGNAL_TYPE_EDP};
    if(!d->fault) transmitter(&d->bios,&ctl);
   }
-  if(!d->fault) dcn10_link_encoder_disable_output(&l->encoder.base,SIGNAL_TYPE_EDP);
+  if(!d->fault) dcn10_link_encoder_disable_output(&l->encoder.base,(l->route.connector&255)==0x0c?SIGNAL_TYPE_HDMI_TYPE_A:SIGNAL_TYPE_EDP);
   if(!d->fault) l->enabled=0;
  } else if((l->route.connector&255)!=0x14) result=R4DCN_UNSUPPORTED;
  else {
@@ -214,7 +210,7 @@ int r4dcn_link_video(void *storage,uint32_t index,uint32_t pipe,uint32_t *active
 int r4dcn_link_restore_pads(void *storage,uint32_t index) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  struct r4dcn_link *l=link_at(d,index);
- if(!l || l->enabled || d->fault)result=R4DCN_STATE;
+ if(!l || l->enabled || l->ddc_open || d->fault)result=R4DCN_STATE;
  else if(l->pads_held) {
   uint32_t bit=1u<<l->route.hpd_shift,value=rd(d,ADDR(DC_GPIO_HPD_MASK));
   wr(d,ddc_mask[l->route.aux],l->pad_mask);wr(d,ADDR(DC_GPIO_HPD_MASK),(value&~bit)|(l->hpd_mask&bit));

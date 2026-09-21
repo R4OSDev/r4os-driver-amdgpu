@@ -221,3 +221,13 @@ pub export fn amdgpu_panel_brightness(output_id: *const a.GfxOutputId) callconv(
     display_runtime.brightnessCommand(output_id.*) catch return -1;
     return 0;
 }
+
+pub export fn amdgpu_hdmi_bind() callconv(.c) i32 {
+    display_runtime.bindHdmi() catch return -1;
+    return 0;
+}
+pub export fn amdgpu_hdmi_operation(operation: u32) callconv(.c) i32 {
+    if (operation < 1 or operation > 6) return -1;
+    display_runtime.hdmiCommand(@enumFromInt(operation)) catch return -1;
+    return 0;
+}

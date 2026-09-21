@@ -2110,6 +2110,55 @@
       "bytes": 1430,
       "license": "MIT (embedded notice)",
       "role": "DCN1 panel, AUX, link and bounded native sequencing closure/reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_i2c.h",
+      "sha256": "78d88bb1c3f374ba9597a6ff3335e6b84d3049e31e48f97bd768350fbcf91f04",
+      "bytes": 1504,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_i2c_hw.c",
+      "sha256": "72ca9d289baf7f35f87b4969a2fc644afb25586eea7f83e2126b4f3237b3d775",
+      "bytes": 20438,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_i2c_hw.h",
+      "sha256": "564cce137d26fa975dd83674984d9f8c10cf24d7431e081750cf1cd5561f5c5b",
+      "bytes": 11700,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_i2c_sw.h",
+      "sha256": "558bcaff24f7c6ae8fff017223f20cfaedaa1daf5f62fd970c4851ddb6b5a407",
+      "bytes": 1738,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dcn30/dcn30_afmt.h",
+      "sha256": "01fefbaf3afba402a80bb35e184a3d01d0d6d4509cea8cf051fffe06a1ab5543",
+      "bytes": 5294,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.c",
+      "sha256": "d28376338093ef2913ea3feef1c5e5d7d17f37f014077dbd4be00648108aa949",
+      "bytes": 47256,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.h",
+      "sha256": "8f257b50b06570bed168b826623c4be303b4dc613f81ef4df14455ec450a7115",
+      "bytes": 27928,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
     }
   ],
   "patches": [

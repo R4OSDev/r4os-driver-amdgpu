@@ -74,4 +74,12 @@ int r4dcn_link_restore_pads(void *,uint32_t);
 int r4dcn_panel_read(void *,struct r4dcn_panel_state *);
 int r4dcn_panel_pwm(void *,uint32_t);
 int r4dcn_link_video(void *,uint32_t,uint32_t pipe,uint32_t *);
+/* Direct HDMI1.4 RGB8 path. Reference crystal is parsed from ATOM DCE info;
+ * DDC block reads use the original DCN hardware I2C engine. */
+int r4dcn_hdmi_bind(void *,uint32_t,uint32_t crystal_khz);
+int r4dcn_hdmi_edid(void *,uint32_t,uint32_t block,uint8_t data[128]);
+int r4dcn_hdmi_configure(void *,uint32_t,uint32_t pipe,const uint8_t avi[17]);
+int r4dcn_hdmi_enable(void *,uint32_t);
+int r4dcn_hdmi_mute(void *,uint32_t,uint32_t mute);
+int r4dcn_hdmi_stopped(void *,uint32_t,uint32_t *stopped);
 #endif
