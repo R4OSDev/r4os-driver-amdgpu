@@ -10,6 +10,8 @@ pub const Error = q.Error;
 pub const Hooks = struct {
     context: usize,
     work: *const fn (*Owner, usize) void,
+    before_poll: ?*const fn (*Owner, usize) void = null,
+    irq_ready: ?*const fn (usize) Error!void = null,
     event: *const fn (usize, ih.Event) void,
     quiesce: *const fn (usize, q.Epoch, u3) ?q.Quiescence,
 };
@@ -36,7 +38,10 @@ pub const Owner = struct {
         self.clock = ctx.resources() orelse return error.Unsupported;
         const hz = ctx.timerFrequency(); if (hz == 0) return error.Unsupported;
         self.poll_ticks = @max(@as(u64, 1), (@as(u64, hz) + 99) / 100); // at most 10ms, rounded to host tick
-        try self.arena.prepare(memory, snapshot.bars[2], gate);
+        if (!self.arena.ready) {
+            try self.arena.prepare(memory, snapshot.bars[2], gate);
+        } else if (self.arena.memory != memory or self.arena.epoch != memory.epoch or self.arena.self_address != @intFromPtr(&self.arena) or
+            self.arena.doorbell.value.physical_address != snapshot.bars[2].base) return error.Stale;
         try self.timeline.init(binding, try self.arena.fences(), self.clock.?.nowNs());
         if (self.semaphores.?.create(0, 1, &self.semaphore) != 0 or self.semaphore == 0) return error.Capacity;
         self.prepared = true;
@@ -48,6 +53,7 @@ pub const Owner = struct {
         if (!self.prepared or self.started or self.self_address != @intFromPtr(self) or @atomicLoad(u32, &self.stop, .acquire) != 0) return error.Busy;
         self.hooks = hooks;
         try self.irq.open(&self.ctx.?, &self.arena, snapshot, self.timeline.epoch, .{ .context = self.self_address, .signal = signal });
+        if (hooks.irq_ready) |ready| try ready(hooks.context);
         // Set before creation: the task may start on another CPU immediately.
         self.started = true;
         if (self.threads.?.start(worker, self.self_address, a.driver_thread_flag_parallel, &self.thread) != 0 or self.thread == 0) return error.Capacity;
@@ -87,6 +93,7 @@ pub const Owner = struct {
             if (captured < 32) break;
         }
         if (self.irq.failed() or @atomicLoad(u32, &self.wake_fault, .acquire) != 0) self.timeline.fault(7);
+        if (hooks.before_poll) |before| before(self, hooks.context);
         self.timeline.poll(self.clock.?.nowNs());
         const failed = self.timeline.failed_engines;
         if (failed != 0) if (hooks.quiesce(hooks.context, self.timeline.epoch, failed)) |proof| {
@@ -119,7 +126,7 @@ pub const Owner = struct {
     }
     /// Nonblocking shutdown. Stop/join/release retains the task and all arenas
     /// on busy/failure; no spinlock or IRQ admission gate spans those calls.
-    pub fn close(self: *Owner, proof: ?q.Quiescence) bool {
+    pub fn stopWorker(self: *Owner) bool {
         if (self.self_address == 0) return true;
         if (self.self_address != @intFromPtr(self)) return false;
         if (self.closed) return true;
@@ -138,6 +145,11 @@ pub const Owner = struct {
             if (self.threads.?.release(self.thread) != 0) return false;
             self.thread = 0;
         }
+        return true;
+    }
+    pub fn close(self: *Owner, proof: ?q.Quiescence) bool {
+        if (!self.stopWorker()) return false;
+        if (self.self_address == 0 or self.closed) return true;
         if (self.timeline.self_address != 0) {
             self.timeline.stopping = true;
             if (self.started or !self.timeline.empty()) {

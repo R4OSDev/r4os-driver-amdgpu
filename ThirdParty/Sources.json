@@ -513,6 +513,14 @@
       "bytes": 44398,
       "license": "MIT (embedded notice)",
       "role": "Picasso PSP10/SMU10 startup and quiescence reference; no Linux runtime"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/vega10_sdma_pkt_open.h",
+      "sha256": "67b76881b8dac15c02e073f6a9a7d8970ce9a5a03c52949d46198dbb06a24168",
+      "bytes": 189881,
+      "license": "MIT",
+      "license_evidence": "Original source notice and upstream MIT license",
+      "role": "SDMA4.1 copy packet reference"
     }
   ],
   "patches": []

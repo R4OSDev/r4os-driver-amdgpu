@@ -61,7 +61,11 @@ test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and conf
     try t.expectEqual(@as(u64, 0), (try vm.lookup(va)) & 6);
     try t.expectError(error.Invalid, vm.map(l.address_limit - 4096, &.{0x5000, 0x6000}, .{ .system = true }));
     try vm.unmap(va, 2); try t.expectEqual(@as(u64, 0), try vm.lookup(va));
-    hw = .{}; var controller: hubs.Controller = .{}; var map = try plan();
+    hw = .{};
+    hw.words[r.gfx.MC_VM_AGP_BASE / 4] = 0x1234;
+    hw.words[r.mm.VM_CONTEXT1_PAGE_TABLE_BASE_ADDR_LO32 / 4] = 0x4567;
+    hw.words[r.at.ATC_VMID0_PASID_MAPPING / 4] = 0x89;
+    var controller: hubs.Controller = .{}; var map = try plan();
     const root = try pages.pde(try map.physicalAddress(map.contexts.span), false);
     const scratch = try map.physicalAddress(.{ .offset = map.contexts.span.end() - 4096, .bytes = 4096 });
     const gate: hubs.Gate = .{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true };
@@ -72,6 +76,17 @@ test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and conf
     try t.expectEqual(@as(u32, 0), hw.words[(r.gfx.VM_CONTEXT0_CNTL + 8) / 4]);
     hw.missing_ack = true; try t.expectError(error.Deadline, controller.disable(&hw, gate)); try t.expect(controller.touched and !controller.enabled);
     hw.missing_ack = false; try controller.disable(&hw, gate); try t.expect(!controller.touched);
+    try t.expectEqual(@as(u32, 0x1234), hw.words[r.gfx.MC_VM_AGP_BASE / 4]);
+    try t.expectEqual(@as(u32, 0x4567), hw.words[r.mm.VM_CONTEXT1_PAGE_TABLE_BASE_ADDR_LO32 / 4]);
+    try t.expectEqual(@as(u32, 0x89), hw.words[r.at.ATC_VMID0_PASID_MAPPING / 4]);
+    // Failure before the first enable write still requires stop to preserve
+    // every BIOS register which only the shutdown path subsequently touches.
+    hw = .{}; hw.words[r.gfx.VM_CONTEXT0_CNTL / 4] = 0x01234567;
+    hw.words[r.mm.VM_L2_CNTL3 / 4] = 0x76543210;
+    controller = .{ .epoch = 23, .touched = true };
+    try controller.disable(&hw, gate);
+    try t.expectEqual(@as(u32, 0x01234567), hw.words[r.gfx.VM_CONTEXT0_CNTL / 4]);
+    try t.expectEqual(@as(u32, 0x76543210), hw.words[r.mm.VM_L2_CNTL3 / 4]);
     hw = .{}; hw.backward = true; try t.expectError(error.Deadline, hubs.flush(&hw, 1));
     hw = .{}; hw.disconnected = true; try t.expectError(error.Disconnected, hubs.flush(&hw, 0));
 }

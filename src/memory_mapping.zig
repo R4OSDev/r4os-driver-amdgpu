@@ -94,6 +94,49 @@ pub const Mapping = struct {
         self.write_allowed = desc.usage & (a.gfx_buffer_usage_transfer_target | a.gfx_buffer_usage_render) != 0;
         self.prepared = true;
     }
+    /// Takes the queue's backing-only reference without sharing/importing it.
+    /// The caller can always see whether ownership transferred: on transfer its
+    /// handle is cleared, including subsequent partial-failure retention.
+    pub fn adopt(self: *Mapping, owner: *@import("memory_owner.zig").Owner, reference: *a.GfxBufferReference,
+        address: u64, physical: []u64) Error!void
+    {
+        if (self.self_address != 0 or !owner.prepared or owner.self_address != @intFromPtr(owner) or owner.mapping_users >= 128) return error.Busy;
+        if (reference.version != 1 or reference.size < @sizeOf(a.GfxBufferReference) or reference.flags != 0 or reference.reserved0 != 0 or
+            !valid(reference.reference) or !valid(reference.buffer) or address == 0 or address & 4095 != 0) return error.Invalid;
+        var desc: a.GfxBufferDescriptor = .{};
+        const memory = owner.memory.?;
+        if (memory.bufferDescribe(&reference.reference, &desc) != 1 or desc.version != 1 or desc.size < @sizeOf(a.GfxBufferDescriptor)) return error.Invalid;
+        const rounded = try l.aligned(desc.byte_length, 4096);
+        _ = try l.pages(address, rounded, l.address_limit);
+        if (desc.byte_length == 0 or rounded / 4096 != physical.len or desc.modifier != 0) return error.Invalid;
+        if (desc.location == a.gfx_buffer_location_system) {
+            if (desc.adapter_id != 0 or desc.driver_owner != 0 or desc.device_generation != 0) return error.Stale;
+        } else if (desc.location != a.gfx_buffer_location_device_local or desc.adapter_id != owner.adapter or desc.device_generation != owner.epoch or desc.driver_owner == 0) return error.Stale;
+        self.* = .{ .owner = owner, .self_address = @intFromPtr(self), .memory = memory, .adapter = owner.adapter, .epoch = owner.epoch,
+            .reference = reference.*, .address = address, .bytes = desc.byte_length, .vmid = 1, .physical = physical,
+            .write_allowed = desc.usage & (a.gfx_buffer_usage_transfer_target | a.gfx_buffer_usage_render) != 0 };
+        reference.* = .{}; owner.mapping_users += 1;
+        if (desc.location == a.gfx_buffer_location_device_local) {
+            const backing = try owner.backing(self.reference.buffer);
+            if (backing.bytes < rounded) return error.Invalid;
+            for (physical, 0..) |*page, i| page.* = backing.offset + i * 4096;
+            self.native_owner = desc.driver_owner;
+        } else {
+            if (memory.deviceAcquire(&self.reference.reference, &.{ .byte_length = self.bytes, .adapter_id = owner.adapter,
+                .device_generation = owner.epoch, .access = 4, .dma_mask = l.address_limit - 1 }, &self.dma) != 1) return error.Unsupported;
+            if (!self.leaseValid(self.dma, 4, 0) or self.dma.dma_mask != l.address_limit - 1) return error.Invalid;
+            for (physical, 0..) |*page, i| {
+                var segment: a.GfxDmaSegment = .{};
+                const offset = i * 4096; const count = @min(@as(u64, 4096), self.bytes - offset);
+                if (memory.deviceSegment(&self.dma, offset, &segment) != 1) return error.Unsupported;
+                if (segment.version != 1 or segment.size < @sizeOf(a.GfxDmaSegment) or segment.dma_address == 0 or
+                    segment.dma_address & 4095 != 0 or segment.dma_address > l.address_limit - 4096 or segment.byte_length != count or
+                    segment.next_offset != offset + count) return error.Sparse;
+                page.* = segment.dma_address;
+            }
+        }
+        self.prepared = true;
+    }
     fn leaseValid(self: *const Mapping, lease: a.GfxDeviceLease, access: u32, address: u64) bool {
         return lease.version == 1 and lease.size >= @sizeOf(a.GfxDeviceLease) and valid(lease.lease) and lease.byte_offset == 0 and
             lease.byte_length == self.bytes and lease.gpu_virtual_address == address and lease.adapter_id == self.adapter and

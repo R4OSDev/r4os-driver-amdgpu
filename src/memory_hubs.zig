@@ -81,7 +81,8 @@ fn context(io: anytype, comptime R: type, vmid: u4, root: u64, span: l.Span, dep
 }
 pub const Controller = struct {
     epoch: u64 = 0, touched: bool = false, enabled: bool = false,
-    pub fn enable(self: *Controller, io: anytype, map: *const l.Layout, virtual_root: u64, scratch_physical: u64, gate: Gate) Error!void {
+    journal: @import("memory_journal.zig").Journal = .{},
+    pub fn enable(self: *Controller, target: anytype, map: *const l.Layout, virtual_root: u64, scratch_physical: u64, gate: Gate) Error!void {
         if (self.touched or self.enabled) return error.Busy;
         if (gate.memory_epoch == 0 or !gate.boot_held or !gate.engines_quiesced) return error.Unconfirmed;
         const gart_root = try p.pde(try map.physicalAddress(map.tables.span), false);
@@ -90,6 +91,8 @@ pub const Controller = struct {
         const context_physical = try map.physicalAddress(map.contexts.span);
         if ((virtual_root & p.physical_mask) != context_physical or scratch_physical != context_physical + map.contexts.span.bytes - 4096) return error.Invalid;
         self.epoch = gate.memory_epoch; self.touched = true;
+        var journal_io: @import("memory_journal.zig").Io(@TypeOf(target)) = .{ .target = target, .journal = &self.journal };
+        const io = &journal_io;
         // Memory and hub register mutation occurs exclusively in the owner's
         // preemptible worker, after the start owner has parked every engine.
         try set(io, r.at, "ATHUB_MISC_CNTL", "CG_ENABLE", 0);
@@ -141,10 +144,14 @@ pub const Controller = struct {
         try io.write(r.hdp.HDP_NONSURFACE_BASE_HI, @truncate(map.mc.offset >> 40));
         try flush(io, 0); try flush(io, 1); self.enabled = true;
     }
-    pub fn disable(self: *Controller, io: anytype, gate: Gate) Error!void {
+    pub fn disable(self: *Controller, target: anytype, gate: Gate) Error!void {
         if (!self.touched) return;
         if (gate.memory_epoch != self.epoch or !gate.engines_quiesced or !gate.boot_held) return error.Unconfirmed;
         self.enabled = false;
+        // A failed enable may not have reached every register that stop must
+        // disable. Preserve those original values before shutdown changes them.
+        var journal_io: @import("memory_journal.zig").Io(@TypeOf(target)) = .{ .target = target, .journal = &self.journal };
+        const io = &journal_io;
         inline for (.{ r.gfx, r.mm }) |R| {
             for (0..16) |i| try io.write(R.VM_CONTEXT0_CNTL + @as(u32, @intCast(i)) * (R.VM_CONTEXT1_CNTL - R.VM_CONTEXT0_CNTL), 0);
         }
@@ -154,6 +161,7 @@ pub const Controller = struct {
             try set(io, R, "MC_VM_MX_L1_TLB_CNTL", "ENABLE_ADVANCED_DRIVER_MODEL", 0);
             try set(io, R, "VM_L2_CNTL", "ENABLE_L2_CACHE", 0); try io.write(R.VM_L2_CNTL3, 0);
         }
-        try io.barrier(); self.* = .{};
+        try self.journal.restore(target);
+        self.* = .{};
     }
 };

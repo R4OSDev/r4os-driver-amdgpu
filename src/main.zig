@@ -10,6 +10,7 @@ pub var firmware_package: @import("firmware_store.zig").Store = .{};
 pub var firmware: @import("bios_source.zig").Capture = .{};
 pub var memory_runtime: @import("memory_owner.zig").Owner = .{};
 pub var native_start: @import("start_runtime.zig").Owner = .{};
+pub var sdma_runtime: @import("sdma_jobs.zig").Owner = .{};
 pub var queue_runtime: @import("queue_runtime.zig").Owner = .{};
 pub var memory_layout: ?@import("memory_layout.zig").Layout = null;
 pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
@@ -134,8 +135,24 @@ pub fn beginNative(memory_epoch: u64) !void {
     try native_start.prepare(&ctx, &memory_runtime, &device.snapshot, device.measured.chip, &firmware_package,
         boot_snapshot.boot, selected.uma_offset);
 }
+/// Preemptible native-start pump. Physical activation stays behind the normal
+/// bind policy until the display milestones integrate the full transition.
+pub fn advanceNative() !bool {
+    if (native_start.self_address == 0) return error.State;
+    if (!native_start.flow.firmwareReady()) { try native_start.advance(); return false; }
+    if (sdma_runtime.self_address == 0) {
+        try memory_runtime.enable(.{ .memory_epoch = memory_runtime.epoch, .boot_held = true, .engines_quiesced = true });
+        try sdma_runtime.prepare(&memory_runtime, &queue_runtime, &native_start);
+    }
+    if (!try sdma_runtime.pollSelftest()) return false;
+    if (!sdma_runtime.active) try sdma_runtime.activate(&native_start);
+    return sdma_runtime.active;
+}
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
+    if (!sdma_runtime.close()) return -1;
+    if (memory_runtime.controller.touched) memory_runtime.controller.disable(&memory_runtime.registers,
+        .{ .memory_epoch = memory_runtime.epoch, .boot_held = native_start.hold.held_generation != 0, .engines_quiesced = sdma_runtime.closed or (sdma_runtime.self_address == 0 and native_start.firmwareReady()) }) catch return -1;
     if (!queue_runtime.close(null) or !native_start.close() or !memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
         ctx.logError("AMDGPU unbind: cleanup=retained module-release=blocked");
         return -1;
@@ -157,4 +174,13 @@ fn log(comptime format: []const u8, args: anytype) void {
 fn reject(reason: []const u8, status: i32) i32 {
     log("AMDGPU bind: rejected={s} native-writes=0 fallback=preserved", .{reason});
     return status;
+}
+
+// Private native-stage entrypoints retained in the driver artifact. They are
+// not published as an application API or invoked by passive initialization.
+pub export fn amdgpu_native_begin(epoch: u64) callconv(.c) i32 {
+    beginNative(epoch) catch return -1; return 0;
+}
+pub export fn amdgpu_native_advance() callconv(.c) i32 {
+    return @intFromBool(advanceNative() catch return -1);
 }

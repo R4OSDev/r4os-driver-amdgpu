@@ -1,14 +1,14 @@
 ﻿# AMDGPU
 
 AMDGPU is the external R4OS AMD graphics driver owner, targeting the
-Picasso/Vega 8 laptop profile. Version 0.1.6 implements bounded read-only
+Picasso/Vega 8 laptop profile. Version 0.1.7 implements bounded read-only
 PCI/ASIC/UMA identification, VFCT/ATOMBIOS board data acquisition and an
 immutable boot-frame snapshot through the existing display hold.
 The pinned firmware package is validated and retained in driver-owned CPU memory.
 Only PCI 1002:15d8 Picasso is admitted; Raven2 is identified separately.
 
 `OPTION AMDGPU mode=auto` (the default) and `mode=passive` perform this
-read/capture, firmware admission and UMA reservation plan. `mode=native` reports that the native runtime is missing.
+read/capture, firmware admission and UMA reservation plan. `mode=native` remains gated until display integration.
 The effective kernel software policy, including the one-shot boot-menu
 override, wins before PCI, MMIO, heap allocation or firmware reads.
 No BAR sizing writes, bus mastering, ROM commands, GPU queues or native
@@ -150,3 +150,16 @@ into the runtime yet; its full link/SIMD/assertion contract belongs to
 See Docs/Drivers/AMDFirmware08006.txt and AMDBoard08005.txt in the workspace for the detailed scope,
 wire compatibility, evidence and hardware limitations.
 Original R4OS code is Apache-2.0; AMD notices remain in THIRD_PARTY_NOTICES.md.
+
+SDMA4.1 transfers (0.80.10) are implemented by `sdma_ring.zig` and
+`sdma_jobs.zig`, sharing R4AMD's pure linear/row/fill encoder. Private resident
+native-stage entrypoints are included in the R4D artifact. After the firmware
+stage, the native pump enables GMC, maps the IB arena explicitly into VMID1,
+and requires real fill/copy/fence/ring-consumption evidence before registering
+the common copy backend. Normal passive bind still invokes none of this.
+The common worker retains source/target BO references and exact logical tail
+lengths through matching timeline fences. Ring pointers/doorbells use monotone
+64-bit byte units. Tiled modifiers and same-object copies are rejected.
+Shutdown joins the worker, proves engine/DMA idle, retires PTE/TLB/BO/IRQ state,
+and restores captured GMC registers before boot-writer recovery. Uncertain
+completion retains ownership. See `Docs/Drivers/AMDSDMA08010.txt` and JSON.

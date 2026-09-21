@@ -80,3 +80,12 @@ relevant original sequences/sections and retain complete AMD notices.
 start_wire.h evaluates original C layouts without changing those originals.
 All original notices and hashes are also exported into the distribution.
 No Linux runtime is linked and no upstream material is relicensed.
+
+## SDMA4.1 transfers (0.80.10)
+
+The unchanged AMD MIT `vega10_sdma_pkt_open.h` brings the Linux source catalog
+to 74 files. SDMA ring register/packet porting follows the already pinned
+`sdma_v4_0.c` and NBIO7 sources; full notices remain in the originals, port
+and `AMDGPU-SOURCE-NOTICES.txt`. The shared encoder additionally follows Mesa
+26.2.2 `ac_cmdbuf_sdma.c/.h` and `sid.h`, pinned by R4AMD. Their AMD/Valve
+copyrights and full MIT text ship as `R4AMD-NOTICES.txt` with this driver too.

@@ -2,7 +2,11 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const sdk_build = b.lazyImport(@This(), "r4os_sdk") orelse return;
     const sdk = sdk_build.sdk(b, b.dependencyFromBuildZig(sdk_build, .{}), .{});
-    const artifact = sdk.addR4MF(b.path("module.R4MF"));
+    const libraries_build = b.lazyImport(@This(), "r4os_libraries") orelse return;
+    const libraries = b.dependencyFromBuildZig(libraries_build, .{});
+    const copy_path = libraries.namedLazyPath("r4amd_copy");
+    const binding_path = libraries.namedLazyPath("r4amd_zig_binding");
+    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path } });
     const verify = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     verify.addFileArg(b.path("Tools/VerifyIdentity.ps1"));
     verify.has_side_effects = true;
@@ -31,7 +35,11 @@ pub fn build(b: *std.Build) void {
     native.has_side_effects = true;
     artifact.output.generated.file.step.dependOn(&native.step);
     const host = b.createModule(.{ .root_source_file = b.path("src/test.zig"), .target = b.graph.host, .optimize = .ReleaseSafe });
-    host.addImport("r4os", sdk.createR4osModule(b.graph.host, .ReleaseSafe));
+    const host_sdk = sdk.createR4osModule(b.graph.host, .ReleaseSafe);
+    host.addImport("r4os", host_sdk);
+    host.addImport("r4amd_copy", b.createModule(.{ .root_source_file = copy_path, .target = b.graph.host, .optimize = .ReleaseSafe }));
+    const amd_binding = b.createModule(.{ .root_source_file = binding_path, .target = b.graph.host, .optimize = .ReleaseSafe });
+    amd_binding.addImport("r4os", host_sdk); host.addImport("r4amd", amd_binding);
     host.addIncludePath(b.path("ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/include"));
     host.addIncludePath(b.path("src"));
     const samples = b.addWriteFiles();
