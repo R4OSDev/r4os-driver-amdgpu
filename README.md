@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.10 implements the Picasso GC9.1/SDMA4.1 execution and rendering
-foundation for R4OS 0.80.14. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.11 adds the native DCN1 frontend and original display bandwidth
+planner for R4OS 0.80.15. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -73,8 +73,16 @@ restarted after replacing their firmware.
 Build with `./Build.sh` on Linux or `Build.bat` on Windows, using PowerShell 7.
 The normal build verifies pinned originals/generated registers, runs the
 component tests and audits all sixteen unchanged firmware resources in the
-R4D container. The separate original DCN1 math portability object still needs
-full runtime/link integration in 0.80.15.
+R4D container. The DCN1 archive links 23 original Linux 7.2.4 AMD DC/DML units
+and three private bridges into the R4D. The source closure contains frontend
+resources, HUBP/HUBBUB/DPP/OPP/MPC/timing, request/deadline registers and
+watermarks. A heap-owned DC context runs only in a dedicated SIMD-capable
+driver Task. Planning performs no MMIO. Commit requires confirmed clocks
+and all four pipes blank/disabled; Abort retains memory until restoration ACK.
+The initial runtime retains the original boot plane. Connector preparation,
+output enable and pageflip follow in 0.80.16-0.80.18. No activation hook is
+installed by a normal probe. The grouped host tests execute the real archive
+against explicit register/Task/heap responses; they do not emulate a GPU.
 
 See workspace `Docs/Drivers/AMDGFXQueues08011.txt` and its JSON evidence,
 plus the earlier AMD board, firmware, memory, queue, startup and SDMA records.

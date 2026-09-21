@@ -11,4 +11,6 @@
 *.ps1 text eol=crlf
 *.bat text eol=crlf
 ThirdParty/Linux7.2.4/Original/** -text
+ThirdParty/Linux7.2.4/LICENSES/** -text
+ThirdParty/Patches/** -text
 Firmware/** -text

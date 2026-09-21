@@ -570,7 +570,1342 @@
       "bytes": 3177996,
       "license": "MIT (embedded notice)",
       "role": "GC9 CP register definitions used by gfx_v9_0.c"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/amdgpu_dm/dc_fpu.h",
+      "sha256": "2be244f5839889e0937d9d8da76434ca914de110c66fc42e2ca027d66ba95b5b",
+      "bytes": 2073,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/basics/bw_fixed.c",
+      "sha256": "fc1264cd3820b0633ad0e0cc36c4d01f28f1d283ff91af1b6c7a92b094db09a6",
+      "bytes": 4742,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/basics/conversion.c",
+      "sha256": "eb779486f03a097edc66d217c96f02898ab44771b9adef7071ffa75b6994f429",
+      "bytes": 4070,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/basics/conversion.h",
+      "sha256": "d31a5e594072c59b57447c987752f267ad436dc7e4b085cb07bf608b094267a8",
+      "bytes": 1738,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/basics/custom_float.c",
+      "sha256": "caaf2ea8de2b64a000e5b3ed32b71d4ece751ff8cde0887e16c71bdb8996b030",
+      "bytes": 4230,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/basics/dc_common.h",
+      "sha256": "de4c3629e776d0310e51b93b4e7d89d5d693fddf4c7d8c21d481dd25d555e880",
+      "bytes": 1603,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/basics/fixpt31_32.c",
+      "sha256": "fdc0f95c99b0bda544cfad16285430c1325d9fff896a9f9b3b83ae51a56fea8d",
+      "bytes": 11810,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/core/dc_hw_sequencer.c",
+      "sha256": "2176bfcdf0b65f5bc135542dfa4fe1d1a5c0167d3fc07b5b268130074cd3ff3d",
+      "bytes": 197402,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/core/dc_resource.c",
+      "sha256": "d87199cee82854ff86f2ca83e9126ec88c2e4a298d49cd4e0b10b09dcedc86fd",
+      "bytes": 193712,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc.h",
+      "sha256": "c047bd5f12dce46e2cfd24ca27b67fd8914a0208705c298d48c3d4c8df43d406",
+      "bytes": 140608,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_bios_types.h",
+      "sha256": "01a2b2b3a81db298937fc2afec535239ffce61bf473af9e4a1537c98547c5ea9",
+      "bytes": 6564,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_ddc_types.h",
+      "sha256": "4fbfe303430d9d2a08873c474efec99770c8185f9c4b6a7570029e18ce9f894d",
+      "bytes": 5014,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_dmub_srv.h",
+      "sha256": "6647910df47937e9d53cf57dd9b1792b9bec00a19bdadc3bffd722ca1dc32b70",
+      "bytes": 13251,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_dp_types.h",
+      "sha256": "055474a8654ed43cbe5eb7d156001f2bc7f792200332d5f9cb9f206b421cfd97",
+      "bytes": 42040,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_dsc.h",
+      "sha256": "e6d9bff0c67f6b903efa1afcf51da136632b329414b5f397f1aacb68545124a8",
+      "bytes": 4745,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h",
+      "sha256": "0bab1eb048ad28c26641b1a4502d5449c625419ee19ff6fb1b4eb0ad3ca11a67",
+      "bytes": 6744,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_helper.c",
+      "sha256": "0bd5b1df5fd8fe3d58d1a5a60c1306904f77f58e914d0a375a2978c68954bba3",
+      "bytes": 22503,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_hw_types.h",
+      "sha256": "f6c234ad5d262d8178d8aa9891fd7f5d6e4065812d421c383fb01445bea4d57f",
+      "bytes": 32067,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_plane.h",
+      "sha256": "6fa3377278ff53d59eddf4a2ffb29c8a5dfafbde154ccee3532cb97b22e3339d",
+      "bytes": 1913,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_spl_translate.h",
+      "sha256": "39bdaf0cf286ec0a553a8df5b3e7fa1189b9cf79c6f2fa84d2c94ae035d42f12",
+      "bytes": 652,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_state.h",
+      "sha256": "07a8a0e7fc2d6edd00d0fcd3ccdc760152c713b74ac4c4b9b1a320810b6faf13",
+      "bytes": 2815,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_state_priv.h",
+      "sha256": "8475e747e6783f8cee0b228136952ae09f8fad4af1b7fdf2d409dc1456158144",
+      "bytes": 4692,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_stream.h",
+      "sha256": "9c62ca72fb4744f567dc3ec4a8764f1d4dda1663b8a7067ecc9645bddfc3b8a9",
+      "bytes": 18519,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_stream_priv.h",
+      "sha256": "83255ce5a10d8de0739a2db44eb3ec6441d3403d50049661c8562268f553f473",
+      "bytes": 2746,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_trace.h",
+      "sha256": "cd1b58eadc3db78b166197b2602d9f8b75071014adc1b51bef869721f828f859",
+      "bytes": 1976,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dc_types.h",
+      "sha256": "0f1cfb8384bc297ed0bbea4a21ba27688b0a0f468873e0bd782f6580ea9ca927",
+      "bytes": 42809,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_scl_filters.c",
+      "sha256": "60fb97146a82421ff2e971e2c719a0eea2d8aa9f676e380da1be8f950601c892",
+      "bytes": 54775,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dmub_hw_lock_mgr.h",
+      "sha256": "f9640105849fee0e246ae554380cbc9e3c4bd14b9bc9424b1076acc4d606228b",
+      "bytes": 3188,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dcn10/dcn10_cm_common.c",
+      "sha256": "8b225c66ca2f3dd661718a9734dffa3fca0f217c857fbb6517e34214c2aeb7d9",
+      "bytes": 21216,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dcn10/dcn10_cm_common.h",
+      "sha256": "f17e2d29f523dc16866aefd7779f7e49e6084f44013e58bf45df93371a1a79fa",
+      "bytes": 3475,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dcn10/dcn10_ipp.c",
+      "sha256": "1b0a2a8b803237b9c396e2c583ea13b8e917d7233953a7316fd328d3fb8e4bfb",
+      "bytes": 2624,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dcn10/dcn10_ipp.h",
+      "sha256": "b9ae8384e6cebcb9fcf67c25f3487dcb71c47d20696c4d7e67b88733adfc6d9f",
+      "bytes": 8735,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dio/virtual/virtual_stream_encoder.h",
+      "sha256": "1037a12974224c228654de5f43add4120b1785e2984c68d2e97c611fc1412e7c",
+      "bytes": 1532,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dm_cp_psp.h",
+      "sha256": "38c73cfcab47f1ca0f11ca323c0901de9a605a06603c34c644ee6e0d6bb8de4a",
+      "bytes": 1858,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dm_helpers.h",
+      "sha256": "d1059cc0afaf71cb26036149570ba919e0fe53bd99601d2f496c991dca6bfb21",
+      "bytes": 6760,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dm_pp_smu.h",
+      "sha256": "86299af17b4da6bb71ffb3d4179bafe4e8dfcf2a529c8cc1e07a9314fc3b9f23",
+      "bytes": 9497,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dm_services.h",
+      "sha256": "87fa28ee25494e32d737d210d0c535be48b72f67e57dfc1ab6dee558354a1044",
+      "bytes": 10076,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dm_services_types.h",
+      "sha256": "a7d6235b66871364ac1a7719fc119d3634eed17fae7f67e27ef958bd65eeed25",
+      "bytes": 7507,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_auto.c",
+      "sha256": "aeea08c44d1b986495e4b4403e5185a8b94f5f9aa8322215fe6e88b28b118759",
+      "bytes": 115329,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_auto.h",
+      "sha256": "d47d992f8256aa4b98aa3e86bbfe0538bd3d6b83e63dc88ad2322054421ae8ce",
+      "bytes": 1620,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calcs.c",
+      "sha256": "5573164b51d8a85f11e0471fe92ab47906f88ea12f287100025798dd123f66e7",
+      "bytes": 65800,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dc_features.h",
+      "sha256": "b260a3372550dabc84827b5d0b4fd041ac8a86a46cca37caceba2714ce304e41",
+      "bytes": 19614,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dcn10/dcn10_fpu.c",
+      "sha256": "2eb33a54e5f70ec21040cd2c8328fb526bde419017c22db095b10c00e82e9c6e",
+      "bytes": 6283,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dcn10/dcn10_fpu.h",
+      "sha256": "3f5f76c24012ac7d933efc0f9da6f7a831f85756ad2cf50e3bf53a4329a8e54d",
+      "bytes": 1320,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dcn20/dcn20_fpu.h",
+      "sha256": "24da2f1eb8130f7f712d13c54c7d83a4dc33de8ae752610c826c691d004edf14",
+      "bytes": 3663,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/display_mode_enums.h",
+      "sha256": "df834baa143e1fb829f414d7db543d9b0fc1727c9865cf0b379781a5622bf546",
+      "bytes": 7755,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/display_mode_lib.h",
+      "sha256": "8ed6ea62183b272c5d438fa7e554e6a287ec9f5a064222483df302348d8e6b77",
+      "bytes": 3657,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/display_mode_structs.h",
+      "sha256": "ca9502b61904f9ac7595ba9d737ed6c3dc9b1bbb5eb7793e5cef51d2e2a2ac19",
+      "bytes": 24039,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/display_mode_vba.h",
+      "sha256": "039150b43937233c993c2ae42fe675bd3be64d42075416345c6415bd5679d0a4",
+      "bytes": 53993,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/display_rq_dlg_helpers.c",
+      "sha256": "c1f1db623024499c771aa49e06dbaa37a72d135693dcc9f9789af8c80b6810c0",
+      "bytes": 17220,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/display_rq_dlg_helpers.h",
+      "sha256": "99c1bb40283de770f4e7633f1dbc3670eb87b15434ca32bb47ee1ed69f2ef449",
+      "bytes": 2450,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dml1_display_rq_dlg_calc.c",
+      "sha256": "69566ab3cf9f568f26d09b7ee88c82711170b820350909c89f2fe315a1a31e58",
+      "bytes": 67733,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dml1_display_rq_dlg_calc.h",
+      "sha256": "50cdc8b18f978fac7458618de269f150bfa4ece1d8d7f87af0f7a0ca927effa9",
+      "bytes": 2581,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dml1_frl_cap_chk.h",
+      "sha256": "8573be4484688c2d5a7168bd950734fb157fe158349c4ee3a3e939ba4b1fc751",
+      "bytes": 5141,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dml_inline_defs.h",
+      "sha256": "ece04970c29877356f005619fca2cb2d40615d8ed35ae1d3b867d2eae058968b",
+      "bytes": 3832,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/dml_logger.h",
+      "sha256": "39388a48a95b6245a241c54ff39bcbb19059a26c7bc722931f0c855a2d5597cd",
+      "bytes": 1379,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml21/inc/dml2_external_lib_deps.h",
+      "sha256": "80875efd678d7b8c5606235a5bb0a01683442767560e5283bde61a7960bb9fd1",
+      "bytes": 184,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml21/inc/dml_top_dchub_registers.h",
+      "sha256": "1acd312562a4011836b56b84fcd9aa80a4afb796af4313075a2344bce9d9e403",
+      "bytes": 5209,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml21/inc/dml_top_display_cfg_types.h",
+      "sha256": "1be6cd9e8d34b21eedbcd6cdcba77a500a414d841911a980bd090166dad2f78b",
+      "bytes": 13051,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml21/inc/dml_top_policy_types.h",
+      "sha256": "2f2d5324f73e2d366d85d7cfd342104d966a2d01cd3fb26e94fa4aba06be9a27",
+      "bytes": 289,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml21/inc/dml_top_soc_parameter_types.h",
+      "sha256": "302c30a86b68375462fb28aadd6d84b3b04c50f96dd410f32dd03ab44d3c4ce5",
+      "bytes": 7078,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml21/inc/dml_top_types.h",
+      "sha256": "117364eaa24313686925abd8331ce75168295a4ff7a0759b8aa3dda966321126",
+      "bytes": 22267,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml2_0/dml2_wrapper.h",
+      "sha256": "22bf77a43d76c56001c5326186b14de4de5136c885d3dfa27bd7dbb00493693c",
+      "bytes": 12088,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp.c",
+      "sha256": "bf445d07dd1386dbc7ceb913d549ba0bbc0cf88282cd65f847ebf0019b9a7ac4",
+      "bytes": 17923,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp.h",
+      "sha256": "64d95471dc26fa18fadf8b5bf89b3b327b149a427a514e4acacf7910beac2378",
+      "bytes": 65708,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp_cm.c",
+      "sha256": "8e74f28c0e51252f3e328997984be8d501b0d69036d41d3bb875d7b917a6591c",
+      "bytes": 27093,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp_dscl.c",
+      "sha256": "340a107b1c60446d5f8804db395ce274db7caffde50b4e3ed7ac4089e13b2465",
+      "bytes": 21286,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dsc/dsc.h",
+      "sha256": "628d25d2ff68f059153d0ec32e82fcf8a293f5e03aed111bcfac50a5036f1c1d",
+      "bytes": 4709,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubbub/dcn10/dcn10_hubbub.c",
+      "sha256": "1d4cae8493949112d54729cb69bd3dfc384127bf4a703f2e3892971874488d9c",
+      "bytes": 35003,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubbub/dcn10/dcn10_hubbub.h",
+      "sha256": "5f4f3c21880ba0876be6733469da9472ffcffd780ad02a7871f30fd1b60adb13",
+      "bytes": 22193,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn10/dcn10_hubp.h",
+      "sha256": "df6143398bc19afa76bfe204217bf0eb0894d04763b36e59717dd68d241aaa07",
+      "bytes": 40385,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn20/dcn20_hubp.h",
+      "sha256": "dbbc145cbc84aa626744bd55540c733beae448a3ad44b9f491cac357b734b36e",
+      "bytes": 15005,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn21/dcn21_hubp.h",
+      "sha256": "89074208bf6ad2d4505616504b1cf0ef6a7de92613fc41b887aac0a6795b33ce",
+      "bytes": 6422,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn30/dcn30_hubp.h",
+      "sha256": "6b8a753086649e33ecefa350d27db42e5b28eb98a4e89390dd772ea9f340c66f",
+      "bytes": 18440,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn31/dcn31_hubp.h",
+      "sha256": "7ac48bf3a42bd312cc3ebb11b7cf7f0e4cc2a14070ee6dc57d3ee55e642f0cf8",
+      "bytes": 16623,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn32/dcn32_hubp.h",
+      "sha256": "7b40b18289269516edb1bf3d9d7a8651fee3110a9fd3d6e9a9f174ab3f18ff20",
+      "bytes": 2887,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hubp/dcn401/dcn401_hubp.h",
+      "sha256": "b8c6b6c8aedd814071a952120b20adae4432f182faba252d49a4f74f52014b7a",
+      "bytes": 20856,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hwss/hw_sequencer.h",
+      "sha256": "90a239a477975c3c56f27d7390a7b38bd9cda3e42167707903768c2852da504a",
+      "bytes": 78810,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hwss/hw_sequencer_private.h",
+      "sha256": "6d8b5a3a5d8159c4014efc2b4378bcfd6717cbdf0ac56e7377ef689dbab41daa",
+      "bytes": 9338,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/bw_fixed.h",
+      "sha256": "5bc1f4f3eb2e21c2c2477a6ab97391533bf5024dfc2945517326578553fb47ca",
+      "bytes": 4771,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/clock_source.h",
+      "sha256": "df084481f122e352541b9a11e11d97b3ea077c92cf0905169b826b9d448a9994",
+      "bytes": 5960,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/compressor.h",
+      "sha256": "48ad025d1237477ca12ae22e3adea189736306d760993edc5b404f64bddddf55",
+      "bytes": 3861,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/core_status.h",
+      "sha256": "b0f26a87a468bbb1367be07cdec1640d2153d2af38336acfb0c0920b2acaf522",
+      "bytes": 2510,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/core_types.h",
+      "sha256": "30f7a926cbbd2fb5901c4fb9fc2b89a4896250084219b6cec52e7e3eee843a0f",
+      "bytes": 21334,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/custom_float.h",
+      "sha256": "1fac128352fe031e00eb495e03267ab06fa6f25e2eff3b4fb22e2ecffe09ca55",
+      "bytes": 1423,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/dce_calcs.h",
+      "sha256": "721d38cc3b44e6d5d45b6010227b0752d1c5cdd4940f25e85c5fb48e3bb66823",
+      "bytes": 21090,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/dcn_calcs.h",
+      "sha256": "94b048c3046f7d22b25ac548448c68a496afcfc820f2ca1f5fc5b9b7259a1aa1",
+      "bytes": 26501,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/abm.h",
+      "sha256": "a4c25f60e9b94d5d09a49dc4262b61119879acdede73ffb16394b4f8187bf79a",
+      "bytes": 2568,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/audio.h",
+      "sha256": "cac0af77c98175613d5a8a6cb2c504ae795387bdf00d5925d650d0f4eea3371f",
+      "bytes": 2043,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/clk_mgr.h",
+      "sha256": "c9d4be4b6462b5a83d7a393343a6d923f81da1b5270e72cf461f96e0b0f63070",
+      "bytes": 13972,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/cursor_reg_cache.h",
+      "sha256": "f52f0adc20b73113e3eeadf1283439790364440d63376b836426f78fc8e3809b",
+      "bytes": 2560,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/dccg.h",
+      "sha256": "9199b59dc39197ebe8ca0a5ec816e76cd0f8d3367616f4fe7914eff4a79bdc62",
+      "bytes": 10391,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/dchubbub.h",
+      "sha256": "139db9fbeba77833bb4331c61803549212b96f423f610058597544d5beb54e97",
+      "bytes": 9671,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/dio.h",
+      "sha256": "11ae610fa7d4dbdaf48b3d68dbbefaab894897dc017ba52275d7febe238ab50d",
+      "bytes": 373,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/dmcu.h",
+      "sha256": "92d387e9aa7d5bd69e67744a4693b5ec45f1b419bbd2663123deb528344f9973",
+      "bytes": 3125,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/dpp.h",
+      "sha256": "4288ee4c3c261727613b37e4abba3a9a9e30004ac28abdcbaeb29ab331fb3b46",
+      "bytes": 10364,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/dwb.h",
+      "sha256": "6a041286c9b09bf08b2488db3b66d4fd48604262b09a412a9c1ad5f472823aa6",
+      "bytes": 6331,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/hubp.h",
+      "sha256": "969f37bd676e203babf3ee7494eec0e50a81496ee5e33e177056ba41bce5bc38",
+      "bytes": 10574,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/hw_shared.h",
+      "sha256": "8ead91f074b705907ab32e95ce6eeb89d62553b0d613bb3b1489a1c6a9a72c7c",
+      "bytes": 11373,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/ipp.h",
+      "sha256": "e553dc7c3546bf81242087ade04d6a1a6a34719acaa3a5ce561f5b44d6c9f71c",
+      "bytes": 3324,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/link_encoder.h",
+      "sha256": "c5bffa3fc6a10c97e254c237f62d5787c097bab27117e8e4fa258c17d5021206",
+      "bytes": 13294,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/mcif_wb.h",
+      "sha256": "d01dc2e2ae0f6b81555d48a6cecdec66e80be7ed0773720f2723dc59a4cdddb0",
+      "bytes": 3021,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/mem_input.h",
+      "sha256": "dddbde00fd224127ddf02c306d2e575fa42996de489b09c8349cbbeda584f8b3",
+      "bytes": 5648,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/mpc.h",
+      "sha256": "87e4f3e6753666ac85141c1f38d610f6569c1fa023b96864519394659b31f77b",
+      "bytes": 26407,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/opp.h",
+      "sha256": "bb53c1f168706c0c47c8b2a929456343f12cc74fa43c2073c2bd453f714954b0",
+      "bytes": 10053,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/optc.h",
+      "sha256": "2fa8f99b22ee9a63e27a22b629fa7d219365916f7007409d5f80b49aec440bbf",
+      "bytes": 6379,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/panel_cntl.h",
+      "sha256": "ffb1ada2dd86570e2e651a8fefdf165c0cbf521dd1c426955024a00be3ca7c16",
+      "bytes": 2445,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/pg_cntl.h",
+      "sha256": "d366c9aee24237c609e5e6e0253dbf77411e72c94d7ac0f3e2ef7e43973873a3",
+      "bytes": 2524,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/stream_encoder.h",
+      "sha256": "b9ed767f78554d4cb72facb3636d8f67176bea32416323e281f459134b89e40e",
+      "bytes": 15712,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/timing_generator.h",
+      "sha256": "f3eb812e400365565ea5f9175a00abc45f0b9273d7dd9cdd5095c8af509f1928",
+      "bytes": 17577,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/hw/transform.h",
+      "sha256": "9463be5630f30108df82a48df1fb05dc1a264cb471a0e3b89403b8bfba25194d",
+      "bytes": 8024,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/link_enc_cfg.h",
+      "sha256": "494238c4e0d6737500878f7fab0390002c55ac3ec5171db2807cf1ca9c433538",
+      "bytes": 4361,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/link_hwss.h",
+      "sha256": "9f34e8ccf203d45ff20664c16617062b4e2f27a7c93f221b8a52d6dc88716900",
+      "bytes": 3588,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/link_service.h",
+      "sha256": "dff7b646ee07e2059286be39c5243c2043c75e5f23ad73604b1f3a6473965ffa",
+      "bytes": 15833,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/reg_helper.h",
+      "sha256": "6eed136b57ac8e8f9799818e7e9f7c4aa259896069cdf50b314d75060ac38d2d",
+      "bytes": 18325,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/resource.h",
+      "sha256": "6db0e446ddb8562a3c12a6438187e542eda08d494df2a65127eb94d969eab6c0",
+      "bytes": 24933,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/irq_types.h",
+      "sha256": "10dd7afa49e6d5a697c0728c5bb835ac2abd1eb947c212c9b7450d725b483c7d",
+      "bytes": 6592,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_dio.h",
+      "sha256": "bdcd572da7d8c9af4b00a1e790253c54e862f57bce0a82c9a0a3857ccffc99ad",
+      "bytes": 2790,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_dio_fixed_vs_pe_retimer.h",
+      "sha256": "5e4ae06ffcc4424d0911abc5dfaea0aac37515e7f37d60e8a797c15741945e65",
+      "bytes": 1798,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_dpia.h",
+      "sha256": "14bf580a19b117fbb57297282103f798ea28580000398f2695c9aab8d7ba8dbd",
+      "bytes": 1474,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_hpo_dp.h",
+      "sha256": "1e62a99c4243dee32ece82d51e19089bf1fcc7b459240225d4821467533505c8",
+      "bytes": 2786,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_hpo_fixed_vs_pe_retimer_dp.h",
+      "sha256": "fd58a32f1b955af6c55c75dc6080611e934627d31abd7d35b1edf68367a617c5",
+      "bytes": 1492,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_hpo_frl.h",
+      "sha256": "ec5777918db9ce8f4d522ecebef870824eed826a6fec2e9825df2697da662334",
+      "bytes": 1436,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/link/hwss/link_hwss_virtual.h",
+      "sha256": "a15e7d9608f2241bf25d3686d66febc443c881ed33e6b6708da48d66c3305c71",
+      "bytes": 1534,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/mpc/dcn10/dcn10_mpc.c",
+      "sha256": "9a26d7444fe5fb29a43cdd96c98258ba89e947af33fad8265de2238c2b76f31d",
+      "bytes": 15448,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/mpc/dcn10/dcn10_mpc.h",
+      "sha256": "2c100a47b1c425f069f47784386d5d05735c6f5e11cb9d6a63e1398157e5fc61",
+      "bytes": 5851,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/opp/dcn10/dcn10_opp.c",
+      "sha256": "4a19f6f996d724311db2c5d51786f8900106020b5cdfda843be4d87aacfccfd9",
+      "bytes": 12555,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/opp/dcn10/dcn10_opp.h",
+      "sha256": "3e7b118f06a5d07903c0f4d18e9ba59fd383f3be29cd08dd40f570d880b1353a",
+      "bytes": 7242,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/optc/dcn10/dcn10_optc.c",
+      "sha256": "5a50cefb12a6427a182f7c1ccb60753e61218253f74e5256d31c600713644333",
+      "bytes": 47200,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/optc/dcn10/dcn10_optc.h",
+      "sha256": "ed9d0e81888f395635c6a9bc71cfb7ba459a5c185dfb76008f589b21e2b33c7e",
+      "bytes": 28607,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/os_types.h",
+      "sha256": "a7660826d2e576513a8e1a6fe137f10cafbb60ba7eb17087c12123b32e1198e6",
+      "bytes": 2549,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dce100/dce100_resource.h",
+      "sha256": "144ae7cd85793d15ca513ed575d0ceb4b8658653c1f67aa2a2e65ac1b5d456c9",
+      "bytes": 2090,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dce110/dce110_resource.h",
+      "sha256": "6843a7591dc62d3c0f642b6be95f26ba801c0b0a5b4a4f04cf85aa400a2583e8",
+      "bytes": 1852,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dce112/dce112_resource.h",
+      "sha256": "f6ba035d2a158029f606acb501f912ecbfe9cd05561a61ec4f47a62ef32ec9ba",
+      "bytes": 1853,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dce120/dce120_resource.h",
+      "sha256": "90b628048b070dff4268f6af8e4abddd358ba7e051d69a8ec93806057c92b50e",
+      "bytes": 1421,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dce80/dce80_resource.h",
+      "sha256": "aaa987342e04aebd0c52e23df432c8d999a6a6e857a97d05b70e5d6026703f7d",
+      "bytes": 1609,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn10/dcn10_resource.c",
+      "sha256": "7f20ef1bdc1c51ac64addbfdbec46755796ea0f93aabb9b4875ac9623c409ff1",
+      "bytes": 43866,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn10/dcn10_resource.h",
+      "sha256": "e076e073a6443fbc35027cf86136c7f8e244887ea260a5ddddc748921a10397e",
+      "bytes": 2074,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn20/dcn20_resource.h",
+      "sha256": "19800531632b3df8be1d7f176e958b5deeee4f9ddd3620095b406f44d6cc37a9",
+      "bytes": 6099,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn201/dcn201_resource.h",
+      "sha256": "737a5ff254c93a08eb56d73c0e89ad4d4e4ac190e0ffee6fdaf60a3a840b9743",
+      "bytes": 1842,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn21/dcn21_resource.h",
+      "sha256": "a6568bcf43a97119798080cd145342fec54f8a420f810abe86110c5db20ce59c",
+      "bytes": 1950,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn30/dcn30_resource.h",
+      "sha256": "9a9199322eddb2135d461cd74363bba4dd13d0257b2b032743a66f202a069d40",
+      "bytes": 3775,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn301/dcn301_resource.h",
+      "sha256": "af84e228fe8d237474f6f59c6190cffa927e4c46c76275ebdf4fb23a65bc4258",
+      "bytes": 1622,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn302/dcn302_resource.h",
+      "sha256": "a9d86506a408b5b836fd9c2adf18bc48cfa256a5070ab0a0d3fd700181dd097d",
+      "bytes": 1567,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn303/dcn303_resource.h",
+      "sha256": "f556a511d3f8962be265f35ad8ce5a216dba038ac51496f348ce0fa67d4a5f27",
+      "bytes": 1600,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn31/dcn31_resource.h",
+      "sha256": "1ab1b7e5623fb20908920bf3a6cba2b8e3360c99200472edef076fd58620bbcb",
+      "bytes": 4514,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn314/dcn314_resource.h",
+      "sha256": "93c9fbe6971fa583a14dcc48c3c74709c19ed096f018860f8aa414feb254f158",
+      "bytes": 1799,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn315/dcn315_resource.h",
+      "sha256": "4d2bb0035f7965aadece62da3e78b6e00111f144110053cb7707e617e806a00b",
+      "bytes": 1583,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn316/dcn316_resource.h",
+      "sha256": "1ee2e38c64393812b04eafe08d1f8729946bea10f32f5cc60704b7b5c0a069ba",
+      "bytes": 1583,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn32/dcn32_resource.h",
+      "sha256": "822bcc6e96c7a9ee6b63361b8ff78a222c39036159653c5cda6c768a7cfd9412",
+      "bytes": 87886,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn321/dcn321_resource.h",
+      "sha256": "0acde7e243e280b2f1ddac58b0c72edc4fa50bf6bc2360f0377d63c2f8de748f",
+      "bytes": 1639,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn35/dcn35_resource.h",
+      "sha256": "29ded9508f342005621774ad2dabdd659f1cb912f64a735d9af330186733e545",
+      "bytes": 11903,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn351/dcn351_resource.h",
+      "sha256": "ed20ebc5edf3afe006b9da8a28833b0793eec6c2a69c52499b100a9417bb6bad",
+      "bytes": 568,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn36/dcn36_resource.h",
+      "sha256": "53c99aa3f5ba769499a4e68b74ca1312d130ad4d106ad3471520e6ed012d857d",
+      "bytes": 2008,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn401/dcn401_resource.h",
+      "sha256": "5c3def64428ccb91585390c09505039d894d27e7cc4b60d9f788b3c6fe0bd32e",
+      "bytes": 45288,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn42/dcn42_resource.h",
+      "sha256": "a14019a5e8110ccc7b8e95b6857ce4ead97d0f681a2aded306d2d48d5c396be3",
+      "bytes": 38045,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/resource/dcn42b/dcn42b_resource.h",
+      "sha256": "f9427b7d5daf7c20c17f6032d2f6fb7f0677d67c9435bec67857787f00c6d4c1",
+      "bytes": 35328,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/sspl/dc_spl.h",
+      "sha256": "cfed79ce2da39eb9d20aa8fabb917cffbc1e1381f149ad96a9cd0d2157b0f440",
+      "bytes": 458,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/sspl/dc_spl_types.h",
+      "sha256": "8e9a8638f40414d9e27b3a229d107479fe176aaae0027d3e1cb9faf1c24a5d08",
+      "bytes": 16642,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/sspl/spl_custom_float.h",
+      "sha256": "82b6865223430e75a68e7e03985fcfc2a669176860543b3d91b60eeeb0222442",
+      "bytes": 592,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/sspl/spl_debug.h",
+      "sha256": "44125ee962910e326a0e8ce12cd967d1aaae5411f55e56da377f2348e82468b5",
+      "bytes": 675,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/sspl/spl_fixpt31_32.h",
+      "sha256": "83686a92154d8393be0c70d83931e01e2ab1df34bb6b457383b588c512a1d2de",
+      "bytes": 11383,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/sspl/spl_os_types.h",
+      "sha256": "a15937bdc3643371a0c25a387639c60157e8128e2e8aa718bf71edb71842c5c2",
+      "bytes": 1468,
+      "license": "MIT (SPDX; LICENSES/preferred/MIT)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dmub/dmub_srv.h",
+      "sha256": "7c62a59410dcfb970ddf90c8f16b02e67c7519ed5581b245a051b5da0b052c37",
+      "bytes": 35241,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dmub/inc/dmub_cmd.h",
+      "sha256": "344e9ad57ae5d6a9601d06a89a239899235e5677cda6642dd5512148a61345de",
+      "bytes": 201433,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/audio_types.h",
+      "sha256": "f288fa4229cccd4b29e8d17914f56da6bc8de6962617133dbc2c649dfa425845",
+      "bytes": 3339,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/bios_parser_interface.h",
+      "sha256": "02b92d4e99832dfba8f44f393388ef34afd21b3a5d9673b1b907baaef7645a5d",
+      "bytes": 1556,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/bios_parser_types.h",
+      "sha256": "59226b85edd0b772e6fb6af5fa69b4eca5c30c90ac5ce36939757a204dc9545b",
+      "bytes": 10844,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/dal_asic_id.h",
+      "sha256": "53b6de2a60b2e4bdb2b97219f7d53436971aaa8163469ef52b1b02d6cde688f0",
+      "bytes": 10666,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/dal_types.h",
+      "sha256": "e399e1fb63623a29269c035c221c5e7d7104feabcb83f8f8bdb2adf4849cf603",
+      "bytes": 2001,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/ddc_service_types.h",
+      "sha256": "36811dd667d36d66e256ca20a69cfd2fbe3bbb8ac8ef8155f2c07857b54f5bce",
+      "bytes": 4893,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/dpcd_defs.h",
+      "sha256": "1dd15cc16be6b0f179adfe781bd6b1e81d8681a40318ad172d9e39fc3ea81c18",
+      "bytes": 9371,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/fixed31_32.h",
+      "sha256": "dc33f8df7929cc8efad6e625700f12829a1be870d2ad50977e9d48fa9c5f24a0",
+      "bytes": 11663,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/gpio_types.h",
+      "sha256": "15428bf2748272ca635623e32c18370618f96d6baa5962b5733abf3bbdf142fa",
+      "bytes": 7786,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/grph_object_ctrl_defs.h",
+      "sha256": "e52eefcf7d642fef61a53b5e1f8817d25a9c36c949dbe46ef145f0c4372a679e",
+      "bytes": 12588,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/grph_object_defs.h",
+      "sha256": "ef112a3b1338225c65f1117a70e528ecb3367b85859244279e63807fbdba4ead",
+      "bytes": 5717,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/grph_object_id.h",
+      "sha256": "4b02583978ce86eb4022aa02c88ace41ce753bfe8a3456a77a9e8df7aab354ca",
+      "bytes": 8358,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/hdcp_msg_types.h",
+      "sha256": "db84990ee700c6528d1950e79183b11ea1b9e1276c0d9db577c5796710569111",
+      "bytes": 3069,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/irq_service_interface.h",
+      "sha256": "19417556265d4e369e238ffe4b4444f6ced84cabfd473d3e457ff90822a54c2f",
+      "bytes": 1713,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/link_service_types.h",
+      "sha256": "f1e138126b3933c8ab9581aa2604b57fde389cf9163e712fa1c38b3a553eaf61",
+      "bytes": 9040,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/logger_interface.h",
+      "sha256": "7b5ec0b1da71c597942ee21a63050401d89ca276660c0bc2803b546f348e4b5b",
+      "bytes": 4154,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/logger_types.h",
+      "sha256": "4703f67d96f59e420204bf7882b0f5c473bba37803cf93aac87ac56556fa6ee1",
+      "bytes": 4282,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/set_mode_types.h",
+      "sha256": "93e600df0d08537afd74efdef1700e847fedfd4fc02edd24941e4f6319c5a1da",
+      "bytes": 2458,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/include/signal_types.h",
+      "sha256": "df6c423456158ebf618188281fbc567f99957f3f3d3b65d76d6ad211903fbb1d",
+      "bytes": 5049,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/modules/inc/mod_info_packet_types.h",
+      "sha256": "047f16a32019e8996f6e43b8858f17a7ec889172244e95bd474feb774dfd0696",
+      "bytes": 1527,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_9_1_offset.h",
+      "sha256": "c1563daf2d9678f7427471cf00ac95573394dcf4b96bb07b44d9a76df4285a12",
+      "bytes": 207214,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/mmhub/mmhub_9_1_sh_mask.h",
+      "sha256": "c9fdf2aa3940e736fadc32a1ba284d97970dafb9dc6debd9c347260cd7dee7b5",
+      "bytes": 1063236,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "include/drm/display/drm_dp.h",
+      "sha256": "349532ac85013726432b171b37ecff23847cc18bf2b0184dd13210a0aa362f48",
+      "bytes": 78857,
+      "license": "Keith Packard permissive license (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
+    },
+    {
+      "path": "include/linux/hdmi.h",
+      "sha256": "f1302c1a5dc5050bfb207a298e523e91dc19ad187c412420c7280388f334efc4",
+      "bytes": 13411,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 native frontend, DML or transitive type/register dependency; unrelated generation constructors are not linked"
     }
   ],
-  "patches": []
+  "patches": [
+    {
+      "path": "ThirdParty/Patches/0001-dcn1-legacy-scaler.patch",
+      "sha256": "a8481d6e1b628ea6ec60d31894fbb6b8442ffadce4f79e03774f8f133a341514",
+      "reason": "DCN1 uses original DPP1 scaling; exclude SPL dispatch for DCN2 and newer."
+    }
+  ],
+  "additional_licenses": [
+    {
+      "path": "ThirdParty/Linux7.2.4/LICENSES/MIT",
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f"
+    }
+  ]
 }

@@ -1,0 +1,12 @@
+--- a/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
++++ b/drivers/gpu/drm/amd/display/dc/core/dc_resource.c
+@@ -1551,7 +1551,8 @@
+ 			pipe_ctx->plane_state->format);
+ 
+ #if defined(CONFIG_DRM_AMD_DC_FP)
+-	if ((pipe_ctx->stream->ctx->dc->config.use_spl)	&& (!pipe_ctx->stream->ctx->dc->debug.disable_spl)) {
++	/* R4OS DCN1 uses its original DPP1 scaler; SPL targets DCN2+. */
++	if (false && (pipe_ctx->stream->ctx->dc->config.use_spl)	&& (!pipe_ctx->stream->ctx->dc->debug.disable_spl)) {
+ 		struct spl_in *spl_in = &pipe_ctx->plane_res.spl_in;
+ 		struct spl_out *spl_out = &pipe_ctx->plane_res.spl_out;
+ 

@@ -13,7 +13,12 @@ pub fn build(b: *std.Build) void {
     render_build.addArg("-OutputRoot");
     const render_archives = render_build.addOutputDirectoryArg("render-native");
     render_build.has_side_effects = true;
-    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path, pm4_path, driver_path }, .native_archives = &.{render_archives.path(b, "R4AMD-Addr.a")} });
+    const native = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
+    native.addFileArg(b.path("Tools/BuildPort.ps1"));
+    native.addArg("-OutputRoot");
+    const dcn_archives = native.addOutputDirectoryArg("dcn-native");
+    native.has_side_effects = true;
+    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path, pm4_path, driver_path }, .native_archives = &.{ render_archives.path(b, "R4AMD-Addr.a"), dcn_archives.path(b, "AMDGPU-DCN1.a") } });
     const verify = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     verify.addFileArg(b.path("Tools/VerifyIdentity.ps1"));
     verify.has_side_effects = true;
@@ -42,10 +47,6 @@ pub fn build(b: *std.Build) void {
     firmware_check.addFileArg(b.path("Tools/VerifyFirmware.ps1"));
     firmware_check.has_side_effects = true;
     artifact.code.generated.file.step.dependOn(&firmware_check.step);
-    const native = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
-    native.addFileArg(b.path("Tools/BuildPort.ps1"));
-    native.has_side_effects = true;
-    artifact.output.generated.file.step.dependOn(&native.step);
     const host = b.createModule(.{ .root_source_file = b.path("src/test.zig"), .target = b.graph.host, .optimize = .ReleaseSafe });
     const host_sdk = sdk.createR4osModule(b.graph.host, .ReleaseSafe);
     host.addImport("r4os", host_sdk);
@@ -59,6 +60,8 @@ pub fn build(b: *std.Build) void {
     render_driver.addImport("r4amd", amd_binding);
     host.addImport("r4amd_driver", render_driver);
     host.addObjectFile(render_archives.path(b, "R4AMD-Addr-Host.a"));
+    host.addObjectFile(dcn_archives.path(b, "AMDGPU-DCN1-Host.a"));
+    host.addIncludePath(b.path("Port"));
     host.addIncludePath(b.path("ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/include"));
     host.addIncludePath(b.path("src"));
     const samples = b.addWriteFiles();
@@ -79,7 +82,7 @@ pub fn build(b: *std.Build) void {
     tests.step.dependOn(&gc_check.step);
     tests.step.dependOn(&firmware_check.step);
     const run = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Check AMD probe ownership and original freestanding DCN1 dependency");
+    const test_step = b.step("test", "Check AMD owners and linked native render/DCN1 paths");
     test_step.dependOn(&native.step);
     test_step.dependOn(&run.step);
     artifact.output.generated.file.step.dependOn(&run.step);

@@ -1,11 +1,10 @@
 ﻿# Third-Party Notices
 
-`ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_math.c`
-and `dc/inc/dcn_calc_math.h` are unmodified AMD source from Linux 7.2.4.
-Copyright 2017 Advanced Micro Devices, Inc. Both files contain the complete
-MIT permission and disclaimer. Exact URLs, archive/file SHA-256 and scope
-are recorded in `ThirdParty/Sources.json`. No other Linux implementation
-is compiled in this foundation. The native object is not in AMDGPU.R4D yet.
+The unchanged Linux 7.2.4 AMD sources, register headers and protocol layouts
+are recorded with archive/file SHA256 and their licenses in
+`ThirdParty/Sources.json`. Original bytes remain under
+`ThirdParty/Linux7.2.4/Original`. The initially isolated DCN math object has
+been superseded by the linked native frontend described below.
 
 `Port/Include/os_types.h` and the module/build integration are original R4OS
 code under Apache License 2.0. No third-party code is relicensed.
@@ -111,3 +110,22 @@ and the complete MIT grant for this driver as well as the runtime library.
 The six bundled shaders originate in R4OS-authored GLSL compiled by R4ACO;
 their source, SPIR-V, native bytes and reproducibility hashes are preserved
 in Libraries/R4AMD/Source. No additional proprietary runtime is linked.
+
+## Linked Display Core / DCN1 (0.80.15)
+
+The Linux catalog now contains 270 distinct unchanged files. The native
+archive builds 23 original AMD DC/DCN1/DML translation units and three private
+bridges. BIOS/link/protocol and newer-generation type dependencies preserve
+the original layouts; unrelated generation constructors are not linked.
+The sole source patch selects the original DCN1 DPP scaler and removes the
+unreachable DCN2+ SPL dispatch from the copied build tree, never originals.
+
+The AMD MIT notices remain in the original files and the derived register
+tables/register helper. SPDX-only MIT headers retain their copyright
+prefixes and the complete original Linux `LICENSES/preferred/MIT` text,
+preserved at `ThirdParty/Linux7.2.4/LICENSES/MIT`. The original drm_dp.h has
+Keith Packard's permissive grant, preserved and exported in full as well.
+`Tools/ExportLegal.ps1` verifies every hash and exports all these notices to
+`AMDGPU-SOURCE-NOTICES.txt`. No GPL Linux kernel primitives, DRM runtime,
+scheduler, FPU switcher or device manager are linked. The private R4OS
+worker, heap and MMIO adaptation is original Apache-2.0 code.

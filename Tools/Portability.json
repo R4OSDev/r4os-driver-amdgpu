@@ -2,19 +2,204 @@
   "schema": 1,
   "module": "AMDGPU",
   "profile": "dcn",
+  "output_stage": "DCN1",
   "generators": [],
   "flags": [
+    "-I${unit}/Port",
     "-I${unit}/Port/Include",
+    "-I${include}",
+    "-I${source}/drivers/gpu/drm/amd/display",
+    "-I${source}/drivers/gpu/drm/amd/display/dc",
+    "-I${source}/drivers/gpu/drm/amd/display/include",
+    "-I${source}/drivers/gpu/drm/amd/include",
+    "-I${source}/drivers/gpu/drm/amd/include/asic_reg",
     "-I${source}/drivers/gpu/drm/amd/display/dc/inc",
-    "-fno-strict-aliasing"
+    "-I${source}/drivers/gpu/drm/amd/display/dc/inc/hw",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/basics",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/bios",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/clk_mgr",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/core",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dccg",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dce",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dce110",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dce112",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dce120",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dce60",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dce80",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn10",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn20",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn201",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn21",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn30",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn301",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dcn31",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dio",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dml",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dml2_0",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dpp",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dsc",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/dwb",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/gpio",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/hdcp",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/hpo",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/hubbub",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/hubp",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/hwss",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/inc",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/irq",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/link",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/mmhubbub",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/mpc",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/opp",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/optc",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/pg",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/resource",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/soc_and_ip_translator",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/sspl",
+    "-I${source}/drivers/gpu/drm/amd/display/dmub/inc",
+    "-I${source}/include",
+    "-include",
+    "${unit}/Port/Include/os_types.h",
+    "-DCONFIG_DRM_AMD_DC_FP",
+    "-std=gnu11",
+    "-fno-strict-aliasing",
+    "-Wno-initializer-overrides"
   ],
   "units": [
     {
-      "name": "dcn_math",
+      "name": "fixpt31_32",
+      "source": "drivers/gpu/drm/amd/display/dc/basics/fixpt31_32.c",
+      "language": "c"
+    },
+    {
+      "name": "custom_float",
+      "source": "drivers/gpu/drm/amd/display/dc/basics/custom_float.c",
+      "language": "c"
+    },
+    {
+      "name": "bw_fixed",
+      "source": "drivers/gpu/drm/amd/display/dc/basics/bw_fixed.c",
+      "language": "c"
+    },
+    {
+      "name": "conversion",
+      "source": "drivers/gpu/drm/amd/display/dc/basics/conversion.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_hubp",
+      "source": "drivers/gpu/drm/amd/display/dc/hubp/dcn10/dcn10_hubp.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_hubbub",
+      "source": "drivers/gpu/drm/amd/display/dc/hubbub/dcn10/dcn10_hubbub.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_dpp",
+      "source": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_dpp_dscl",
+      "source": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp_dscl.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_dpp_cm",
+      "source": "drivers/gpu/drm/amd/display/dc/dpp/dcn10/dcn10_dpp_cm.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_optc",
+      "source": "drivers/gpu/drm/amd/display/dc/optc/dcn10/dcn10_optc.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_opp",
+      "source": "drivers/gpu/drm/amd/display/dc/opp/dcn10/dcn10_opp.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_mpc",
+      "source": "drivers/gpu/drm/amd/display/dc/mpc/dcn10/dcn10_mpc.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_ipp",
+      "source": "drivers/gpu/drm/amd/display/dc/dcn10/dcn10_ipp.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn10_cm_common",
+      "source": "drivers/gpu/drm/amd/display/dc/dcn10/dcn10_cm_common.c",
+      "language": "c"
+    },
+    {
+      "name": "dce_scl_filters",
+      "source": "drivers/gpu/drm/amd/display/dc/dce/dce_scl_filters.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_calc_auto",
+      "source": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_auto.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_calcs",
+      "source": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calcs.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_calc_math",
       "source": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_math.c",
       "language": "c"
+    },
+    {
+      "name": "dcn10_fpu",
+      "source": "drivers/gpu/drm/amd/display/dc/dml/dcn10/dcn10_fpu.c",
+      "language": "c"
+    },
+    {
+      "name": "dml1_display_rq_dlg_calc",
+      "source": "drivers/gpu/drm/amd/display/dc/dml/dml1_display_rq_dlg_calc.c",
+      "language": "c"
+    },
+    {
+      "name": "display_rq_dlg_helpers",
+      "source": "drivers/gpu/drm/amd/display/dc/dml/display_rq_dlg_helpers.c",
+      "language": "c"
+    },
+    {
+      "name": "dc_resource",
+      "source": "drivers/gpu/drm/amd/display/dc/core/dc_resource.c",
+      "language": "c"
+    },
+    {
+      "name": "dc_hw_sequencer",
+      "source": "drivers/gpu/drm/amd/display/dc/core/dc_hw_sequencer.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_os",
+      "source": "Port/dcn_os.c",
+      "language": "c",
+      "owner_source": true
+    },
+    {
+      "name": "dcn_reg_helper",
+      "source": "Port/dcn_reg_helper.c",
+      "language": "c",
+      "owner_source": true
+    },
+    {
+      "name": "dcn_frontend",
+      "source": "Port/dcn_frontend.c",
+      "language": "c",
+      "owner_source": true
     }
   ],
-  "followup": "0.80.15",
-  "scope": "Real DCN1 bandwidth math dependency. Full DCN1 mode, MMIO, timing and resource code requires the later display port; no hardware operations."
+  "followup": "0.80.16-0.80.18: connectors and final modeset/present handover",
+  "scope": "Linked DCN1 frontend resource/timing/register and original DML planning closure; no Linux runtime. One unscaled linear RGB plane per pipe; links and output activation follow in /16-/18."
 }
