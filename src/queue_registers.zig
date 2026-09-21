@@ -150,6 +150,7 @@ pub const nb = struct {
     pub const RCC_DOORBELL_APER_EN__BIF_DOORBELL_APER_EN_MASK: u32 = 0x1;
 };
 pub const ih_doorbell: u32 = 0x1e8;
+pub const kiq_doorbell: u32 = 0x0;
 pub const gfx_doorbell: u32 = 0x116;
 pub const compute_doorbell: u32 = 0x6;
 pub const sdma_doorbell: u32 = 0x1e0;

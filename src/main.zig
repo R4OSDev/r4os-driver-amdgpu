@@ -11,6 +11,7 @@ pub var firmware: @import("bios_source.zig").Capture = .{};
 pub var memory_runtime: @import("memory_owner.zig").Owner = .{};
 pub var native_start: @import("start_runtime.zig").Owner = .{};
 pub var sdma_runtime: @import("sdma_jobs.zig").Owner = .{};
+pub var gc_runtime: @import("gc_runtime.zig").Owner = .{};
 pub var queue_runtime: @import("queue_runtime.zig").Owner = .{};
 pub var memory_layout: ?@import("memory_layout.zig").Layout = null;
 pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
@@ -145,6 +146,8 @@ pub fn advanceNative() !bool {
         try sdma_runtime.prepare(&memory_runtime, &queue_runtime, &native_start);
     }
     if (!try sdma_runtime.pollSelftest()) return false;
+    if (gc_runtime.self_address == 0) try gc_runtime.prepare(&memory_runtime, &queue_runtime, &native_start, &sdma_runtime);
+    if (gc_runtime.engine.phase != .ready and !try gc_runtime.advance()) return false;
     if (!sdma_runtime.active) try sdma_runtime.activate(&native_start);
     return sdma_runtime.active;
 }

@@ -45,6 +45,7 @@ const Job = struct {
     }
 };
 pub const Owner = struct {
+    graphics: ?*@import("gc_runtime.zig").Owner = null,
     self_address: usize = 0, memory: ?*mem.Owner = null, runtime: ?*@import("queue_runtime.zig").Owner = null,
     engine: @import("sdma_ring.zig").Engine = .{}, binding: a.GfxBackendBinding = .{}, registered: bool = false, active: bool = false, queue: ?r4os.driver_queue.Context = null,
     jobs: [capacity]Job = @splat(.{}), commands: [copy.max_words]u32 = undefined,
@@ -126,6 +127,7 @@ pub const Owner = struct {
     fn irqReady(raw: usize) @import("queue_runtime.zig").Error!void {
         const self: *Owner = @ptrFromInt(raw);
         self.engine.interrupts(&self.memory.?.registers) catch return error.Unconfirmed;
+        if (self.graphics) |graphics| graphics.irqReady() catch return error.Unconfirmed;
     }
     /// Outer native shutdown joins the worker before touching its ring/maps.
     /// A false return keeps every outstanding mapping and owning object live.
@@ -134,6 +136,7 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self)) return false;
         const runtime = self.runtime.?; const memory = self.memory.?;
         if (!runtime.stopWorker()) return false;
+        if (self.graphics) |graphics| if (!graphics.close()) return false;
         if (!(self.engine.stop(&memory.registers) catch false)) return false;
         if (!self.gc_stop_started) {
             self.gc_stop.begin(&memory.registers) catch return false; self.gc_stop_started = true;
@@ -169,17 +172,22 @@ pub const Owner = struct {
     fn beforePoll(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {
         const self: *Owner = @ptrFromInt(raw);
         c.hdpInvalidate(&self.memory.?.registers) catch runtime.timeline.fault(1);
+        if (self.graphics) |graphics| graphics.poll();
     }
     fn event(_: usize, _: @import("queue_ih.zig").Event) void {}
     fn quiesce(raw: usize, epoch: q.Epoch, engines: u3) ?q.Quiescence {
         const self: *Owner = @ptrFromInt(raw);
         if (!std.meta.eql(epoch, self.runtime.?.timeline.epoch)) return null;
-        if (!(self.engine.stop(&self.memory.?.registers) catch false)) return null;
-        // SDMA stop proves SDMA only. GC/MEC remain the separate parked owner.
-        return .{ .epoch = epoch, .engines = engines & 1 };
+        var confirmed: u3 = 0;
+        if (engines & 1 != 0 and (self.engine.stop(&self.memory.?.registers) catch false)) confirmed |= 1;
+        if (engines & 6 != 0) if (self.graphics) |graphics| {
+            if (graphics.quiesce(epoch)) |proof| confirmed |= proof.engines;
+        };
+        return if (confirmed != 0) .{ .epoch = epoch, .engines = confirmed } else null;
     }
     fn work(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {
         const self: *Owner = @ptrFromInt(raw);
+        if (self.graphics) |graphics| graphics.work();
         if (!self.registered or !self.verified or self.engine.stopping) return;
         self.engine.observe(&self.memory.?.registers) catch |err| { if (err != error.Busy) runtime.timeline.fault(1); return; };
         for (&self.jobs) |*job| {

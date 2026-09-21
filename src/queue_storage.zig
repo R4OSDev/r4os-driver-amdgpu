@@ -60,7 +60,11 @@ pub const Owner = struct {
     }
     pub fn doorbell64(self: *const Owner, engine: Engine, value: u64) Error!void {
         const index: u32 = switch (engine) { .sdma => reg.sdma_doorbell, .gfx => reg.gfx_doorbell, .compute => reg.compute_doorbell };
-        if (!self.ready or self.self_address != @intFromPtr(self) or !io.handle(self.doorbell.value.handle)) return error.Invalid;
+        try self.doorbellIndex64(index, value);
+    }
+    pub fn doorbellIndex64(self: *const Owner, index: u32, value: u64) Error!void {
+        if (!self.ready or self.self_address != @intFromPtr(self) or !io.handle(self.doorbell.value.handle) or index & 1 != 0 or
+            (index != reg.sdma_doorbell and index != reg.gfx_doorbell and index != reg.compute_doorbell and index != reg.kiq_doorbell)) return error.Invalid;
         // One aligned 64-bit MMIO store; two 32-bit stores are not a doorbell64.
         asm volatile ("mfence" ::: .{ .memory = true });
         const word: *volatile u64 = @ptrFromInt(self.doorbell.value.cpu_address + index * 4); word.* = value;

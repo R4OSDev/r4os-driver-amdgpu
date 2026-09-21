@@ -521,6 +521,55 @@
       "license": "MIT",
       "license_evidence": "Original source notice and upstream MIT license",
       "role": "SDMA4.1 copy packet reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/soc15d.h",
+      "sha256": "f39adef602b90ac33036d15a7710e51242ec822f826e8a9823ab466a493325f1",
+      "bytes": 25520,
+      "license": "MIT (embedded notice)",
+      "role": "GFX9 CP/MEC/RLC, context and packet reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/clearstate_defs.h",
+      "sha256": "70eb9f9a57d2cacb2ee2d7b9f17485384019ac03c845ce4bea941acdae137285",
+      "bytes": 1513,
+      "license": "MIT (embedded notice)",
+      "role": "GFX9 CP/MEC/RLC, context and packet reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/clearstate_gfx9.h",
+      "sha256": "e885c7f6475efd74e7729688a70992ff9543979363eb029c628bd95627fb34b5",
+      "bytes": 29649,
+      "license": "MIT (embedded notice)",
+      "role": "GFX9 CP/MEC/RLC, context and packet reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/v9_structs.h",
+      "sha256": "18f8e59e4cab35d579d2e3f9fc4eadffd81d518d586065de4d9d0ab4fcc131d7",
+      "bytes": 21313,
+      "license": "MIT (embedded notice)",
+      "role": "GFX9 CP/MEC/RLC, context and packet reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_gfx.h",
+      "sha256": "a84d2c4c0663b9cd45099433b00dba10510747d180f08012efd9c7d6988a63b5",
+      "bytes": 23078,
+      "license": "MIT (embedded notice)",
+      "role": "GFX9 CP/MEC/RLC, context and packet reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/gc/gc_9_0_offset.h",
+      "sha256": "5ba77de30c7c0d749b84b79a59866fb067fa02271fb931926d073fffaa681c6c",
+      "bytes": 766150,
+      "license": "MIT (embedded notice)",
+      "role": "GC9 CP register definitions used by gfx_v9_0.c"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/gc/gc_9_0_sh_mask.h",
+      "sha256": "e8e56c241d1c5a743c02ddabca3f39185feca62483c829ebf4c1589e91cf0604",
+      "bytes": 3177996,
+      "license": "MIT (embedded notice)",
+      "role": "GC9 CP register definitions used by gfx_v9_0.c"
     }
   ],
   "patches": []

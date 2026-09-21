@@ -45,7 +45,7 @@ foreach($block in @(
     $lines.Add('};')
 }
 $bells=Definitions 'amdgpu/amdgpu_doorbell.h'
-foreach($pair in @(@('ih','IH'),@('gfx','GFX_RING0'),@('compute','MEC_RING0'),@('sdma','sDMA_ENGINE0'))){
+foreach($pair in @(@('ih','IH'),@('kiq','KIQ'),@('gfx','GFX_RING0'),@('compute','MEC_RING0'),@('sdma','sDMA_ENGINE0'))){
     $key='AMDGPU_DOORBELL64_'+$pair[1]
     if(!$bells.ContainsKey($key)){throw "Missing $key"}
     $lines.Add(('pub const {0}_doorbell: u32 = 0x{1:x};' -f $pair[0],($bells[$key]*2)))

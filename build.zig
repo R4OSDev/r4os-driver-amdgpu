@@ -5,8 +5,9 @@ pub fn build(b: *std.Build) void {
     const libraries_build = b.lazyImport(@This(), "r4os_libraries") orelse return;
     const libraries = b.dependencyFromBuildZig(libraries_build, .{});
     const copy_path = libraries.namedLazyPath("r4amd_copy");
+    const pm4_path = libraries.namedLazyPath("r4amd_pm4");
     const binding_path = libraries.namedLazyPath("r4amd_zig_binding");
-    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path } });
+    const artifact = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ copy_path, binding_path, pm4_path } });
     const verify = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     verify.addFileArg(b.path("Tools/VerifyIdentity.ps1"));
     verify.has_side_effects = true;
@@ -26,6 +27,11 @@ pub fn build(b: *std.Build) void {
     start_check.has_side_effects = true;
     start_check.step.dependOn(&verify.step);
     artifact.code.generated.file.step.dependOn(&start_check.step);
+    const gc_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
+    gc_check.addFileArg(b.path("Tools/VerifyGC.ps1"));
+    gc_check.has_side_effects = true;
+    gc_check.step.dependOn(&verify.step);
+    artifact.code.generated.file.step.dependOn(&gc_check.step);
     const firmware_check = b.addSystemCommand(&.{ "pwsh", "-NoLogo", "-NoProfile", "-File" });
     firmware_check.addFileArg(b.path("Tools/VerifyFirmware.ps1"));
     firmware_check.has_side_effects = true;
@@ -38,6 +44,7 @@ pub fn build(b: *std.Build) void {
     const host_sdk = sdk.createR4osModule(b.graph.host, .ReleaseSafe);
     host.addImport("r4os", host_sdk);
     host.addImport("r4amd_copy", b.createModule(.{ .root_source_file = copy_path, .target = b.graph.host, .optimize = .ReleaseSafe }));
+    host.addImport("r4amd_pm4", b.createModule(.{ .root_source_file = pm4_path, .target = b.graph.host, .optimize = .ReleaseSafe }));
     const amd_binding = b.createModule(.{ .root_source_file = binding_path, .target = b.graph.host, .optimize = .ReleaseSafe });
     amd_binding.addImport("r4os", host_sdk); host.addImport("r4amd", amd_binding);
     host.addIncludePath(b.path("ThirdParty/Linux7.2.4/Original/drivers/gpu/drm/amd/include"));
@@ -57,6 +64,7 @@ pub fn build(b: *std.Build) void {
     tests.step.dependOn(&memory_check.step);
     tests.step.dependOn(&queue_check.step);
     tests.step.dependOn(&start_check.step);
+    tests.step.dependOn(&gc_check.step);
     tests.step.dependOn(&firmware_check.step);
     const run = b.addRunArtifact(tests);
     const test_step = b.step("test", "Check AMD probe ownership and original freestanding DCN1 dependency");

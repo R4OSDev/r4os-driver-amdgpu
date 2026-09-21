@@ -36,6 +36,7 @@ pub const mec_mask = g.CP_MEC_CNTL__MEC_INVALIDATE_ICACHE_MASK | g.CP_MEC_CNTL__
     g.CP_MEC_CNTL__MEC_ME2_PIPE0_RESET_MASK | g.CP_MEC_CNTL__MEC_ME2_PIPE1_RESET_MASK |
     g.CP_MEC_CNTL__MEC_ME1_HALT_MASK | g.CP_MEC_CNTL__MEC_ME2_HALT_MASK;
 pub const Park = struct {
+    include_sdma: bool = true,
     touched: bool = false, confirmed: bool = false, deadline: c.Deadline = .{},
     pub fn begin(self: *Park, io: anytype) Error!void {
         self.confirmed = false;
@@ -43,9 +44,11 @@ pub const Park = struct {
         self.touched = true;
         try c.set(io, g.CP_ME_CNTL, cp_mask, cp_mask);
         try io.write(g.CP_MEC_CNTL, mec_mask);
-        try c.set(io, s.SDMA0_GFX_RB_CNTL, s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK, 0);
-        try c.set(io, s.SDMA0_GFX_IB_CNTL, s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK, 0);
-        try c.set(io, s.SDMA0_F32_CNTL, s.SDMA0_F32_CNTL__HALT_MASK, s.SDMA0_F32_CNTL__HALT_MASK);
+        if (self.include_sdma) {
+            try c.set(io, s.SDMA0_GFX_RB_CNTL, s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK, 0);
+            try c.set(io, s.SDMA0_GFX_IB_CNTL, s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK, 0);
+            try c.set(io, s.SDMA0_F32_CNTL, s.SDMA0_F32_CNTL__HALT_MASK, s.SDMA0_F32_CNTL__HALT_MASK);
+        }
         try c.set(io, g.RLC_CNTL, g.RLC_CNTL__RLC_ENABLE_F32_MASK, 0);
         const interrupts = g.CP_INT_CNTL_RING0__CNTX_BUSY_INT_ENABLE_MASK | g.CP_INT_CNTL_RING0__CNTX_EMPTY_INT_ENABLE_MASK |
             g.CP_INT_CNTL_RING0__CMP_BUSY_INT_ENABLE_MASK | g.CP_INT_CNTL_RING0__GFX_IDLE_INT_ENABLE_MASK;
@@ -56,13 +59,13 @@ pub const Park = struct {
         if (!self.touched) return error.State;
         if (!try self.deadline.check(io.nowNs())) return false;
         if ((try c.read(io, g.CP_ME_CNTL) & cp_mask) != cp_mask or (try c.read(io, g.CP_MEC_CNTL) & mec_mask) != mec_mask or
-            try c.read(io, s.SDMA0_F32_CNTL) & s.SDMA0_F32_CNTL__HALT_MASK == 0 or
-            try c.read(io, g.RLC_CNTL) & g.RLC_CNTL__RLC_ENABLE_F32_MASK != 0 or
+            try c.read(io, g.RLC_CNTL) & g.RLC_CNTL__RLC_ENABLE_F32_MASK != 0) return false;
+        if (self.include_sdma and (try c.read(io, s.SDMA0_F32_CNTL) & s.SDMA0_F32_CNTL__HALT_MASK == 0 or
             try c.read(io, s.SDMA0_GFX_RB_CNTL) & s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK != 0 or
-            try c.read(io, s.SDMA0_GFX_IB_CNTL) & s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK != 0) return false;
+            try c.read(io, s.SDMA0_GFX_IB_CNTL) & s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK != 0 or
+            try c.read(io, s.SDMA0_STATUS_REG) & s.SDMA0_STATUS_REG__IDLE_MASK == 0)) return false;
         if (try c.read(io, g.GRBM_STATUS) & g.GRBM_STATUS__GUI_ACTIVE_MASK != 0 or
-            try c.read(io, g.GRBM_STATUS2) & (g.GRBM_STATUS2__RLC_BUSY_MASK | g.GRBM_STATUS2__RLC_RQ_PENDING_MASK) != 0 or
-            try c.read(io, s.SDMA0_STATUS_REG) & s.SDMA0_STATUS_REG__IDLE_MASK == 0) return false;
+            try c.read(io, g.GRBM_STATUS2) & (g.GRBM_STATUS2__RLC_BUSY_MASK | g.GRBM_STATUS2__RLC_RQ_PENDING_MASK) != 0) return false;
         // Picasso has one shader engine/array. Select the actual bank for the
         // CU SERDES read, and restore the caller's index even on a failed read.
         const index = try c.read(io, g.GRBM_GFX_INDEX);

@@ -89,3 +89,13 @@ to 74 files. SDMA ring register/packet porting follows the already pinned
 and `AMDGPU-SOURCE-NOTICES.txt`. The shared encoder additionally follows Mesa
 26.2.2 `ac_cmdbuf_sdma.c/.h` and `sid.h`, pinned by R4AMD. Their AMD/Valve
 copyrights and full MIT text ship as `R4AMD-NOTICES.txt` with this driver too.
+
+## GFX9 queues and contexts (0.80.11)
+
+The unchanged Linux AMD MIT catalog now has 81 files. Added originals cover
+soc15d packets, GFX9 clear state, v9 MQD layouts, amdgpu_gfx queue definitions
+and the GC9.0 register headers actually included by gfx_v9_0.c. Generated
+Picasso golden tables preserve upstream masks and runtime IP_BASE offsets.
+Derived ports preserve full AMD MIT grants; distribution exports include all
+original notices. R4AMD also retains Mesa ac_cmdbuf_cp.c/.h (AMD 2012, Valve
+2024) and the complete MIT text in R4AMD-NOTICES.txt.
