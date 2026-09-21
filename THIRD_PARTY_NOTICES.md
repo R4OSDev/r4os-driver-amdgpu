@@ -99,3 +99,15 @@ Picasso golden tables preserve upstream masks and runtime IP_BASE offsets.
 Derived ports preserve full AMD MIT grants; distribution exports include all
 original notices. R4AMD also retains Mesa ac_cmdbuf_cp.c/.h (AMD 2012, Valve
 2024) and the complete MIT text in R4AMD-NOTICES.txt.
+
+## Linked image and render archive (0.80.14)
+
+AMDGPU statically links R4AMD's sixteen original Mesa 26.2.2 AddrLib units
+and three private bridges for geometry, image descriptors and GFX9 PM4
+render state. The bridges derive from the unchanged Mesa originals recorded
+in Libraries/R4AMD/ThirdParty/Sources.json, including radv_cmd_buffer.c and
+radv_shader.c. R4AMD-NOTICES.txt exports all original AMD/Valve/other notices
+and the complete MIT grant for this driver as well as the runtime library.
+The six bundled shaders originate in R4OS-authored GLSL compiled by R4ACO;
+their source, SPIR-V, native bytes and reproducibility hashes are preserved
+in Libraries/R4AMD/Source. No additional proprietary runtime is linked.

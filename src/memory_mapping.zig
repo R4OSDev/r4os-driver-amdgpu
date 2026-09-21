@@ -86,7 +86,7 @@ pub const Mapping = struct {
         if (!valid(self.reference.reference) or !valid(self.reference.buffer) or memory.bufferDescribe(&self.reference.reference, &desc) != 1 or
             desc.version != 1 or desc.size < @sizeOf(a.GfxBufferDescriptor) or desc.location != a.gfx_buffer_location_device_local or
             desc.adapter_id != self.adapter or desc.device_generation != self.epoch or desc.driver_owner == 0 or
-            desc.byte_length != bytes or desc.modifier != 0) return error.Invalid;
+            desc.byte_length != bytes) return error.Invalid;
         const backing = try owner.backing(self.reference.buffer);
         if (backing.bytes != bytes) return error.Invalid;
         for (physical, 0..) |*page, i| page.* = backing.offset + i * 4096;
@@ -101,15 +101,16 @@ pub const Mapping = struct {
         address: u64, physical: []u64) Error!void
     {
         if (self.self_address != 0 or !owner.prepared or owner.self_address != @intFromPtr(owner) or owner.mapping_users >= 128) return error.Busy;
-        if (reference.version != 1 or reference.size < @sizeOf(a.GfxBufferReference) or reference.flags != 0 or reference.reserved0 != 0 or
+        if (reference.version != 1 or reference.size < @sizeOf(a.GfxBufferReference) or reference.flags != a.gfx_buffer_reference_mapping_only or reference.reserved0 != 0 or
             !valid(reference.reference) or !valid(reference.buffer) or address == 0 or address & 4095 != 0) return error.Invalid;
         var desc: a.GfxBufferDescriptor = .{};
         const memory = owner.memory.?;
         if (memory.bufferDescribe(&reference.reference, &desc) != 1 or desc.version != 1 or desc.size < @sizeOf(a.GfxBufferDescriptor)) return error.Invalid;
         const rounded = try l.aligned(desc.byte_length, 4096);
         _ = try l.pages(address, rounded, l.address_limit);
-        if (desc.byte_length == 0 or rounded / 4096 != physical.len or desc.modifier != 0) return error.Invalid;
+        if (desc.byte_length == 0 or rounded / 4096 != physical.len) return error.Invalid;
         if (desc.location == a.gfx_buffer_location_system) {
+            if (desc.modifier != 0) return error.Invalid;
             if (desc.adapter_id != 0 or desc.driver_owner != 0 or desc.device_generation != 0) return error.Stale;
         } else if (desc.location != a.gfx_buffer_location_device_local or desc.adapter_id != owner.adapter or desc.device_generation != owner.epoch or desc.driver_owner == 0) return error.Stale;
         self.* = .{ .owner = owner, .self_address = @intFromPtr(self), .memory = memory, .adapter = owner.adapter, .epoch = owner.epoch,

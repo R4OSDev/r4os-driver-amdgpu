@@ -51,7 +51,7 @@ pub const Owner = struct {
     pub fn create(self: *Owner, request: a.GfxBufferDescriptor) Error!a.GfxBufferReference {
         if (!self.prepared or self.self_address != @intFromPtr(self)) return error.Busy;
         if (request.version != 1 or request.size < @sizeOf(a.GfxBufferDescriptor) or request.byte_length == 0 or
-            request.alignment == 0 or request.modifier != 0 or request.location != a.gfx_buffer_location_device_local or
+            request.alignment == 0 or !imageModifier(request.modifier) or request.location != a.gfx_buffer_location_device_local or
             request.adapter_id != self.adapter or request.device_generation != self.epoch or
             request.usage & (a.gfx_buffer_usage_cpu_read | a.gfx_buffer_usage_cpu_write) != 0) return error.Invalid;
         if (try l.aligned(request.byte_length, @max(@as(u64, 4096), request.alignment)) != request.byte_length) return error.Invalid;
@@ -69,6 +69,15 @@ pub const Owner = struct {
         if (!io.handle(record.reference.reference) or !std.meta.eql(record.reference.buffer, ticket.buffer) or
             !std.meta.eql(record.reference.reference, ticket.reference)) return error.Invalid;
         return record.reference;
+    }
+    // Allocation admits opaque uncompressed GFX9 layouts. Actual access still
+    // requires measured AddrLib geometry, exact pitch, size and usage checks.
+    pub fn imageModifier(value: u64) bool {
+        if (value == 0) return true;
+        const allowed: u64 = 0x0200000000000001 | (31 << 8) | (7 << 21) | (7 << 24);
+        if (value & ~allowed != 0 or value & 0xff000000000000ff != 0x0200000000000001) return false;
+        const sw = (value >> 8) & 31;
+        return sw == 9 or sw == 10 or sw == 22 or sw == 25 or sw == 26 or sw == 27;
     }
     pub fn backing(self: *const Owner, handle: a.GfxBufferHandle) Error!l.Span {
         if (!self.prepared or self.self_address != @intFromPtr(self)) return error.Stale;

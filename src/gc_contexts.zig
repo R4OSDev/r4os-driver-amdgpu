@@ -62,6 +62,10 @@ pub const Owner = struct {
         const ctx = try self.context(handle); if (ctx.jobs != 0) return error.Busy;
         self.gds &= ~gdsMask(ctx.resources); ctx.live = false;
     }
+    pub fn contains(self: *const Owner, fence: a.GfxFence) bool {
+        for (&self.jobs) |*job| if (job.owner != null and std.meta.eql(job.fence, fence)) return true;
+        return false;
+    }
     fn gdsMask(resources: p.Resources) u16 {
         if (resources.gds_bytes == 0) return 0;
         return @intCast(((@as(u32, 1) << @as(u5, @intCast(resources.gds_bytes / 256))) - 1) << @as(u5, @intCast(resources.gds_offset / 256)));

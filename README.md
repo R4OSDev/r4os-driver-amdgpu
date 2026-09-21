@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.9 implements the Picasso GC9.1/SDMA4.1 execution foundation for
-R4OS 0.80.12. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.10 implements the Picasso GC9.1/SDMA4.1 execution and rendering
+foundation for R4OS 0.80.14. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -32,8 +32,25 @@ Graphics and compute have independent 64 KB rings; normal-priority hardware
 queues use software priority/age scheduling at IB boundaries. GDS reservations
 and scratch ranges cannot overlap between live contexts. Each submission has
 bounded packet storage, a deadline and its exact canonical resource owner.
-The compiler must supply the full shader/resource state and GFX9 scratch
-relocations; compiler/render/Vulkan admission follows in later milestones.
+The fixed renderer supplies genuine ACO programs and full GFX9 state.
+Arbitrary Vulkan pipelines and scratch relocations retain their later owners.
+
+`render_jobs.zig` shares R4AMD's genuine AddrLib/render archive with the R4L.
+It uploads six immutable shaders to a separate 64 KB UMA arena, maps their
+executable pages and keeps eight 4 KB parameter slots until exact retirement.
+Normal fill/sample/list/grid/color work uses separate retained BO mappings;
+text masks and NV12/P010/YUV420P use the same GC ring and timeline. Pipeline
+validation failure reaches the canonical fence after partial resources retire.
+Queue backpressure, GPU completion, map retirement and caller ACK remain
+distinct; an old or wrong fence cannot release a newer job's resources.
+
+The native allocation provider uses actual AddrLib image geometry and the
+existing UMA budget owner. The native VA provider owns 32 bounded 64 MB
+slots, full-BO bindings, exact generation tokens and separate unmap/TLB ACKs.
+Stable YUV BO mappings survive frames. GPU command/parameter preparation
+never maps pixels to the CPU. The registered render operations become visible
+only after GC/SDMA prerequisites and shader preparation; Present stays with
+the later DCN integration. These software checks do not admit the laptop.
 
 Before queue activation AMDGPU also publishes an IMAGE_V1 architecture
 record: GC/SDMA identity, verified external ASIC revision, actual post-golden
