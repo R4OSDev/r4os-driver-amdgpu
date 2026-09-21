@@ -1,0 +1,9 @@
+/.zig-cache/
+/zig-out/
+/zig-pkg/
+/Settings.R4S
+*.o
+*.obj
+*.exe
+*.pyc
+**/__pycache__/

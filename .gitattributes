@@ -1,0 +1,13 @@
+* text=auto
+*.zig text eol=lf
+*.zon text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.json text eol=lf
+*.R4MF text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+ThirdParty/Linux7.2.4/Original/** -text

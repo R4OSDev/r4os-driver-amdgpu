@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "upstream_version": "7.2.4",
+  "url": "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.4.tar.xz",
+  "archive_sha256": "01710ee01737dac492f1bae52becd057e08d20d11589089aa06accff415c28dd",
+  "original_root": "ThirdParty/Linux7.2.4/Original",
+  "files": [
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_math.c",
+      "sha256": "c0b12593a7df24e1550388ae8864a2ea929b8627b42121fdda3e0dc35dcb3a27",
+      "bytes": 3662,
+      "license": "MIT (embedded notice)"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/inc/dcn_calc_math.h",
+      "sha256": "197baec4d0046cd7d9989d59aca71f78eb44e805c8a76ff8e1a50a7ff3a2fd69",
+      "bytes": 1903,
+      "license": "MIT (embedded notice)"
+    }
+  ],
+  "patches": []
+}

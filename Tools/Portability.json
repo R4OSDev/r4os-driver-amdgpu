@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "module": "AMDGPU",
+  "profile": "dcn",
+  "generators": [],
+  "flags": [
+    "-I${unit}/Port/Include",
+    "-I${source}/drivers/gpu/drm/amd/display/dc/inc",
+    "-fno-strict-aliasing"
+  ],
+  "units": [
+    {
+      "name": "dcn_math",
+      "source": "drivers/gpu/drm/amd/display/dc/dml/calcs/dcn_calc_math.c",
+      "language": "c"
+    }
+  ],
+  "followup": "0.80.15",
+  "scope": "Real DCN1 bandwidth math dependency. Full DCN1 mode, MMIO, timing and resource code requires the later display port; no hardware operations."
+}
