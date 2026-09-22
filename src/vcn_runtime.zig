@@ -14,6 +14,10 @@ pub const Owner = struct {
     engine: ve.Owner = .{}, window: @import("memory_io.zig").Window = .{},
     epoch: u64 = 0, gpu: u64 = 0, started_test: bool = false, verified: bool = false, closed: bool = false,
     test_deadline: c.Deadline = .{},
+    idle_since: u64 = 0, gated: bool = false, wake_requested: bool = false,
+    power_phase: enum { active, stopping, sleeping, starting } = .active,
+    saved_setup: ?ve.Setup = null,
+
     pub fn words32(self: *const Owner, offset: usize, bytes: usize) c.Error![]volatile u32 {
         if (self.self_address != @intFromPtr(self) or self.closed or !@import("memory_io.zig").handle(self.window.value.handle) or
             offset & 3 != 0 or bytes == 0 or bytes & 3 != 0 or offset >= self.window.value.byte_length or bytes > self.window.value.byte_length - offset) return error.Invalid;
@@ -72,12 +76,62 @@ pub const Owner = struct {
         self.verified = true; return true;
     }
     pub fn poll(self: *Owner) void {
-        if (!self.verified or self.closed or self.engine.stopping or self.engine.faulted) return;
-        self.engine.observe(&self.memory.?.registers) catch { self.engine.faulted = true; self.runtime.?.timeline.fault(qr.media_engines); };
+        if (!self.verified or self.closed or self.engine.faulted) return;
+        self.powerStep() catch { self.engine.faulted = true; self.runtime.?.timeline.fault(qr.media_engines); };
     }
-    pub fn canSubmit(self: *const Owner, engine: qr.Engine) c.Error!bool {
-        if (!self.verified or self.closed or self.engine.stopping or self.engine.faulted or
+    fn occupied(self: *const Owner) bool {
+        for (&self.runtime.?.timeline.entries) |*entry| if (entry.phase != .free and qr.isMedia(entry.engine)) return true;
+        for (&self.engine.rings) |*ring| if (ring.read != ring.write) return true;
+        return false;
+    }
+    fn powerStep(self: *Owner) c.Error!void {
+        const io = &self.memory.?.registers;
+        const now = io.nowNs();
+        switch (self.power_phase) {
+            .active => {
+                if (self.engine.stopping) return;
+                if (!self.gated) try self.engine.observe(io);
+                if (self.wake_requested or self.occupied()) {
+                    self.idle_since = now; self.wake_requested = false;
+                    if (self.gated) { try @import("vcn_clocks.zig").enable(io); self.gated = false; }
+                    return;
+                }
+                if (self.idle_since == 0) self.idle_since = now;
+                if (now < self.idle_since) return error.Deadline;
+                if (!self.gated and now - self.idle_since >= 100 * std.time.ns_per_ms) {
+                    try @import("vcn_clocks.zig").gate(io); self.gated = true;
+                }
+                if (now - self.idle_since >= 2 * std.time.ns_per_s) {
+                    if (self.gated) { try @import("vcn_clocks.zig").enable(io); self.gated = false; }
+                    self.saved_setup = self.engine.setup;
+                    self.power_phase = .stopping;
+                }
+            },
+            .stopping => if (try self.engine.stop(io)) { self.power_phase = .sleeping; },
+            .sleeping => if (self.wake_requested) {
+                // Firmware context/DPB backing stays retained in the same UMA
+                // workspace. Only ring state is rebuilt, as in VCN1 stop/start.
+                // Do not reset a mailbox whose PowerUp response is uncertain.
+                if (@atomicLoad(usize, &io.smu_owner, .acquire) != 0) return;
+                self.engine = .{};
+                self.power_phase = .starting;
+                try self.engine.begin(io, self, self.saved_setup orelse return error.State);
+            },
+            .starting => if (try self.engine.advance(io)) {
+                try self.engine.interrupts(io);
+                self.power_phase = .active; self.wake_requested = false; self.idle_since = now;
+            },
+        }
+    }
+    pub fn canSubmit(self: *Owner, engine: qr.Engine) c.Error!bool {
+        if (!self.verified or self.closed or self.engine.faulted or
             self.memory.?.epoch != self.epoch or !qr.isMedia(engine)) return error.Unsupported;
+        self.wake_requested = true;
+        if (self.power_phase != .active) return false;
+        if (self.engine.stopping) return error.Unsupported;
+        if (self.gated) {
+            try @import("vcn_clocks.zig").enable(&self.memory.?.registers); self.gated = false;
+        }
         const timeline = &self.runtime.?.timeline;
         if (timeline.stopping or timeline.failed_engines != 0) return error.Unconfirmed;
         // Linux vcn1_jpeg1_workaround: JPEG and both video engines must never
@@ -113,12 +167,21 @@ pub const Owner = struct {
         armed = true;
         try self.engine.kick(&self.memory.?.registers, engine, staged);
     }
+    /// Hardware-only stop; no callbacks/PTE releases while GC may be asleep.
+    pub fn quiet(self: *Owner) bool {
+        if (self.self_address == 0 or self.closed) return true;
+        if (self.gated) {
+            @import("vcn_clocks.zig").enable(&self.memory.?.registers) catch return false;
+            self.gated = false;
+        }
+        return self.engine.stop(&self.memory.?.registers) catch false;
+    }
     /// Invoke before GC renderer teardown: media fence callbacks retain its
     /// canonical bindings until the VCN idle/LMI/reset/power proof is complete.
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0 or self.closed) return true;
         if (self.self_address != @intFromPtr(self) or self.memory.?.epoch != self.epoch) return false;
-        if (!(self.engine.stop(&self.memory.?.registers) catch false)) return false;
+        if (!self.quiet()) return false;
         const rt = self.runtime.?;
         if (rt.timeline.self_address != 0) {
             rt.timeline.abort(.{ .epoch = rt.timeline.epoch, .engines = qr.media_engines }, @import("r4os").abi.gfx_queue_result_device_lost) catch return false;

@@ -23,7 +23,7 @@ pub const Owner = struct {
     arena: @import("queue_storage.zig").Owner = .{}, irq: @import("queue_irq.zig").Owner = .{}, timeline: q.Timeline = .{},
     hooks: ?Hooks = null, semaphore: u64 = 0, thread: u64 = 0,
     stop: u32 = 0, wake_fault: u32 = 0, poll_ticks: u64 = 1, prepared: bool = false, started: bool = false,
-    notify_state: u32 = 0x80000000, closed: bool = false,
+    activity_sequence: u64 = 0, notify_state: u32 = 0x80000000, closed: bool = false,
     thread_stop_requested: bool = false, thread_joined: bool = false, worker_result: i32 = 0,
     pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *@import("memory_owner.zig").Owner,
         snapshot: *const @import("identity.zig").Snapshot, binding: a.GfxBackendBinding, gate: @import("memory_hubs.zig").Gate) Error!void
@@ -67,6 +67,7 @@ pub const Owner = struct {
     }
     pub fn notify(raw: usize) callconv(.c) void {
         const self: *Owner = @ptrFromInt(raw);
+        _ = @atomicRmw(u64, &self.activity_sequence, .Add, 1, .release);
         // The canonical backend callback can race shutdown independently of
         // IH delivery. Atomically close admission and retain existing calls.
         for (0..4) |_| {

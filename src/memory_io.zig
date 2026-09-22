@@ -39,6 +39,17 @@ pub const Window = struct {
 pub fn handle(value: a.GfxBufferHandle) bool { return value.id != 0 and value.generation != 0 and value.reserved0 == 0; }
 pub const Registers = struct {
     window: Window = .{}, clock: ?r4os.r4dev.DriverResourceContext = null,
+    // One physical SMU10 channel across start, display and queue workers.
+    // The lease spans asynchronous firmware completion, never a spinlock.
+    smu_owner: usize = 0,
+    pub fn claimSmu(self: *Registers, owner: usize) bool {
+        return @cmpxchgStrong(usize, &self.smu_owner, 0, owner, .acq_rel, .acquire) == null;
+    }
+    pub fn releaseSmu(self: *Registers, owner: usize) void {
+        const previous = @cmpxchgStrong(usize, &self.smu_owner, owner, 0, .acq_rel, .acquire);
+        @import("std").debug.assert(previous == null);
+    }
+
     pub fn open(self: *Registers, ctx: *const r4os.r4dev.DriverContext, base: u64) Error!void {
         self.clock = ctx.resources() orelse return error.Unsupported;
         try self.window.open(ctx.memory() orelse return error.Unsupported, base, regs.required_prefix, 0, regs.required_prefix, false);
@@ -54,6 +65,6 @@ pub const Registers = struct {
     pub fn barrier(_: *Registers) Error!void { asm volatile ("mfence" ::: .{ .memory = true }); }
     pub fn nowNs(self: *Registers) u64 { return self.clock.?.nowNs(); }
     pub fn close(self: *Registers) bool {
-        if (!self.window.close()) return false; self.clock = null; return true;
+        if (@atomicLoad(usize, &self.smu_owner, .acquire) != 0 or !self.window.close()) return false; self.clock = null; return true;
     }
 };

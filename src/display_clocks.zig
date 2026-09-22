@@ -158,26 +158,49 @@ pub const Point = struct {
             table.fabric_khz < 100000 or table.fabric_khz > 1200000 or
             table.dcf_khz % 1000 != 0 or table.soc_khz % 1000 != 0 or table.fabric_khz % 1000 != 0) return error.Unconfirmed;
         self.table = table; self.disp_khz = requested_disp; self.phase = .fabric;
-        self.driver.begin(io, wire.PPSMC_MSG_SetHardMinFclkByFreq, table.fabric_khz / 1000) catch |err| { self.phase = .retained; return err; };
+        self.sendCurrent(io) catch |err| { self.phase = .retained; return err; };
     }
     pub fn step(self: *Point, io: anytype) Error!bool {
         if (self.phase == .ready) return true;
         if (self.phase == .empty or self.phase == .retained) return error.State;
         return self.advance(io) catch |err| { self.phase = .retained; return err; };
     }
+    fn sendCurrent(self: *Point, io: anytype) Error!void {
+        const request: struct { message: u32, argument: u32 } = switch (self.phase) {
+            .fabric => .{ .message = wire.PPSMC_MSG_SetHardMinFclkByFreq, .argument = self.table.fabric_khz / 1000 },
+            .soc => .{ .message = wire.PPSMC_MSG_SetHardMinSocclkByFreq, .argument = self.table.soc_khz / 1000 },
+            .dcf => .{ .message = wire.PPSMC_MSG_SetHardMinDcefclkByFreq, .argument = self.table.dcf_khz / 1000 },
+            .deep_sleep => .{ .message = wire.PPSMC_MSG_SetMinDeepSleepDcefclk, .argument = self.table.dcf_khz / 1000 },
+            else => return error.State,
+        };
+        self.driver.begin(io, request.message, request.argument) catch |err| {
+            if (err == error.Busy and !self.driver.active) return;
+            return err;
+        };
+    }
     fn advance(self: *Point, io: anytype) Error!bool {
         if (self.phase == .display) {
+            if (!self.vbios.active) {
+                self.vbios.begin(io, self.disp_khz) catch |err| {
+                    if (err == error.Busy and !self.vbios.active) return false;
+                    return err;
+                };
+            }
             if (!try self.vbios.poll(io, false)) return false;
             self.actual_disp_khz = self.vbios.actual_khz; self.phase = .ready; return true;
         }
+        if (!self.driver.active) { try self.sendCurrent(io); return false; }
         if (!try self.driver.poll(io, false)) return false;
-        switch (self.phase) {
-            .fabric => { self.phase = .soc; try self.driver.begin(io, wire.PPSMC_MSG_SetHardMinSocclkByFreq, self.table.soc_khz / 1000); },
-            .soc => { self.phase = .dcf; try self.driver.begin(io, wire.PPSMC_MSG_SetHardMinDcefclkByFreq, self.table.dcf_khz / 1000); },
-            .dcf => { self.phase = .deep_sleep; try self.driver.begin(io, wire.PPSMC_MSG_SetMinDeepSleepDcefclk, self.table.dcf_khz / 1000); },
-            .deep_sleep => { self.phase = .display; try self.vbios.begin(io, self.disp_khz); },
+        self.phase = switch (self.phase) {
+            .fabric => .soc, .soc => .dcf, .dcf => .deep_sleep, .deep_sleep => .display,
             else => return error.State,
-        }
+        };
+        if (self.phase == .display) {
+            self.vbios.begin(io, self.disp_khz) catch |err| {
+                if (err == error.Busy and !self.vbios.active) return false;
+                return err;
+            };
+        } else try self.sendCurrent(io);
         return false;
     }
 };

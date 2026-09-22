@@ -68,6 +68,7 @@ test "VCN1 original C packet oracle matches decode encode JPEG and hardware wrap
 }
 
 test "VCN1 SMU power boot cache windows independent rings and retained DMA shutdown" {
+    try checkIdlePower();
     F.reset(); var io: F = .{};
     var setup = F.setup(); setup.boot_held = false;
     try t.expectError(error.Unconfirmed, F.engine.begin(&io, &io, setup)); try t.expectEqual(@as(usize, 0), F.writes);
@@ -194,3 +195,47 @@ test "VCN1 JPEG copies into VMID0, waits for video fence retirement and retains 
     // only after checking that the retained original commands still exist.
     try t.expectEqual(@as(u32, 0x60000000), copy[0]);
 }
+
+fn checkIdlePower() !void {
+    const N = NativeMedia;
+    F.reset(); N.runtime = .{}; N.memory = .{}; N.media = .{};
+    N.memory.epoch = 9;
+    N.memory.registers.window.value = .{ .handle = .{ .id = 1, .generation = 1 }, .cpu_address = @intFromPtr(&F.regs), .byte_length = @sizeOf(@TypeOf(F.regs)) };
+    N.memory.registers.clock = .{ .table = .{ .now_ns = @intFromPtr(&powerClock) } };
+    var writebacks: [q.capacity]u64 = undefined;
+    try N.runtime.timeline.init(.{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 }, &writebacks, 1);
+    N.media = .{ .self_address = @intFromPtr(&N.media), .memory = &N.memory, .runtime = &N.runtime, .epoch = 9,
+        .gpu = 0x101000000, .verified = true,
+        .window = .{ .value = .{ .handle = .{ .id = 2, .generation = 1 }, .cpu_address = @intFromPtr(&F.arena), .byte_length = @sizeOf(@TypeOf(F.arena)) } } };
+    var io: F = .{};
+    try N.media.engine.begin(&io, &io, F.setup()); _ = try N.media.engine.advance(&io); _ = try N.media.engine.advance(&io);
+    F.regs[r.UVD_STATUS / 4] = 2; try t.expect(try N.media.engine.advance(&io));
+    F.arena[ve.stack_bytes / 4] = 0x53455353; // Firmware session-context backing survives idle.
+    N.media.poll(); F.now += 100_000_000; N.media.poll();
+    try t.expect(N.media.gated and F.regs[r.JPEG_CGC_CTRL / 4] & r.JPEG_CGC_CTRL__DYN_CLOCK_MODE_MASK != 0);
+    // Retiring resources block power-off even with already equal ring pointers.
+    N.runtime.timeline.entries[0].phase = .retiring; N.runtime.timeline.entries[0].engine = .decode;
+    F.now += 3_000_000_000; N.media.poll();
+    try t.expect(!N.media.gated and N.media.power_phase == .active);
+    N.runtime.timeline.entries[0].phase = .free;
+    F.now += 2_000_000_000; N.media.poll(); try t.expect(N.media.power_phase == .stopping);
+    // New work during stop waits for the exact PowerDown -> PowerUp sequence.
+    try t.expect(!try N.media.canSubmit(.decode));
+    F.regs[r.UVD_LMI_STATUS / 4] = 0x24f;
+    for (0..10) |_| {
+        N.media.poll();
+        F.regs[r.UVD_PGFSM_STATUS / 4] = 0x2aaaaa;
+        F.regs[sr.smu.MP1_SMN_C2PMSG_90 / 4] = 1;
+        if (N.media.power_phase == .sleeping) break;
+    }
+    try t.expect(N.media.power_phase == .sleeping and !N.media.engine.powered and !N.media.closed);
+    N.media.poll(); try t.expect(N.media.power_phase == .starting and !try N.media.canSubmit(.decode));
+    F.regs[sr.smu.MP1_SMN_C2PMSG_90 / 4] = 1; N.media.poll();
+    F.regs[r.UVD_PGFSM_STATUS / 4] = 0; N.media.poll();
+    F.regs[r.UVD_STATUS / 4] = 2; N.media.poll();
+    try t.expect(N.media.power_phase == .active and try N.media.canSubmit(.decode));
+    try t.expectEqual(@as(u32, 0x53455353), F.arena[ve.stack_bytes / 4]);
+    try t.expect(N.media.epoch == 9 and N.media.window.value.handle.id == 2 and !N.media.closed);
+    std.debug.print("[amd-vcn-power] exact media retirement, idle CG, PowerDown/PowerUp, queued wake and retained session backing; model only\n", .{});
+}
+fn powerClock() callconv(.c) u64 { return F.now; }

@@ -87,6 +87,7 @@ const F = struct {
 };
 
 test "Picasso PSP10 actual command ABI, original upload sections, bounded SMU10 start and reverse teardown" {
+    try @import("power_test.zig").check();
     var io: F = .{}; try F.reset();
     try t.expectEqual(@as(u32, 0x58a08), r.smu.MP1_SMN_C2PMSG_66); // actual IP_BASE, not incorrect macro
     try t.expectEqual(@as(usize, 0x100000), F.view.tmr_offset);
@@ -116,6 +117,42 @@ test "Picasso PSP10 actual command ABI, original upload sections, bounded SMU10 
 }
 
 test "Picasso startup failures preserve outstanding mailbox, TMR and firmware ownership" {
+    // The real MMIO wrapper arbitrates across different worker-owned
+    // mailboxes, including an acknowledged response not consumed yet.
+    try F.reset();
+    var registers: @import("memory_io.zig").Registers = .{ .clock = .{ .table = .{ .now_ns = @intFromPtr(&N.clock) } },
+        .window = .{ .value = .{ .handle = .{ .id = 1, .generation = 1 }, .cpu_address = @intFromPtr(&F.words), .byte_length = @sizeOf(@TypeOf(F.words)) } } };
+    var first: @import("start_smu.zig").Mailbox = .{};
+    var second: @import("start_smu.zig").Mailbox = .{};
+    try first.begin(&registers, r.PPSMC_MSG_GetSmuVersion, null);
+    F.words[r.smu.MP1_SMN_C2PMSG_90 / 4] = 1;
+    F.words[r.smu.MP1_SMN_C2PMSG_82 / 4] = 0x41e3b00;
+    try t.expectError(error.Busy, second.begin(&registers, r.PPSMC_MSG_GetDriverIfVersion, null));
+    try t.expect(try first.poll(&registers, false));
+    try t.expectEqual(@as(u32, 0x41e3b00), first.argument);
+    try second.begin(&registers, r.PPSMC_MSG_GetDriverIfVersion, null);
+    F.clock += 500_000_000;
+    try t.expectError(error.Deadline, second.poll(&registers, false));
+    try t.expect(registers.smu_owner == @intFromPtr(&second) and !registers.close());
+    F.words[r.smu.MP1_SMN_C2PMSG_90 / 4] = 0xff;
+    try t.expectError(error.Response, second.poll(&registers, true));
+    try t.expect(registers.smu_owner == 0 and !second.active);
+    // A display clock transaction waits for ownership rather than consuming
+    // another command's completed reply or failing the modeset.
+    F.words[r.smu.MP1_SMN_C2PMSG_90 / 4] = 1;
+    try first.begin(&registers, r.PPSMC_MSG_GetSmuVersion, null);
+    const clocks = @import("display_clocks.zig");
+    var point: clocks.Point = .{};
+    try point.begin(&registers, .{ .dcf_khz = 600000, .soc_khz = 800000, .fabric_khz = 800000, .memory_khz = 1200000 }, 600000, true);
+    try t.expect(point.phase == .fabric and !point.driver.active);
+    try t.expect(!try point.step(&registers));
+    F.words[r.smu.MP1_SMN_C2PMSG_90 / 4] = 1;
+    try t.expect(try first.poll(&registers, true));
+    try t.expect(!try point.step(&registers));
+    try t.expect(point.driver.active and point.driver.message == clocks.wire.PPSMC_MSG_SetHardMinFclkByFreq);
+    F.words[r.smu.MP1_SMN_C2PMSG_90 / 4] = 1;
+    try t.expect(try point.driver.poll(&registers, true));
+
     var io: F = .{};
     for ([_]u32{ 0xff, 0xfe, 0xfd, 0xfc }) |result| {
         try F.reset(); F.smu_reply = result; try F.begin(&io); try F.tick(&io);

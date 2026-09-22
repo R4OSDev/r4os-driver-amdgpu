@@ -36,7 +36,7 @@ pub const context_bytes = 512 * 1024;
 pub const spare_ring_offset = stack_bytes + context_bytes;
 pub const test_offset = spare_ring_offset + storage.ring_bytes;
 pub fn ringOffset(engine: qr.Engine) usize { std.debug.assert(qr.isMedia(engine)); return 0xc0000 + @as(usize, @intFromEnum(engine) - 3) * storage.ring_bytes; }
-pub const Phase = enum { empty, power_wait, tiles_wait, firmware_wait, ready, stop_idle, stop_clean, stop_umc, stop_tiles, stop_power, closed };
+pub const Phase = enum { empty, power_send, power_wait, tiles_wait, firmware_wait, ready, stop_idle, stop_clean, stop_umc, stop_tiles, stop_power, closed };
 pub const Setup = struct { epoch: u64, firmware: u64, firmware_bytes: u32, workspace: u64, ring: [3]u64, gb_addr_config: u32, boot_held: bool };
 pub const Owner = struct {
     phase: Phase = .empty, setup: ?Setup = null, deadline: c.Deadline = .{},
@@ -56,13 +56,23 @@ pub const Owner = struct {
         try packets.jpegPatch(setup.ring[2], try arena.words32(ringOffset(.jpeg) + packets.jpeg_words * 4, 256));
         self.setup = setup; self.touched = true;
         try self.deadline.start(io.nowNs(), 3_000_000_000, 0);
-        try self.smu.begin(io, sr.PPSMC_MSG_PowerUpVcn, 0); self.phase = .power_wait;
+        self.phase = .power_send;
+        try self.powerUp(io);
+    }
+    fn powerUp(self: *Owner, io: anytype) c.Error!void {
+        self.smu.begin(io, sr.PPSMC_MSG_PowerUpVcn, 0) catch |err| {
+            if (self.smu.active) self.phase = .power_wait;
+            if (err == error.Busy and !self.smu.active) return;
+            return err;
+        };
+        self.phase = .power_wait;
     }
     pub fn advance(self: *Owner, io: anytype) c.Error!bool {
         if (self.phase == .ready) return true;
         if (self.stopping or self.phase == .empty or self.phase == .closed) return error.State;
         _ = try self.deadline.check(io.nowNs());
         switch (self.phase) {
+            .power_send => try self.powerUp(io),
             .power_wait => if (try self.smu.poll(io, false)) {
                 self.powered = true;
                 // All eleven tiles remain powered while this owner is active.
@@ -151,7 +161,16 @@ pub const Owner = struct {
         if (!self.touched or self.phase == .closed) return true;
         if (!self.stopping) { self.stopping = true; try self.deadline.start(io.nowNs(), 3_000_000_000, 0); }
         _ = try self.deadline.check(io.nowNs());
-        if (self.smu.active) { if (!try self.smu.poll(io, true)) return false; if (self.smu.message == sr.PPSMC_MSG_PowerUpVcn) self.powered = true; }
+        if (self.smu.active) {
+            const done = self.smu.poll(io, true) catch |err| {
+                // A rejected power-down is not proof of a stopped SMU domain.
+                if (!self.smu.active and self.smu.message == sr.PPSMC_MSG_PowerDownVcn) self.phase = .stop_tiles;
+                return err;
+            };
+            if (!done) return false;
+            if (self.smu.message == sr.PPSMC_MSG_PowerUpVcn) self.powered = true;
+        }
+        if (self.phase == .power_send and !self.smu.active) { self.phase = .closed; return true; }
         if (!self.powered) return false;
         switch (self.phase) {
             .stop_idle => {
@@ -178,7 +197,12 @@ pub const Owner = struct {
                 try io.write(r.UVD_PGFSM_CONFIG, 0x2aaaaa); self.phase = .stop_tiles;
             },
             .stop_tiles => if (try c.read(io, r.UVD_PGFSM_STATUS) & 0xffffff == 0x2aaaaa) {
-                try self.smu.begin(io, sr.PPSMC_MSG_PowerDownVcn, 0); self.phase = .stop_power;
+                self.smu.begin(io, sr.PPSMC_MSG_PowerDownVcn, 0) catch |err| {
+                    if (self.smu.active) self.phase = .stop_power;
+                    if (err == error.Busy and !self.smu.active) return false;
+                    return err;
+                };
+                self.phase = .stop_power;
             },
             .stop_power => { self.powered = false; self.phase = .closed; return true; },
             else => self.phase = .stop_idle,

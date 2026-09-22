@@ -10,7 +10,7 @@ pub const Phase = enum { empty, smu_version_send, smu_version_wait, smu_interfac
     firmware_ready, cleanup_drain, cleanup_park, cleanup_parked, cleanup_asd, cleanup_tmr, cleanup_ring, closed, retained };
 pub const Flow = struct {
     phase: Phase = .empty, failure: ?Error = null, failed_phase: Phase = .empty,
-    epoch: u64 = 0, smu_version: u32 = 0, smu_interface: u32 = 0,
+    epoch: u64 = 0, smu_version_raw: u32 = 0, smu_version: u32 = 0, smu_interface: u32 = 0,
     smu_effects: bool = false, upload: usize = 0, view: ?s.View = null, store: ?*const fw.Store = null,
     total: c.Deadline = .{}, cleanup_deadline: c.Deadline = .{},
     smu: @import("start_smu.zig").Mailbox = .{}, psp: @import("start_psp.zig").Controller = .{},
@@ -37,6 +37,7 @@ pub const Flow = struct {
         switch (self.phase) {
             .smu_version_send => try self.send(io, r.PPSMC_MSG_GetSmuVersion, .smu_version_wait),
             .smu_version_wait => if (try self.smu.poll(io, false)) {
+                self.smu_version_raw = self.smu.argument;
                 self.smu_version = self.smu.argument >> 8;
                 if (self.smu_version == 0) return error.Firmware;
                 self.phase = .smu_interface_send;

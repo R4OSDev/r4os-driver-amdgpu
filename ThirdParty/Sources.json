@@ -2285,6 +2285,20 @@
       "bytes": 1574,
       "license": "MIT (embedded notice)",
       "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/thm/thm_9_0_offset.h",
+      "sha256": "f937dd6a5123a70b1a623ad31b616955fc04dfea98f1a756393ae0be4f25704b",
+      "bytes": 37161,
+      "license": "MIT (embedded notice)",
+      "role": "SMU10/THM9 temperature source and bit definitions; power owner34"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/thm/thm_9_0_sh_mask.h",
+      "sha256": "76625249f7aeeb5496782377c389a2f5954e83e05fd711f35ed87a1378e2a48a",
+      "bytes": 137130,
+      "license": "MIT (embedded notice)",
+      "role": "SMU10/THM9 temperature source and bit definitions; power owner34"
     }
   ],
   "patches": [

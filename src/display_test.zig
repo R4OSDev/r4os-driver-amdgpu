@@ -1155,6 +1155,7 @@ const Integration = struct {
     const Lease = struct { buffer: usize = 0, access: u32 = 0, live: bool = false };
     const BO = struct { descriptor: a.GfxBufferDescriptor = .{}, ticket: a.GfxOwnedBufferReservation = .{},
         committed: bool = false, claimed: bool = false, live: bool = false };
+    var sleep_model = false;
     var output: @import("display_output.zig").Owner = .{};
     var presentation: @import("display_present.zig").Owner = .{};
     var pipe: @import("display_pipeline.zig").Owner = .{};
@@ -1623,7 +1624,8 @@ const Integration = struct {
             }
         }
         queue.timeline.poll(F.ticks); _ = queue.timeline.publish(queue.queue.?);
-        const client = engine.client.?; client.work(client.context);
+        const client = engine.client.?;
+        if (sleep_model) client.sleep_poll.?(client.context) else client.work(client.context);
     }
     fn untilActive() !void {
         for (0..2000) |_| { step(); if ((output.phase == .active and output.modes.ready) or output.phase == .failed) break; }
@@ -1688,7 +1690,41 @@ const Integration = struct {
         queue.timeline.writeback[ticket.slot] = ticket.token;
         try engine.engine.ring.observe(@intCast(engine.engine.ring.write & (engine.engine.ring.words.len - 1)));
     }
+    fn sleepingDisplay() !void {
+        try init(); try untilActive();
+        defer sleep_model = false;
+        var cursor_source: a.GfxBufferReference = .{};
+        try t.expectEqual(@as(i32, 1), create(&.{ .width = 32, .height = 16, .byte_length = 2048, .format = a.gfx_buffer_format_argb8888,
+            .plane_count = 1, .plane_pitches = .{128,0,0,0}, .usage = a.gfx_buffer_usage_cpu_read | a.gfx_buffer_usage_cpu_write }, &cursor_source));
+        @memset(data[index(cursor_source.reference)][0..2048], 0x80);
+        try queueReady();
+        const client = engine.client.?;
+        try t.expect(client.idle.?(client.context));
+        const vm_req = @import("memory_registers.zig").gfx.VM_INVALIDATE_ENG17_REQ / 4;
+        const previous_request = F.words[vm_req]; F.words[vm_req] = 0;
+        const ring_write = engine.engine.ring.write;
+        const mapping_count = R.memory.mapping_users;
+        sleep_model = true;
+        output.next_health = 0;
+        for (0..20) |_| step();
+        try t.expect(output.failure == null and client.idle.?(client.context) and
+            engine.engine.ring.write == ring_write and R.memory.mapping_users == mapping_count and F.words[vm_req] == 0);
+        var request = cursorRequest(900, a.display_cursor_operation_prepare, 0);
+        request.request.reference = cursor_source.reference; request.request.width = 32; request.request.height = 16;
+        request.request.pitch = 128; request.request.byte_length = 2048;
+        cursor_job = request;
+        for (0..20) |_| { step(); if (!client.idle.?(client.context)) break; }
+        try t.expect(output.cursor.job.?.sequence == 900 and output.cursor.phase == .validate and
+            engine.engine.ring.write == ring_write and F.words[vm_req] == 0);
+        sleep_model = false; F.words[vm_req] = previous_request;
+        try cursorDone(900);
+        std.debug.print("[amd-display-power] DCN health while GC sleeps; cursor mailbox wakes before BO/VM/ring work; model only\n", .{});
+        try t.expect(R.memory.mapping_users > mapping_count and F.words[vm_req] != 0);
+        try t.expectEqual(@as(i32, 1), release(&cursor_source.reference));
+        try cleanup();
+    }
     fn check() !void {
+        try sleepingDisplay();
         var stage: []const u8 = "initial present";
         errdefer std.debug.print("[amd-integration-failure] stage={s} output={s}/{?} present={s}/{?} head={s}/{?} mode={s}/{?} core={d} pipe={?}\n",
             .{stage, @tagName(output.phase), output.failure, @tagName(presentation.phase), presentation.failure,
@@ -1697,6 +1733,7 @@ const Integration = struct {
         try t.expect(prepare_calls == 2 and commit_calls == 2 and output.callback_confirmed and R.native.hold.native_adopted);
         try t.expect(info.flags & a.display_presentation_info_visibility != 0 and reported.visible_ns != 0 and reported.gpu_timestamp == 0 and reported.irq_sequence == 0);
         const calls = stats_calls; for (0..3) |_| step(); try t.expectEqual(calls, stats_calls); // idle publishes no fake frames
+
         source = output.shadow.reference;
         @memset(data[index(source.reference)][0..@intCast(output.shadow.descriptor.byte_length)], 0x71);
         job = .{ .fence = .{ .adapter_id = 1, .device_generation = 21, .reset_generation = 4, .timeline = 3, .point = 1, .slot = 2 },

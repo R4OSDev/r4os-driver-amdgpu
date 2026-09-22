@@ -272,6 +272,6 @@
       "owner_source": true
     }
   ],
-  "followup": "0.80.34 dynamic power; physical HDMI/audio evidence only 0.80.39",
+  "followup": "Physical clock/power/thermal/HDMI/audio qualification only 0.80.39; display-off and recovery integration 0.80.35/36",
   "scope": "Original DCN1 frontend/DML, AUX/panel, clocks, SST, scanout/flip/cursor and HDMI/I2C/stream encoders. Native eDP takeover and complete boot reconstruction use the common display contract. Joint DML admits active eDP/HDMI heads with independent native presentation, mode and retirement owners. No Linux runtime. Original DCE audio and DCN1 audio/stream calls bind the actual AZ endpoint, narrow stereo ELD and confirmed video receipt to the HDA receiver-source contract."
 }

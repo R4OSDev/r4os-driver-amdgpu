@@ -22,7 +22,7 @@
 //  *
 //  */
 // 
-//! Static-clock VCN1 session path from AMD vcn_v1_0.c.
+//! VCN1 clock controls from AMD vcn_v1_0.c; gate only after exact retirement.
 const r = @import("vcn_registers.zig");
 const c = @import("start_common.zig");
 pub fn enable(io: anytype) c.Error!void {
@@ -51,5 +51,22 @@ pub fn enable(io: anytype) c.Error!void {
     try io.write(r.UVD_SUVD_CGC_GATE, data);
     data = try c.read(io, r.UVD_SUVD_CGC_CTRL);
     data &= ~(r.UVD_SUVD_CGC_CTRL__SRE_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SIT_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SMP_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SCM_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SDB_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SCLR_MODE_MASK | r.UVD_SUVD_CGC_CTRL__UVD_SC_MODE_MASK | r.UVD_SUVD_CGC_CTRL__ENT_MODE_MASK | r.UVD_SUVD_CGC_CTRL__IME_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SITE_MODE_MASK);
+    try io.write(r.UVD_SUVD_CGC_CTRL, data);
+}
+
+/// Caller has observed idle rings and retired every VCN timeline resource.
+pub fn gate(io: anytype) c.Error!void {
+    var data = try c.read(io, r.JPEG_CGC_CTRL);
+    data |= r.JPEG_CGC_CTRL__DYN_CLOCK_MODE_MASK | (1 << r.JPEG_CGC_CTRL__CLK_GATE_DLY_TIMER__SHIFT) | (4 << r.JPEG_CGC_CTRL__CLK_OFF_DELAY__SHIFT);
+    try io.write(r.JPEG_CGC_CTRL, data);
+    try c.set(io, r.JPEG_CGC_GATE, r.JPEG_CGC_GATE__JPEG_MASK | r.JPEG_CGC_GATE__JPEG2_MASK, r.JPEG_CGC_GATE__JPEG_MASK | r.JPEG_CGC_GATE__JPEG2_MASK);
+    data = try c.read(io, r.UVD_CGC_CTRL);
+    data |= r.UVD_CGC_CTRL__DYN_CLOCK_MODE_MASK | (1 << r.UVD_CGC_CTRL__CLK_GATE_DLY_TIMER__SHIFT) | (4 << r.UVD_CGC_CTRL__CLK_OFF_DELAY__SHIFT);
+    try io.write(r.UVD_CGC_CTRL, data);
+    data = try c.read(io, r.UVD_CGC_CTRL);
+    data |= (r.UVD_CGC_CTRL__UDEC_RE_MODE_MASK | r.UVD_CGC_CTRL__UDEC_CM_MODE_MASK | r.UVD_CGC_CTRL__UDEC_IT_MODE_MASK | r.UVD_CGC_CTRL__UDEC_DB_MODE_MASK | r.UVD_CGC_CTRL__UDEC_MP_MODE_MASK | r.UVD_CGC_CTRL__SYS_MODE_MASK | r.UVD_CGC_CTRL__UDEC_MODE_MASK | r.UVD_CGC_CTRL__MPEG2_MODE_MASK | r.UVD_CGC_CTRL__REGS_MODE_MASK | r.UVD_CGC_CTRL__RBC_MODE_MASK | r.UVD_CGC_CTRL__LMI_MC_MODE_MASK | r.UVD_CGC_CTRL__LMI_UMC_MODE_MASK | r.UVD_CGC_CTRL__IDCT_MODE_MASK | r.UVD_CGC_CTRL__MPRD_MODE_MASK | r.UVD_CGC_CTRL__MPC_MODE_MASK | r.UVD_CGC_CTRL__LBSI_MODE_MASK | r.UVD_CGC_CTRL__LRBBM_MODE_MASK | r.UVD_CGC_CTRL__WCB_MODE_MASK | r.UVD_CGC_CTRL__VCPU_MODE_MASK | r.UVD_CGC_CTRL__SCPU_MODE_MASK);
+    try io.write(r.UVD_CGC_CTRL, data);
+    data = try c.read(io, r.UVD_SUVD_CGC_CTRL);
+    data |= (r.UVD_SUVD_CGC_CTRL__SRE_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SIT_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SMP_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SCM_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SDB_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SCLR_MODE_MASK | r.UVD_SUVD_CGC_CTRL__UVD_SC_MODE_MASK | r.UVD_SUVD_CGC_CTRL__ENT_MODE_MASK | r.UVD_SUVD_CGC_CTRL__IME_MODE_MASK | r.UVD_SUVD_CGC_CTRL__SITE_MODE_MASK);
     try io.write(r.UVD_SUVD_CGC_CTRL, data);
 }

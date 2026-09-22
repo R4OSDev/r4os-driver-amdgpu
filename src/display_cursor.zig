@@ -30,23 +30,8 @@ pub const Owner = struct {
         const display = output.display.?;
         const memory = output.native.?.memory.?;
         if (self.job) |job| if (output.last_time >= job.deadline_ns) return error.Deadline;
-        if (!self.configured) {
-            if (!display.supportsCursor()) return error.Unsupported;
-            const status = display.cursorConfigure(&.{ .head_id = output.mode.pipe, .flags = 15, .backend = output.engine.?.binding,
-                .display_generation = output.epoch.display, .max_width = 64, .max_height = 64,
-                .min_x = -4096, .min_y = -4096, .max_x = 8191, .max_y = 8191 });
-            if (status == a.gfx_output_error_busy) return;
-            if (status != a.gfx_output_ok) return error.Unsupported;
-            self.configured = true;
-        }
-        if (self.phase == .idle) {
-            if (!output.present.?.available()) return;
-            var job: a.GfxDriverCursorJob = .{};
-            const status = display.cursorTake(&output.engine.?.binding, &job);
-            if (status == 0 or status == a.gfx_output_error_busy) return;
-            if (status != a.gfx_output_ok) return error.Stale;
-            self.job = job; self.phase = .validate; self.back = 1 - self.front;
-        }
+        try self.pollDemand(output);
+        if (self.job == null) return;
         if (self.phase == .reply or self.phase == .failed) {
             if (!self.closeRead(memory)) return;
             if (!self.armed and !self.images[self.back].close(true)) return;
@@ -64,6 +49,27 @@ pub const Owner = struct {
                 .visibility = if (self.lost) a.display_cursor_visibility_unknown else @intFromBool(self.visible) };
             self.phase = .failed;
         };
+    }
+    /// Canonical mailbox only. Safe with GFXOFF; BO/VM/MMIO follows in step.
+    pub fn pollDemand(self: *Owner, output: anytype) !void {
+        const display = output.display.?;
+        if (!self.configured) {
+            if (!display.supportsCursor()) return error.Unsupported;
+            const status = display.cursorConfigure(&.{ .head_id = output.mode.pipe, .flags = 15, .backend = output.engine.?.binding,
+                .display_generation = output.epoch.display, .max_width = 64, .max_height = 64,
+                .min_x = -4096, .min_y = -4096, .max_x = 8191, .max_y = 8191 });
+            if (status == a.gfx_output_error_busy) return;
+            if (status != a.gfx_output_ok) return error.Unsupported;
+            self.configured = true;
+        }
+        if (self.phase == .idle) {
+            if (!output.present.?.available()) return;
+            var job: a.GfxDriverCursorJob = .{};
+            const status = display.cursorTake(&output.engine.?.binding, &job);
+            if (status == 0 or status == a.gfx_output_error_busy) return;
+            if (status != a.gfx_output_ok) return error.Stale;
+            self.job = job; self.phase = .validate; self.back = 1 - self.front;
+        }
     }
     fn advance(self: *Owner, output: anytype) !void {
         const job = self.job.?; const request = job.request;

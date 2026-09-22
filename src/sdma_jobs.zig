@@ -24,6 +24,8 @@ pub const Client = struct {
     accept: *const fn (usize, a.GfxDriverJob) bool,
     drain: ?*const fn (usize) bool = null,
     lost: ?*const fn (usize) void = null,
+    idle: ?*const fn (usize) bool = null,
+    sleep_poll: ?*const fn (usize) void = null,
 };
 const Job = struct {
     owner: ?*Owner = null,
@@ -67,6 +69,7 @@ const Job = struct {
 };
 pub const Owner = struct {
     client: ?Client = null,
+    power: @import("power_runtime.zig").Owner = .{},
     media: ?*@import("vcn_runtime.zig").Owner = null,
     graphics: ?*@import("gc_runtime.zig").Owner = null,
     self_address: usize = 0,
@@ -197,6 +200,7 @@ pub const Owner = struct {
         const runtime = self.runtime.?;
         const memory = self.memory.?;
         if (!runtime.stopWorker()) return false;
+        if (!self.power.close(self)) return false;
         if (self.media) |media| if (!media.close()) return false;
         if (self.graphics) |graphics| if (!graphics.close()) return false;
         if (!(self.engine.stop(&memory.registers) catch false)) return false;
@@ -240,8 +244,10 @@ pub const Owner = struct {
     }
     fn beforePoll(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {
         const self: *Owner = @ptrFromInt(raw);
-        c.hdpInvalidate(&self.memory.?.registers) catch runtime.timeline.fault(1);
         if (self.media) |media| media.poll();
+        self.power.step(self) catch { runtime.timeline.fault(@import("queue_ring.zig").all_engines); };
+        if (!self.power.awake()) return;
+        c.hdpInvalidate(&self.memory.?.registers) catch runtime.timeline.fault(1);
         if (self.graphics) |graphics| graphics.poll();
     }
     fn event(_: usize, _: @import("queue_ih.zig").Event) void {}
@@ -249,6 +255,7 @@ pub const Owner = struct {
         const self: *Owner = @ptrFromInt(raw);
         if (!std.meta.eql(epoch, self.runtime.?.timeline.epoch)) return null;
         if (self.client) |client| if (client.lost) |lost| lost(client.context);
+        if (!self.power.close(self)) return null;
         var confirmed: @import("queue_ring.zig").EngineMask = 0;
         if (engines & 1 != 0 and (self.engine.stop(&self.memory.?.registers) catch false)) confirmed |= 1;
         // The renderer owns VCN's canonical bindings too. A GC teardown must
@@ -265,6 +272,7 @@ pub const Owner = struct {
     }
     fn work(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {
         const self: *Owner = @ptrFromInt(raw);
+        if (!self.power.awake()) return;
         if (self.client) |client| client.work(client.context);
         if (self.graphics) |graphics| graphics.work();
         if (!self.registered or !self.verified or self.engine.stopping) return;

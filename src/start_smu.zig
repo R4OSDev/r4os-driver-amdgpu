@@ -28,8 +28,17 @@ pub const Error = c.Error;
 pub const Mailbox = struct {
     active: bool = false, sent: bool = false, message: u32 = 0, response: u32 = 0, argument: u32 = 0,
     deadline: c.Deadline = .{},
+    fn claim(self: *Mailbox, io: anytype) bool {
+        if (comptime @hasDecl(@typeInfo(@TypeOf(io)).pointer.child, "claimSmu")) return io.claimSmu(@intFromPtr(self));
+        return true; // Pure source/packet fixtures have no concurrent MMIO users.
+    }
+    fn release(self: *Mailbox, io: anytype) void {
+        if (comptime @hasDecl(@typeInfo(@TypeOf(io)).pointer.child, "releaseSmu")) io.releaseSmu(@intFromPtr(self));
+    }
+
     pub fn begin(self: *Mailbox, io: anytype, message: u32, argument: ?u32) Error!void {
-        if (self.active) return error.Busy;
+        if (self.active or !self.claim(io)) return error.Busy;
+        errdefer if (!self.active) self.release(io);
         // A zero response still belongs to the previous request. Never erase it.
         if (try c.read(io, r.smu.MP1_SMN_C2PMSG_90) == 0) return error.Busy;
         try self.deadline.start(io.nowNs(), 500_000_000, 0);
@@ -47,7 +56,7 @@ pub const Mailbox = struct {
         if (!cleanup) _ = try self.deadline.check(io.nowNs());
         const value = try c.read(io, r.smu.MP1_SMN_C2PMSG_90);
         if (value == 0) return false;
-        self.response = value; self.argument = try c.read(io, r.smu.MP1_SMN_C2PMSG_82); self.active = false;
+        self.response = value; self.argument = try c.read(io, r.smu.MP1_SMN_C2PMSG_82); self.active = false; self.release(io);
         if (value != r.PPSMC_Result_OK) return error.Response;
         return true;
     }

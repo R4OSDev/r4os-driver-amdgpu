@@ -104,12 +104,70 @@ pub const Owner = struct {
             .limits = .{ .channels = board.integrated.?.uma_channels, .dcf_khz = table.dcf_khz, .fabric_khz = table.fabric_khz,
                 .soc_khz = table.soc_khz, .disp_khz = 1108000, .dpp_khz = 720000, .ref_khz = try board.displayReferenceClock(),
                 .gb_addr_config = gb_addr_config, .reserved = 0 } };
-        engine.client = .{ .context = self.self_address, .work = work, .available = available, .accept = accept, .drain = drain, .lost = lost };
+        engine.client = .{ .context = self.self_address, .work = work, .available = available, .accept = accept, .drain = drain, .lost = lost, .idle = powerIdle, .sleep_poll = sleepPoll };
     }
     fn from(raw: usize) *Owner { return @ptrFromInt(raw); }
     fn lost(raw: usize) void {
         const self = from(raw);
         if (self.phase != .failed and self.phase != .closing) self.fail(error.DeviceLost);
+    }
+    fn powerIdle(raw: usize) bool {
+        const self = from(raw);
+        if (self.phase != .active or self.failure != null or self.primary_failure != null or
+            @atomicLoad(u32, &self.restore_requested, .acquire) != 0 or
+            !self.modes.permitsQueue() or self.mode_inbox != null or self.cursor.phase != .idle or
+            self.present.?.input != null or self.connector.quarantined or
+            (self.connector.phase != .idle and self.connector.phase != .wait_service)) return false;
+        for (&self.incoming) |*entry| if (entry.* != null) return false;
+        // HPD's task may update retirement requests. Read that owner only
+        // after join; the task itself touches DCN, never the sleeping GC/VM.
+        if (self.core.?.thread != 0) return self.health_pending or self.brightness_pending or self.connector.phase == .wait_service;
+        const head = &self.additional;
+        if (head.draining or head.mode_inbox != null or head.presentation.input != null) return false;
+        return head.phase == .empty or head.phase == .retired or
+            (head.phase == .active and head.failure == null and head.modes.permitsQueue());
+    }
+    /// Only DCN service and common mailboxes run while GC sleeps. Discovering
+    /// a mode/cursor/connector change wakes GC before the normal BO/VM path.
+    fn sleepPoll(raw: usize) void {
+        const self = from(raw);
+        if (!powerIdle(raw)) return;
+        self.sleepStep() catch |err| self.fail(err);
+    }
+    fn sleepStep(self: *Owner) !void {
+        const core = self.core.?;
+        const now = self.ctx.?.resources().?.nowNs();
+        if (now < self.last_time or now == std.math.maxInt(u64)) return error.Clock;
+        self.last_time = now;
+        if (self.health_pending) {
+            if (!core.poll()) return;
+            self.health_pending = false;
+            if (core.result != 0 and core.result != dc.c.R4DCN_BUSY) return error.Visibility;
+            if (core.result == dc.c.R4DCN_BUSY) {
+                if (now >= self.health_retry_deadline) return error.Deadline;
+                self.next_health = now;
+            } else { self.next_health = now + 250 * std.time.ns_per_ms; self.health_retry_deadline = 0; }
+        }
+        if (self.brightness_pending) {
+            if (!core.poll()) return;
+            self.brightness_pending = false;
+            if (core.phase == .retained) return error.Visibility;
+        }
+        try self.connector.poll(self);
+        if (self.connector.waiting() or !powerIdle(@intFromPtr(self))) return;
+        try self.modeWork();
+        try self.cursor.pollDemand(self);
+        if (!powerIdle(@intFromPtr(self))) return;
+        try self.connector.step(self);
+        if (core.thread != 0) return;
+        if (now >= self.next_health) {
+            if (self.health_retry_deadline == 0) self.health_retry_deadline = now + 2 * std.time.ns_per_s;
+            try core.healthCommand(); self.health_pending = true;
+        } else if (self.outputs.?.supportsBrightness() and now >= self.next_brightness) {
+            try core.brightnessCommand(self.output); self.brightness_pending = true;
+            self.next_brightness = now + std.time.ns_per_s;
+        }
+        _ = self.display.?.schedule(&self.engine.?.binding);
     }
     fn available(raw: usize) bool {
         const self = from(raw);

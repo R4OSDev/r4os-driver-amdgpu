@@ -172,6 +172,7 @@ pub fn advanceNative() !bool {
         try vcn_runtime.prepare(&memory_runtime, &queue_runtime, &native_start, &gc_runtime);
     }
     if (!try vcn_runtime.advance()) return false;
+    if (!try sdma_runtime.power.prepare(&sdma_runtime, &native_start)) return false;
     if (!sdma_runtime.active) {
         const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
         if (display_runtime.self_address == 0) display_runtime.audio_peer = audio_peer;
@@ -202,6 +203,7 @@ fn recoverNative() bool {
     if (!queue_runtime.stopWorker()) return false;
     if (display_output.self_address != 0) display_output.phase = .closing;
     if (!display_output.beginReset()) return false;
+    if (!sdma_runtime.power.close(&sdma_runtime)) return false;
     if (!display_runtime.close() or !sdma_runtime.close()) return false;
     if (!display_output.additional.reset()) return false;
     if (!display_output.modes.close()) return false;

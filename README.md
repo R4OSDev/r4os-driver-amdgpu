@@ -235,8 +235,8 @@ self-tests. VCN readiness is published only after all three ring proofs.
 The worker routes decode/encode IBs through canonical native binding loans;
 32-bit VCN fence identities never wrap within an epoch. Media shutdown must
 confirm drained rings, clean LMI/UMC, reset and power ACK before releasing
-storage or closing the shared renderer. Static clocks keep active VCN tiles
-on; normal idle energy policy follows in /34.
+storage or closing the shared renderer. Clock and idle power transitions
+are coordinated by the queue owner as described below.
 
 Native YUV allocations expose linear NV12/P010 in one BO with two planes.
 The codec-specific session/picture/feedback messages follow in /29-/31;
@@ -258,3 +258,29 @@ DeviceFacts bit 3 advertises this path separately from VCN ring readiness.
 Existing VCN tests cover copy independence, cross-engine exclusion, delayed
 retirement and timeout retention. Docs/Drivers/AMDCodecs08030 records the
 software evidence; actual VCN/JPEG execution and image quality remain /39.
+
+SMU10 and idle power (0.80.34)
+-----------------------------
+AMDGPU 0.1.22 arbitrates the single SMU10 driver mailbox across display,
+queue and media workers, retaining ownership through a late response.
+Firmware GFX min/max limits, queried GFX/Fabric clocks, supported GFX load
+and THM9 APU temperature feed the existing common telemetry cache. Demand
+expires after ten seconds; samples expire after three. Missing DRAM clocks,
+watts, package limits, memory load and GPU timestamps remain unknown. The
+factory CPU/APU power budget is never replaced by a discrete-GPU policy.
+
+GC9 clock gating follows Picasso's advertised flags. After two seconds of
+confirmed queue/ring/resource idle, GFXOFF may run unless the pinned board
+quirk excludes it. New canonical work or display mailbox activity wakes GC;
+SMU DisableGfxOff plus real awake status and the Picasso compute PG-off
+sequence precede BO/VM/ring work. DCN service continues independently.
+VCN enables idle clock gating after 100 ms, then uses acknowledged power-down
+at two seconds. Context backing remains resident; new work waits through
+power-up and firmware readiness. SDMA auto clocks/light sleep retain the
+active display path; full SDMA power-down belongs to native shutdown.
+
+Display DCF/SOC/Fabric floors remain the previously validated joint DML
+point. MMHUB power gating, voltage/overdrive and arbitrary laptop limits are
+not enabled. Source/model tests do not establish real temperature, battery
+life or firmware/session retention; laptop qualification is 0.80.39.
+See Docs/Drivers/AMDEnergie08034.txt/.json.
