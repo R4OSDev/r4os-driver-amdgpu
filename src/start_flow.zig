@@ -78,7 +78,7 @@ pub const Flow = struct {
                 // A nonzero returned address must point into our actual TMR.
                 const tmr = view.address(view.tmr_offset);
                 if (addr != 0 and (addr < tmr or addr >= tmr + s.tmr_bytes or entry.span.bytes > tmr + s.tmr_bytes - addr)) return error.Firmware;
-                if (entry.fw_type == c.wire.GFX_FW_TYPE_CP_MEC and addr == 0) return error.Firmware;
+                if ((entry.fw_type == c.wire.GFX_FW_TYPE_CP_MEC or entry.fw_type == c.wire.GFX_FW_TYPE_VCN) and addr == 0) return error.Firmware;
                 entry.address = addr; entry.confirmed = true;
                 self.upload += 1; self.phase = .firmware_send;
             },

@@ -62,7 +62,7 @@ const F = struct {
     fn start() !void { try run.start(&snapshot(), .{ .context = 7, .work = work, .event = event, .quiesce = quiesce }); }
     fn work(_: *Runtime, context: usize) void { std.debug.assert(context == 7); worker_calls += 1; if (worker_stop) @atomicStore(u32, &run.stop, 1, .release); }
     fn event(context: usize, _: ih.Event) void { std.debug.assert(context == 7); event_calls += 1; }
-    fn quiesce(_: usize, current: q.Epoch, mask: u3) ?q.Quiescence { return if (prove_quiescence) .{ .epoch = current, .engines = mask } else null; }
+    fn quiesce(_: usize, current: q.Epoch, mask: q.EngineMask) ?q.Quiescence { return if (prove_quiescence) .{ .epoch = current, .engines = mask } else null; }
     fn retire(_: usize, value: a.GfxFence) bool { std.debug.assert(value.timeline == 3 and @atomicLoad(u32, &run.irq.gate, .acquire) != 2); if (retire_fail) return false; retired += 1; return true; }
     fn queueContext() r4os.driver_queue.Context { return .{ .table = .{ .complete = @intFromPtr(&complete) } }; }
     fn complete(value: *const a.GfxFence, result: u32, quiesced: u32) callconv(.c) i32 {
@@ -192,7 +192,7 @@ test "AMD IH routes MSI and INTx, decodes bounded epoch metadata and retains unc
     _ = F.run.irq.mailbox.pop(); try t.expectEqual(@as(u32, 1), F.run.irq.poll());
     F.regs[r.ih.IH_RB_WPTR / 4] = 1; _ = F.irq_handler.?(F.irq_number, F.irq_context); try t.expect(F.run.irq.failed());
     try t.expectEqual(@as(u32, 0), F.regs[r.ih.IH_RB_CNTL / 4] & r.ih.IH_RB_CNTL__ENABLE_INTR_MASK);
-    const proof: q.Quiescence = .{ .epoch = epoch, .engines = 7 };
+    const proof: q.Quiescence = .{ .epoch = epoch, .engines = 63 };
     Runtime.notify(@intFromPtr(&F.run)); Runtime.notify(@intFromPtr(&F.run)); try t.expectEqual(@as(u32, 0), F.run.wake_fault);
     @atomicStore(u32, &F.run.notify_state, 1, .release);
     try t.expect(!F.run.close(proof)); try t.expect(F.thread_live);
@@ -242,9 +242,9 @@ test "AMD worker publishes exact writebacks, polls lost IRQs and retains timeout
     var stale = next; stale.epoch.reset += 1; try t.expectError(error.Stale, F.run.timeline.entry(stale));
     F.clock = 1000; F.run.step(); try t.expectEqual(q.Phase.submitted, (try F.run.timeline.entry(next)).phase);
     try t.expectEqual(@as(usize, 1), F.retired); try t.expectEqual(@as(usize, 1), F.completed);
-    try t.expectError(error.Unconfirmed, F.run.timeline.abort(.{ .epoch = stale.epoch, .engines = 7 }, a.gfx_queue_result_device_lost));
+    try t.expectError(error.Unconfirmed, F.run.timeline.abort(.{ .epoch = stale.epoch, .engines = 63 }, a.gfx_queue_result_device_lost));
     F.prove_quiescence = true; F.run.step(); try t.expectEqual(a.gfx_queue_result_timeout, F.last_result); try t.expect(F.run.timeline.empty());
-    const proof: q.Quiescence = .{ .epoch = epoch, .engines = 7 };
+    const proof: q.Quiescence = .{ .epoch = epoch, .engines = 63 };
     try t.expect(!F.run.close(proof)); F.clock += 1_000_000; try t.expect(F.run.close(proof));
     // Execute the actual dedicated worker entry via the host fixture's saved
     // callback; no host fixture is represented as an R4OS scheduler/GPU test.
@@ -265,6 +265,6 @@ test "AMD worker publishes exact writebacks, polls lost IRQs and retains timeout
     F.reset(); try F.prepare();
     for (0..q.capacity) |i| _ = try F.run.timeline.reserve(fence(i + 1), .gfx, 1000, resources);
     try t.expectError(error.Capacity, F.run.timeline.reserve(fence(100), .gfx, 1000, resources));
-    F.run.timeline.poll(99); try t.expectEqual(@as(u3, 7), F.run.timeline.failed_engines);
+    F.run.timeline.poll(99); try t.expectEqual(@as(q.EngineMask, 63), F.run.timeline.failed_engines);
     try t.expect(!F.run.close(null)); try t.expect(F.run.close(proof)); try t.expectEqual(@as(usize, q.capacity), F.completed);
 }

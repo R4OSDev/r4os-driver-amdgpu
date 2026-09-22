@@ -13,7 +13,7 @@ pub const Hooks = struct {
     before_poll: ?*const fn (*Owner, usize) void = null,
     irq_ready: ?*const fn (usize) Error!void = null,
     event: *const fn (usize, ih.Event) void,
-    quiesce: *const fn (usize, q.Epoch, u3) ?q.Quiescence,
+    quiesce: *const fn (usize, q.Epoch, @import("queue_ring.zig").EngineMask) ?q.Quiescence,
 };
 pub const Owner = struct {
     self_address: usize = 0, ctx: ?r4os.r4dev.DriverContext = null,
@@ -92,7 +92,7 @@ pub const Owner = struct {
             }
             if (captured < 32) break;
         }
-        if (self.irq.failed() or @atomicLoad(u32, &self.wake_fault, .acquire) != 0) self.timeline.fault(7);
+        if (self.irq.failed() or @atomicLoad(u32, &self.wake_fault, .acquire) != 0) self.timeline.fault(@import("queue_ring.zig").all_engines);
         if (hooks.before_poll) |before| before(self, hooks.context);
         self.timeline.poll(self.clock.?.nowNs());
         const failed = self.timeline.failed_engines;
@@ -117,7 +117,7 @@ pub const Owner = struct {
                     // returning. Unproved DMA/failed release remains retained
                     // for the outer native-init/reset owner's close path.
                     self.timeline.stopping = true;
-                    self.timeline.fault(7); self.step();
+                    self.timeline.fault(@import("queue_ring.zig").all_engines); self.step();
                 }
                 return result;
             }
@@ -154,7 +154,7 @@ pub const Owner = struct {
             self.timeline.stopping = true;
             if (self.started or !self.timeline.empty()) {
                 const stopped = proof orelse return false;
-                if (stopped.engines != 7 or !std.meta.eql(stopped.epoch, self.timeline.epoch)) return false;
+                if (stopped.engines != @import("queue_ring.zig").all_engines or !std.meta.eql(stopped.epoch, self.timeline.epoch)) return false;
                 self.timeline.abort(stopped, a.gfx_queue_result_cancelled) catch return false;
             }
             if (!self.timeline.publish(self.queue.?) or !self.timeline.empty()) return false;

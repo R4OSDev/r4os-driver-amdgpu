@@ -67,6 +67,7 @@ const Job = struct {
 };
 pub const Owner = struct {
     client: ?Client = null,
+    media: ?*@import("vcn_runtime.zig").Owner = null,
     graphics: ?*@import("gc_runtime.zig").Owner = null,
     self_address: usize = 0,
     memory: ?*mem.Owner = null,
@@ -167,7 +168,11 @@ pub const Owner = struct {
         if (graphics.engine.phase != .ready or graphics.engine.gb_addr_config == 0) return error.Unconfirmed;
         const architecture: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0, .gb_addr_config = graphics.engine.gb_addr_config, .chip_revision = chip.external_revision, .bind_alignment = 4096, .memory_generation = self.memory.?.epoch, .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
         graphics.architecture = architecture;
-        const facts = try @import("device_facts.zig").profile(native, &graphics.engine, architecture, board);
+        var facts = try @import("device_facts.zig").profile(native, &graphics.engine, architecture, board);
+        if (self.media) |media| {
+            if (!media.verified or media.closed or media.epoch != self.memory.?.epoch) return error.Unconfirmed;
+            facts.facts.flags |= amd.device_fact_vcn1_ready;
+        }
         var properties: a.GfxBackendProperties = .{ .interface_id_lo = amd.image_v1_header.interface_id_lo, .interface_id_hi = amd.image_v1_header.interface_id_hi, .revision = 3, .data_bytes = @sizeOf(amd.R4AmdDeviceFactsV3) };
         @memcpy(properties.data[0..@sizeOf(amd.R4AmdDeviceFactsV3)], std.mem.asBytes(&facts));
         if (queue.publishProperties(&self.binding, &properties) != 1) return error.Unsupported;
@@ -178,6 +183,7 @@ pub const Owner = struct {
     fn irqReady(raw: usize) @import("queue_runtime.zig").Error!void {
         const self: *Owner = @ptrFromInt(raw);
         self.engine.interrupts(&self.memory.?.registers) catch return error.Unconfirmed;
+        if (self.media) |media| media.engine.interrupts(&self.memory.?.registers) catch return error.Unconfirmed;
         if (self.graphics) |graphics| graphics.irqReady() catch return error.Unconfirmed;
         // Publish only once code, descriptors, PTEs and GC context are ready.
         const ops = (@as(u64, 1) << a.gfx_queue_operation_copy) | (@as(u64, 1) << a.gfx_queue_operation_copy_rows) | @import("render_jobs.zig").operations;
@@ -191,6 +197,7 @@ pub const Owner = struct {
         const runtime = self.runtime.?;
         const memory = self.memory.?;
         if (!runtime.stopWorker()) return false;
+        if (self.media) |media| if (!media.close()) return false;
         if (self.graphics) |graphics| if (!graphics.close()) return false;
         if (!(self.engine.stop(&memory.registers) catch false)) return false;
         if (!self.gc_stop_started) {
@@ -203,7 +210,7 @@ pub const Owner = struct {
             if (!Job.retire(@intFromPtr(job), job.fence) or runtime.queue.?.complete(&job.fence, a.gfx_queue_result_failed, 1) != 1) return false;
             job.clear();
         };
-        const proof: ?q.Quiescence = if (runtime.timeline.self_address != 0) .{ .epoch = runtime.timeline.epoch, .engines = 7 } else null;
+        const proof: ?q.Quiescence = if (runtime.timeline.self_address != 0) .{ .epoch = runtime.timeline.epoch, .engines = @import("queue_ring.zig").all_engines } else null;
         if (!runtime.close(proof)) return false;
         if (self.client) |client| if (client.drain) |drain| if (!drain(client.context)) return false;
         // prepare() owns the arena even before a common backend/timeline exists.
@@ -234,16 +241,24 @@ pub const Owner = struct {
     fn beforePoll(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {
         const self: *Owner = @ptrFromInt(raw);
         c.hdpInvalidate(&self.memory.?.registers) catch runtime.timeline.fault(1);
+        if (self.media) |media| media.poll();
         if (self.graphics) |graphics| graphics.poll();
     }
     fn event(_: usize, _: @import("queue_ih.zig").Event) void {}
-    fn quiesce(raw: usize, epoch: q.Epoch, engines: u3) ?q.Quiescence {
+    fn quiesce(raw: usize, epoch: q.Epoch, engines: @import("queue_ring.zig").EngineMask) ?q.Quiescence {
         const self: *Owner = @ptrFromInt(raw);
         if (!std.meta.eql(epoch, self.runtime.?.timeline.epoch)) return null;
         if (self.client) |client| if (client.lost) |lost| lost(client.context);
-        var confirmed: u3 = 0;
+        var confirmed: @import("queue_ring.zig").EngineMask = 0;
         if (engines & 1 != 0 and (self.engine.stop(&self.memory.?.registers) catch false)) confirmed |= 1;
-        if (engines & 6 != 0) if (self.graphics) |graphics| {
+        // The renderer owns VCN's canonical bindings too. A GC teardown must
+        // first stop VCN and retire its callbacks before closing that owner.
+        if (engines & (6 | @import("queue_ring.zig").media_engines) != 0) {
+            if (self.media) |media| {
+                if (media.close()) confirmed |= @import("queue_ring.zig").media_engines;
+            } else confirmed |= @import("queue_ring.zig").media_engines;
+        }
+        if (engines & 6 != 0 and (self.media == null or self.media.?.closed)) if (self.graphics) |graphics| {
             if (graphics.quiesce(epoch)) |proof| confirmed |= proof.engines;
         };
         return if (confirmed != 0) .{ .epoch = epoch, .engines = confirmed } else null;

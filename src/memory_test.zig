@@ -381,6 +381,9 @@ const Render = struct {
     var data: [storage.bytes / 4]u32 align(4096) = undefined;
     var bells: [1024]u32 align(4096) = undefined;
     var allocation_pending = false;
+    var allocation_format: u32 = a.gfx_buffer_format_argb8888;
+    var allocation_width: u32 = 256;
+    var allocation_height: u32 = 128;
     var virtual_pending = false;
     var virtual_job: a.GfxVirtualJob = .{};
     var virtual_done: a.GfxVirtualCompletion = .{};
@@ -422,7 +425,7 @@ const Render = struct {
     fn takeNative(_: *const a.GfxBufferHandle, out: *a.GfxNativeJob) callconv(.c) i32 {
         if (!allocation_pending) return a.gfx_buffer_error_busy;
         allocation_pending = false;
-        out.* = .{ .request = .{ .id = 299, .generation = 31 }, .allocation = .{ .adapter_id = 7, .memory_generation = 23, .kind = 1, .width = 256, .height = 128, .format = a.gfx_buffer_format_argb8888, .usage = 28, .deadline_ns = 1_000_000 } };
+        out.* = .{ .request = .{ .id = 299, .generation = 31 }, .allocation = .{ .adapter_id = 7, .memory_generation = 23, .kind = 1, .width = allocation_width, .height = allocation_height, .format = allocation_format, .usage = 28, .deadline_ns = 1_000_000 } };
         return 1;
     }
     fn completeNative(_: *const a.GfxBufferHandle, _: *const a.GfxBufferHandle, result: i32, reference: *const a.GfxBufferHandle) callconv(.c) i32 {
@@ -541,6 +544,7 @@ const Render = struct {
         completed = 0;
         allocation_ack = 0;
         allocation_pending = false;
+        allocation_format = a.gfx_buffer_format_argb8888; allocation_width = 256; allocation_height = 128;
         virtual_pending = false;
         virtual_job = .{};
         virtual_done = .{};
@@ -576,6 +580,22 @@ const Render = struct {
 
 test "AMD renderer crosses real allocation mapping PM4 timeline and canonical retirement facades" {
     const R = Render;
+    for ([_]u32{ a.gfx_buffer_format_nv12, a.gfx_buffer_format_p010 }, [_]u64{ 512, 768 }, [_]u64{ 131072, 196608 }, [_]u64{ 196608, 327680 }) |format, pitch, uv, bytes| {
+        try R.reset();
+        R.allocation_format = format; R.allocation_width = 320; R.allocation_height = 240;
+        R.allocation_pending = true;
+        try t.expect(R.owner.allocations.step());
+        try t.expect(F.native.format == format and F.native.modifier == 0 and F.native.plane_count == 2 and F.native.usage & 3 == 0);
+        try t.expectEqual([4]u64{ 0, uv, 0, 0 }, F.native.plane_offsets);
+        try t.expectEqual([4]u64{ pitch, pitch, 0, 0 }, F.native.plane_pitches);
+        try t.expect(F.native.alignment == 65536 and F.native.byte_length == bytes and F.charged == bytes);
+        try t.expect(R.owner.close());
+        try t.expectEqual(@as(i32, 1), F.release(&.{ .id = 101, .generation = 19 }));
+        try t.expect(F.owner.collect());
+        try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+        try t.expect(F.charged == 0 and F.windows == 0);
+    }
+
     try R.checkPm4();
     try R.reset();
     try t.expect(R.owner.ready and F.windows == 4 and F.owner.mapping_users == 1);

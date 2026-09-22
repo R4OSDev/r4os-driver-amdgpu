@@ -87,10 +87,11 @@ pub const Event = struct {
             .timestamp_source = words[2] >> 31 != 0, .pasid = @truncate(words[3]), .node = @truncate(words[3] >> 16),
             .data = words[4..8].* };
     }
-    pub fn faultMask(self: Event) u3 {
+    pub fn faultMask(self: Event) @import("queue_ring.zig").EngineMask {
         // EOP/TRAP are wake hints only; success always needs a fence writeback.
         return switch (self.client) {
-            r.client_VMC, r.client_UTCL2 => 7,
+            r.client_VMC, r.client_UTCL2 => @import("queue_ring.zig").all_engines,
+            0x10 => switch (self.source) { 124, 119, 120, 126 => 0, else => @import("queue_ring.zig").media_engines },
             r.client_SDMA0, r.client_SDMA1 => if (self.source == r.sdma_SDMA_TRAP and self.client == r.client_SDMA0) 0 else 1,
             r.client_GRBM_CP => if (self.source == r.gfx_CP_EOP_INTERRUPT) 0 else 6,
             else => 0, // Other IP owners (e.g. DCN) receive the complete event.

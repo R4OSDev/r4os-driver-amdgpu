@@ -1,4 +1,4 @@
-param([switch]$Write)
+﻿param([switch]$Write)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 $unit=[IO.Path]::GetFullPath('..',$PSScriptRoot)
@@ -74,3 +74,5 @@ $target=Join-Path $unit 'src/gc_registers.zig'
 if($Write){[IO.File]::WriteAllText($target,$text,[Text.UTF8Encoding]::new($false))}
 elseif([IO.File]::ReadAllText($target).Replace("`r`n","`n") -cne $text){throw 'GFX9 register drift; regenerate Tools/VerifyGC.ps1 -Write'}
 Write-Host 'AMDGPU GC9.1 runtime offsets, fields and Picasso golden tables verified.'
+
+& (Join-Path $PSScriptRoot "VerifyMedia.ps1")

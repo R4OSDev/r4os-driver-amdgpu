@@ -1,7 +1,11 @@
 // Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0
 const std = @import("std");
 pub const Error = @import("memory_hubs.zig").Error;
-pub const Engine = enum(u2) { sdma, gfx, compute };
+pub const Engine = enum(u3) { sdma, gfx, compute, decode, encode, jpeg };
+pub const EngineMask = u6;
+pub const all_engines: EngineMask = 63;
+pub const media_engines: EngineMask = 56;
+pub fn isMedia(engine: Engine) bool { return @intFromEnum(engine) >= @intFromEnum(Engine.decode); }
 pub const Ticket = struct { start: u64, end: u64, serial: u64 };
 /// Worker-owned ring cursor. Engine-specific packets and write-pointer units
 /// belong to SDMA/GFX. This owner never fabricates a hardware read pointer.

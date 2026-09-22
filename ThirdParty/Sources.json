@@ -2229,6 +2229,62 @@
       "bytes": 6358,
       "license": "MIT (embedded notice)",
       "role": "Original DCN1 Azalia audio programming and register definitions"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/vcn_v1_0.c",
+      "sha256": "fa1cd755f595059d9da12cc966e488e05ce4b49c3dccbe7334a4e26ffa0ba6e6",
+      "bytes": 71391,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/vcn_v1_0.h",
+      "sha256": "5370dcf75f5cb29a619c1ac6698c61c62acd31dd35bfc92b891114928bfeb4bb",
+      "bytes": 1390,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/jpeg_v1_0.c",
+      "sha256": "261982a220b0b98782ebfe5b165b660d59b354de089d16a27a1d10ae2910f6a8",
+      "bytes": 21423,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/jpeg_v1_0.h",
+      "sha256": "e4f8ed21f428e4db1820936cf00ca046b68d352ab5c21f6ef27a47b1a521653e",
+      "bytes": 1853,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/amdgpu/amdgpu_vcn.h",
+      "sha256": "d2ea1f3a54dbc9db92502a2b9bc7a87cdeba13b3aa24976276eaafa8d60f3aa4",
+      "bytes": 19217,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/vcn/vcn_1_0_offset.h",
+      "sha256": "b14fa0d45322ff4b7837a9d2e8d18627ede71295ffdf88ba47078f59d86b76ea",
+      "bytes": 42274,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/asic_reg/vcn/vcn_1_0_sh_mask.h",
+      "sha256": "fd8dcc17c2e64abbf8f87e1ef604c96b3a80d664cddcbc41303b938c1942d3f8",
+      "bytes": 139944,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/include/ivsrcid/vcn/irqsrcs_vcn_1_0.h",
+      "sha256": "57c17035741d23b0c3d65f4e8b3476105eecf05a9a8696764f60b1778cd3fd0a",
+      "bytes": 1574,
+      "license": "MIT (embedded notice)",
+      "role": "VCN1 firmware, power and media ring reference; Linux runtime is not linked"
     }
   ],
   "patches": [

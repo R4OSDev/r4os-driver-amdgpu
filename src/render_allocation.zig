@@ -76,6 +76,13 @@ pub const Owner = struct {
         if (request.kind == 0) {
             if (request.width != 0 or request.height != 0 or request.layout != 0 or request.byte_length == 0 or request.byte_length > @import("render_virtual.zig").max_backing_bytes) return error.Unsupported;
             desc.byte_length = try l.aligned(request.byte_length, 4096);
+        } else if (request.format == a.gfx_buffer_format_nv12 or request.format == a.gfx_buffer_format_p010) {
+            if (request.byte_length != 0 or request.layout != 0 or request.usage & a.gfx_buffer_usage_scanout != 0) return error.Unsupported;
+            const surface = api.media.Surface.plan(request.width, request.height, if (request.format == a.gfx_buffer_format_p010) 10 else 8) catch return error.Unsupported;
+            if (surface.bytes > @import("render_virtual.zig").max_backing_bytes) return error.Unsupported;
+            desc.byte_length = surface.bytes; desc.alignment = 65536; desc.width = request.width; desc.height = request.height;
+            desc.format = request.format; desc.plane_count = 2; desc.plane_offsets[1] = surface.chroma_offset;
+            desc.plane_pitches[0] = surface.pitch; desc.plane_pitches[1] = surface.pitch;
         } else {
             if (request.byte_length != 0 or request.width == 0 or request.height == 0) return error.Invalid;
             const sw: u32 = if (request.layout == 0) 0 else if (request.usage & a.gfx_buffer_usage_scanout != 0) 9 else 10;

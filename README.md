@@ -226,3 +226,20 @@ and up to 32 IBs/resources. Every IB must fit a canonical execution binding;
 preflight finishes before command output, and fences retain those bindings.
 Legacy 504-byte YUV commands keep their existing path. See the software
 evidence in Docs/Drivers/AMDRADV08023.txt/.json; physical admission is /39.
+
+VCN1 media foundation (0.80.28)
+--------------------------------
+The PSP plan now authenticates Picasso VCN firmware. A separate pre-budgeted
+1 MB UMA workspace owns stack/context, decode/encode/JPEG rings and fence
+self-tests. VCN readiness is published only after all three ring proofs.
+The worker routes decode/encode IBs through canonical native binding loans;
+32-bit VCN fence identities never wrap within an epoch. Media shutdown must
+confirm drained rings, clean LMI/UMC, reset and power ACK before releasing
+storage or closing the shared renderer. Static clocks keep active VCN tiles
+on; normal idle energy policy follows in /34.
+
+Native YUV allocations expose linear NV12/P010 in one BO with two planes.
+The codec-specific session/picture/feedback messages follow in /29-/31;
+JPEG application IBs follow in /30. A working ring is not a codec capability.
+Docs/Drivers/AMDVCN08028.txt/.json record software and source-oracle evidence.
+Physical firmware execution, pixels, power and laptop qualification are /39.

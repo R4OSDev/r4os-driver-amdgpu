@@ -94,12 +94,12 @@ test "Picasso PSP10 actual command ABI, original upload sections, bounded SMU10 
     try t.expectError(error.Unconfirmed, F.flow.begin(&io, F.view, &F.store, 23, false));
     try t.expectEqual(@as(usize, 0), F.writes);
     try F.begin(&io); try F.until(&io, .firmware_ready);
-    try t.expect(F.flow.firmwareReady() and F.loads == 12 and F.commands == 14);
+    try t.expect(F.flow.firmwareReady() and F.loads == 13 and F.commands == 15);
     try t.expect(F.flow.plan.entries[4].span.bytes < fw.specification(.mec).payload_bytes);
     try t.expectEqual(@as(u32, c.wire.GFX_FW_TYPE_CP_MEC_ME2), F.flow.plan.entries[7].fw_type);
     try t.expectEqual(@as(u32, 0x1e4600), F.flow.smu_version);
     try t.expect(F.words[r.gc.CP_ME_CNTL / 4] & @import("start_engines.zig").cp_mask != 0);
-    try F.close(&io); try t.expectEqual(@as(usize, 16), F.commands);
+    try F.close(&io); try t.expectEqual(@as(usize, 17), F.commands);
     try t.expect(!F.flow.firmwareReady() and !F.flow.psp.ring_possible and !F.flow.psp.tmr_possible);
     // Explicit abort at every forward phase, including in-flight commands.
     inline for (std.meta.tags(Phase)) |phase| {

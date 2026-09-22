@@ -14,7 +14,7 @@ pub const ib_offset = 0x80000;
 pub const ib_bytes = 8192;
 pub const bytes = 1024 * 1024;
 pub const Engine = @import("queue_ring.zig").Engine;
-pub fn ringOffset(engine: Engine) usize { return 0x20000 + @as(usize, @intFromEnum(engine)) * ring_bytes; }
+pub fn ringOffset(engine: Engine) usize { std.debug.assert(!@import("queue_ring.zig").isMedia(engine)); return 0x20000 + @as(usize, @intFromEnum(engine)) * ring_bytes; }
 pub const Owner = struct {
     self_address: usize = 0, memory: ?*mem.Owner = null, epoch: u64 = 0,
     arena: io.Window = .{}, doorbell: io.Window = .{}, gpu: u64 = 0, ready: bool = false,
@@ -59,7 +59,7 @@ pub const Owner = struct {
         const ptr: [*]volatile u32 = @ptrFromInt(self.doorbell.value.cpu_address); ptr[index] = value;
     }
     pub fn doorbell64(self: *const Owner, engine: Engine, value: u64) Error!void {
-        const index: u32 = switch (engine) { .sdma => reg.sdma_doorbell, .gfx => reg.gfx_doorbell, .compute => reg.compute_doorbell };
+        const index: u32 = switch (engine) { .sdma => reg.sdma_doorbell, .gfx => reg.gfx_doorbell, .compute => reg.compute_doorbell, else => return error.Unsupported };
         try self.doorbellIndex64(index, value);
     }
     pub fn doorbellIndex64(self: *const Owner, index: u32, value: u64) Error!void {

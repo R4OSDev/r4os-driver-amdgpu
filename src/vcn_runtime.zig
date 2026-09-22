@@ -1,0 +1,105 @@
+// Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0
+//! VCN1 owns one pre-budgeted UMA arena. Only the start pump, then the common
+//! worker, may mutate it. IRQs provide hints; GPU writeback proves completion.
+const std = @import("std");
+const c = @import("start_common.zig");
+const q = @import("queue_timeline.zig");
+const qr = @import("queue_ring.zig");
+const ve = @import("vcn_engine.zig");
+const packets = @import("vcn_packets.zig");
+const mem = @import("memory_owner.zig");
+pub const Owner = struct {
+    self_address: usize = 0, memory: ?*mem.Owner = null,
+    runtime: ?*@import("queue_runtime.zig").Owner = null,
+    engine: ve.Owner = .{}, window: @import("memory_io.zig").Window = .{},
+    epoch: u64 = 0, gpu: u64 = 0, started_test: bool = false, verified: bool = false, closed: bool = false,
+    test_deadline: c.Deadline = .{},
+    pub fn words32(self: *const Owner, offset: usize, bytes: usize) c.Error![]volatile u32 {
+        if (self.self_address != @intFromPtr(self) or self.closed or !@import("memory_io.zig").handle(self.window.value.handle) or
+            offset & 3 != 0 or bytes == 0 or bytes & 3 != 0 or offset >= self.window.value.byte_length or bytes > self.window.value.byte_length - offset) return error.Invalid;
+        const ptr: [*]volatile u32 = @ptrFromInt(self.window.value.cpu_address + offset); return ptr[0..bytes / 4];
+    }
+    pub fn prepare(self: *Owner, memory: *mem.Owner, runtime: *@import("queue_runtime.zig").Owner,
+        native: *const @import("start_runtime.zig").Owner, graphics: *@import("gc_runtime.zig").Owner) c.Error!void {
+        if (self.self_address != 0 or !native.firmwareReady() or native.memory != memory or !memory.controller.enabled or
+            runtime.started or !runtime.arena.ready or runtime.arena.memory != memory or graphics.engine.phase != .ready) return error.Unconfirmed;
+        const map = memory.layout.?;
+        if (map.media.span.bytes != 1024 * 1024 or !map.pool.owns(map.media)) return error.Invalid;
+        const entry = native.flow.plan.entries[12];
+        if (entry.role != .vcn or !entry.confirmed or entry.address == 0 or entry.version != @import("firmware.zig").specification(.vcn).ucode_version) return error.Firmware;
+        // Linux's firmware cache includes the original header + one dword,
+        // rounded to a GPU page. PSP returns the authenticated code location.
+        const container = native.flow.store.?.container(.vcn) orelse return error.Firmware;
+        const fw_bytes: u32 = @intCast(try @import("memory_layout.zig").aligned(container.len + 4, 4096));
+        const view = native.flow.view.?;
+        if (entry.address + fw_bytes > view.address(view.tmr_offset) + @import("start_storage.zig").tmr_bytes) return error.Firmware;
+        self.self_address = @intFromPtr(self); self.memory = memory; self.runtime = runtime; self.epoch = memory.epoch;
+        memory.engine_users += 1;
+        self.gpu = try map.mcAddress(map.media.span);
+        try self.window.open(memory.memory.?, map.physical.offset, map.physical.bytes, map.media.span.offset, map.media.span.bytes, true);
+        const words = try self.words32(0, 1024 * 1024); for (words) |*word| word.* = 0;
+        try c.hdpFlush(&memory.registers);
+        var rings: [3]u64 = undefined;
+        for (&rings, 0..) |*address, i| address.* = self.gpu + ve.ringOffset(@enumFromInt(i + 3));
+        try self.engine.begin(&memory.registers, self, .{ .epoch = self.epoch, .firmware = entry.address,
+            .firmware_bytes = fw_bytes, .workspace = self.gpu, .ring = rings, .gb_addr_config = graphics.engine.gb_addr_config, .boot_held = true });
+    }
+    pub fn advance(self: *Owner) c.Error!bool {
+        if (self.self_address != @intFromPtr(self) or self.closed or self.runtime.?.started or self.memory.?.epoch != self.epoch) return error.State;
+        if (self.verified) return true;
+        const io = &self.memory.?.registers;
+        if (!try self.engine.advance(io)) return false;
+        if (!self.started_test) {
+            const words = try self.words32(ve.test_offset, 24); for (words) |*word| word.* = 0xffffffff;
+            try self.test_deadline.start(io.nowNs(), 2_000_000_000, 0);
+            self.started_test = true;
+            for (0..3) |i| {
+                const engine: qr.Engine = @enumFromInt(i + 3);
+                var commands: [packets.max_words]u32 = undefined;
+                const count = try packets.frame(engine, null, self.gpu + ve.test_offset + i * 8, @as(u32, 0x56434e01) + @as(u32, @intCast(i)), self.gpu + ve.ringOffset(engine), &commands);
+                const ticket = try self.engine.stage(engine, commands[0..count]);
+                try self.engine.kick(io, engine, ticket);
+            }
+            return false;
+        }
+        _ = try self.test_deadline.check(io.nowNs()); try c.hdpInvalidate(io); try self.engine.observe(io);
+        const words = try self.words32(ve.test_offset, 24);
+        for (0..3) |i| {
+            const token = @as(u32, 0x56434e01) + @as(u32, @intCast(i));
+            const first = words[i * 2]; try io.barrier(); const second = words[i * 2];
+            if (first != token or second != token or self.engine.rings[i].read != self.engine.rings[i].write) return false;
+        }
+        self.verified = true; return true;
+    }
+    pub fn poll(self: *Owner) void {
+        if (!self.verified or self.closed or self.engine.stopping or self.engine.faulted) return;
+        self.engine.observe(&self.memory.?.registers) catch { self.engine.faulted = true; self.runtime.?.timeline.fault(qr.media_engines); };
+    }
+    pub fn submit(self: *Owner, engine: qr.Engine, fence: @import("r4os").abi.GfxFence, ib: packets.Ib, deadline: u64, resources: q.Resources) c.Error!void {
+        if (!self.verified or self.closed or self.memory.?.epoch != self.epoch or engine == .jpeg) return error.Unsupported;
+        const rt = self.runtime.?;
+        const ticket = try rt.timeline.reserve(fence, engine, deadline, resources);
+        var armed = false;
+        errdefer { if (!armed) rt.timeline.cancelUnsubmitted(ticket) catch {} else rt.timeline.fault(qr.media_engines); }
+        var commands: [packets.max_words]u32 = undefined;
+        const count = try packets.frame(engine, ib, try rt.arena.address(@import("queue_storage.zig").fence_offset + @as(usize, ticket.slot) * 8, 8), @intCast(ticket.token), self.gpu + ve.ringOffset(engine), &commands);
+        const staged = try self.engine.stage(engine, commands[0..count]);
+        rt.timeline.arm(ticket) catch |err| { self.engine.rings[@intFromEnum(engine) - 3].cancel(staged) catch {}; return err; };
+        armed = true;
+        try self.engine.kick(&self.memory.?.registers, engine, staged);
+    }
+    /// Invoke before GC renderer teardown: media fence callbacks retain its
+    /// canonical bindings until the VCN idle/LMI/reset/power proof is complete.
+    pub fn close(self: *Owner) bool {
+        if (self.self_address == 0 or self.closed) return true;
+        if (self.self_address != @intFromPtr(self) or self.memory.?.epoch != self.epoch) return false;
+        if (!(self.engine.stop(&self.memory.?.registers) catch false)) return false;
+        const rt = self.runtime.?;
+        if (rt.timeline.self_address != 0) {
+            rt.timeline.abort(.{ .epoch = rt.timeline.epoch, .engines = qr.media_engines }, @import("r4os").abi.gfx_queue_result_device_lost) catch return false;
+            if (!rt.timeline.publish(rt.queue.?)) return false;
+        }
+        if (!self.window.close()) return false;
+        self.memory.?.engine_users -= 1; self.closed = true; self.verified = false; return true;
+    }
+};

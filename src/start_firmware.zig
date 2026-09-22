@@ -27,7 +27,7 @@ const w = c.wire;
 pub const Error = c.Error;
 pub const Entry = struct { role: fw.Role, span: fw.Range, fw_type: u32, version: u32, confirmed: bool = false, address: u64 = 0 };
 pub const Plan = struct {
-    entries: [12]Entry = undefined, count: usize = 0, asd: fw.Range = .{}, generation: u64 = 0,
+    entries: [13]Entry = undefined, count: usize = 0, asd: fw.Range = .{}, generation: u64 = 0,
     pub fn prepare(self: *Plan, store: *const @import("firmware_store.zig").Store) Error!void {
         if (self.count != 0) return error.Busy;
         if (!store.valid or store.generation == 0 or store.profile == null) return error.Firmware;
@@ -46,10 +46,12 @@ pub const Plan = struct {
         try self.add(store, rlc, w.GFX_FW_TYPE_RLC_RESTORE_LIST_GPM_MEM, .gpm);
         try self.add(store, rlc, w.GFX_FW_TYPE_RLC_RESTORE_LIST_SRM_MEM, .srm);
         try self.add(store, rlc, w.GFX_FW_TYPE_RLC_G, .payload);
+        try self.add(store, .vcn, w.GFX_FW_TYPE_VCN, .payload);
         const blob = store.container(.asd) orelse return error.Firmware;
         self.asd = (fw.inspect(blob, fw.specification(.asd)) catch return error.Firmware).payload;
-        // VCN, DMCU and optional TAs stay CPU-admitted until their IP owner
-        // controls power/display lifetime. No SMU/SOS image exists for Picasso.
+        // VCN is authenticated into the retained PSP TMR; its IP owner starts
+        // the VCPU only after the media work arena and ring ownership exist.
+        // DMCU and optional TAs remain CPU-admitted. No SMU/SOS image exists for Picasso.
     }
     const Part = enum { payload, mec_code, jump_table, cntl, gpm, srm };
     fn add(self: *Plan, store: *const @import("firmware_store.zig").Store, role: fw.Role, kind: u32, part: Part) Error!void {

@@ -2,6 +2,7 @@
 const std = @import("std");
 const r4os = @import("r4os");
 const a = r4os.abi;
+pub const EngineMask = @import("queue_ring.zig").EngineMask;
 pub const Engine = @import("queue_ring.zig").Engine;
 pub const Error = @import("memory_hubs.zig").Error;
 pub const capacity = 64;
@@ -20,9 +21,9 @@ pub const Epoch = struct {
 /// Supplied only by the engine stop/reset owner after real idle/reset evidence.
 /// Metadata/IRQ arrival/timeout alone must never construct this proof.
 pub const Quiescence = struct {
-    epoch: Epoch, engines: u3,
+    epoch: Epoch, engines: @import("queue_ring.zig").EngineMask,
     pub fn covers(self: Quiescence, epoch: Epoch, engine: Engine) bool {
-        return std.meta.eql(self.epoch, epoch) and self.engines & (@as(u3, 1) << @intFromEnum(engine)) != 0;
+        return std.meta.eql(self.epoch, epoch) and self.engines & (@as(@import("queue_ring.zig").EngineMask, 1) << @intFromEnum(engine)) != 0;
     }
 };
 pub const Ticket = struct { slot: u8, token: u64, epoch: Epoch };
@@ -44,7 +45,7 @@ pub const Entry = struct {
 pub const Timeline = struct {
     self_address: usize = 0, epoch: Epoch = .{ .adapter = 0, .device = 0, .reset = 0 },
     writeback: []volatile u64 = &.{}, entries: [capacity]Entry = @splat(.{}),
-    token: u64 = 0, last_time: u64 = 0, stopping: bool = false, failed_engines: u3 = 0,
+    token: u64 = 0, last_time: u64 = 0, stopping: bool = false, failed_engines: @import("queue_ring.zig").EngineMask = 0,
     completed: u64 = 0, stale_writebacks: u64 = 0,
     pub fn init(self: *Timeline, binding: a.GfxBackendBinding, words: []volatile u64, now: u64) Error!void {
         if (self.self_address != 0 or words.len != capacity or @intFromPtr(words.ptr) & 7 != 0 or now == std.math.maxInt(u64)) return error.Invalid;
@@ -64,6 +65,9 @@ pub const Timeline = struct {
     fn reserveImpl(self: *Timeline, fence: a.GfxFence, internal: bool, engine: Engine, deadline: u64, resources: Resources) Error!Ticket {
         if (self.self_address != @intFromPtr(self) or self.stopping or self.failed_engines != 0) return error.Busy;
         if ((!internal and !self.epoch.matches(fence)) or deadline <= self.last_time or deadline == std.math.maxInt(u64)) return error.Invalid;
+        // VCN1 fence packets carry 32 bits. Never wrap/reuse their identity
+        // in a live epoch; only these engines stop admission at exhaustion.
+        if (@import("queue_ring.zig").isMedia(engine) and self.token >= std.math.maxInt(u32) - 1) return error.Overflow;
         if (self.token >= std.math.maxInt(u64) - 1) return error.Overflow;
         if (!internal) for (&self.entries) |*job| { if (job.phase != .free and !job.internal and std.meta.eql(job.fence, fence)) return error.Busy; };
         for (&self.entries, 0..) |*job, i| if (job.phase == .free) {
@@ -93,26 +97,28 @@ pub const Timeline = struct {
         if (job.phase != .reserved) return error.Busy;
         job.result = a.gfx_queue_result_cancelled; job.phase = .retiring;
     }
-    pub fn fault(self: *Timeline, mask: u3) void { self.failed_engines |= mask; }
+    pub fn fault(self: *Timeline, mask: @import("queue_ring.zig").EngineMask) void { self.failed_engines |= mask; }
     /// Poll real GPU-written fence locations even without an interrupt. A
     /// matching token is accepted only in its submitted generation/IB slot.
     pub fn poll(self: *Timeline, now: u64) void {
         if (self.self_address != @intFromPtr(self)) return;
-        if (now < self.last_time or now == std.math.maxInt(u64)) { self.fault(7); return; }
+        if (now < self.last_time or now == std.math.maxInt(u64)) { self.fault(@import("queue_ring.zig").all_engines); return; }
         self.last_time = now;
         asm volatile ("mfence" ::: .{ .memory = true });
         for (&self.entries, 0..) |*job, i| {
             if (job.phase != .submitted) continue;
-            const mask = @as(u3, 1) << @intFromEnum(job.engine);
+            const mask = @as(@import("queue_ring.zig").EngineMask, 1) << @intFromEnum(job.engine);
             if (self.failed_engines & mask != 0) continue;
-            const first = self.writeback[i];
+            const media = @import("queue_ring.zig").isMedia(job.engine);
+            const low: *volatile u32 = @ptrCast(&self.writeback[i]);
+            const first: u64 = if (media) low.* else self.writeback[i];
             asm volatile ("lfence" ::: .{ .memory = true });
-            const second = self.writeback[i];
+            const second: u64 = if (media) low.* else self.writeback[i];
             if (first == job.token and second == job.token) {
                 job.result = a.gfx_queue_result_complete; job.phase = .retiring;
             } else if (now >= job.deadline) {
                 job.result = a.gfx_queue_result_timeout; self.fault(mask);
-            } else if (first == second and first != std.math.maxInt(u64)) {
+            } else if (first == second and first != (if (media) @as(u64, std.math.maxInt(u32)) else std.math.maxInt(u64))) {
                 self.stale_writebacks +|= 1;
             }
         }

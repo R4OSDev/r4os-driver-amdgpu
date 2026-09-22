@@ -174,3 +174,12 @@ embedded audio object/register-table adaptation in Port/dcn_audio.c retains
 the applicable AMD notice plus the R4OS notice for original additions.
 All source notices and the complete MIT grant are exported by the existing
 ExportLegal.ps1. No Linux HDA implementation is copied or linked into AMDGPU.
+
+## VCN1 media ownership (0.80.28)
+
+The catalog now contains 326 original Linux 7.2.4 files. Added VCN1/JPEG
+power, firmware, ring and register references retain their original AMD MIT
+notices and pinned SHA256 identities. The derived Zig clocks, ring packets
+and engine sequence carry the original grant. No Linux media scheduler,
+DRM runtime or kernel is linked. Existing ExportLegal.ps1 exports all source
+notices and firmware licensing; the thirteen firmware binaries are unchanged.

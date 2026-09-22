@@ -95,7 +95,7 @@ pub const Pool = struct {
 pub const Layout = struct {
     physical: Span, mc: Span, gart: Span,
     pool: Pool,
-    firmware: Allocation, tables: Allocation, rings: Allocation, contexts: Allocation, render: Allocation,
+    firmware: Allocation, tables: Allocation, rings: Allocation, contexts: Allocation, render: Allocation, media: Allocation,
     native_budget: u64,
     pub fn create(uma: boot.Range, mc: boot.Range, boot_offset: u64, boot_bytes: u64, firmware: ?bios.Reservation) Error!Layout {
         const physical = try pages(uma.base, uma.bytes, address_limit);
@@ -121,13 +121,14 @@ pub const Layout = struct {
         // Immutable shaders plus eight independent 4 KB descriptor/push slots.
         // Contexts above are page tables and must never contain shader data.
         const render = try pool.allocate(64 * 1024, 64 * 1024, .contexts);
+        const media = try pool.allocate(1024 * 1024, 64 * 1024, .contexts);
         // VMID0's flat 1 GB GART is distinct from the MC aperture. Choose the
         // first complete aligned gap, without interpreting a CPU pointer as VA.
         const gart_base = if (gpu.offset >= gart_bytes) @as(u64, 0) else try aligned(gpu.end(), gart_bytes);
         const gart = try pages(gart_base, gart_bytes, address_limit);
         if (gart.overlaps(gpu)) return error.Invalid;
         return .{ .physical = physical, .mc = .{ .offset = gpu.offset, .bytes = physical.bytes }, .gart = gart,
-            .pool = pool, .firmware = fw, .tables = tables, .rings = rings, .contexts = contexts, .render = render,
+            .pool = pool, .firmware = fw, .tables = tables, .rings = rings, .contexts = contexts, .render = render, .media = media,
             .native_budget = pool.bytes - pool.reserved_bytes - pool.allocated_bytes };
     }
     pub fn physicalAddress(self: *const Layout, span: Span) Error!u64 {

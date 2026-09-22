@@ -11,6 +11,7 @@ pub var firmware: @import("bios_source.zig").Capture = .{};
 pub var memory_runtime: @import("memory_owner.zig").Owner = .{};
 pub var native_start: @import("start_runtime.zig").Owner = .{};
 pub var sdma_runtime: @import("sdma_jobs.zig").Owner = .{};
+pub var vcn_runtime: @import("vcn_runtime.zig").Owner = .{};
 pub var gc_runtime: @import("gc_runtime.zig").Owner = .{};
 pub var queue_runtime: @import("queue_runtime.zig").Owner = .{};
 pub var display_runtime: @import("display_core.zig").Owner = .{};
@@ -165,6 +166,12 @@ pub fn advanceNative() !bool {
     if (!try sdma_runtime.pollSelftest()) return false;
     if (gc_runtime.self_address == 0) try gc_runtime.prepare(&memory_runtime, &queue_runtime, &native_start, &sdma_runtime);
     if (gc_runtime.engine.phase != .ready and !try gc_runtime.advance()) return false;
+    if (vcn_runtime.self_address == 0) {
+        sdma_runtime.media = &vcn_runtime;
+        gc_runtime.renderer.media = &vcn_runtime;
+        try vcn_runtime.prepare(&memory_runtime, &queue_runtime, &native_start, &gc_runtime);
+    }
+    if (!try vcn_runtime.advance()) return false;
     if (!sdma_runtime.active) {
         const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
         if (display_runtime.self_address == 0) display_runtime.audio_peer = audio_peer;
@@ -211,7 +218,7 @@ fn recoverNative() bool {
     if (!memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false })) return false;
     // All worker handles, notifications, backend bindings, BOs and callbacks
     // have retired. A later initialization starts with fresh runtime owners.
-    sdma_runtime = .{}; gc_runtime = .{}; queue_runtime = .{};
+    sdma_runtime = .{}; gc_runtime = .{}; vcn_runtime = .{}; queue_runtime = .{};
     display_present = .{}; display_pipeline = .{};
     return true;
 }

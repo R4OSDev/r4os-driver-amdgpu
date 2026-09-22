@@ -79,6 +79,7 @@ pub const Owner = struct {
     self_address: usize = 0,
     memory: ?*mem.Owner = null,
     rt: ?*@import("queue_runtime.zig").Owner = null,
+    media: ?*@import("vcn_runtime.zig").Owner = null,
     contexts: ?*Contexts.Owner = null,
     context: ?Contexts.Handle = null,
     compute_context: ?Contexts.Handle = null,
@@ -261,7 +262,11 @@ pub const Owner = struct {
             job.native[i] = binding;
             job.native_serial[i] = binding.serial;
         }
-        const count = try pm4.encode(header, ibs[0..header.ib_count], bindings[0..info.resource_count], &self.commands);
+        const media = header.engine == 2 or header.engine == 3;
+        var validation = header;
+        if (media) validation.engine = 0;
+        const count = try pm4.encode(validation, ibs[0..header.ib_count], bindings[0..info.resource_count], &self.commands);
+        if (media and (self.media == null or !self.media.?.verified or header.ib_count != 1 or ibs[0].dwords > 2048 or ibs[0].dwords & 15 != 0)) return error.Unsupported;
         for (job.native[0..info.resource_count], job.native_held[0..info.resource_count]) |part, *held| {
             try part.?.map.retain(input.fence);
             held.* = true;
@@ -270,6 +275,18 @@ pub const Owner = struct {
         try @import("start_common.zig").hdpFlush(&memory.registers);
         const now = memory.registers.nowNs();
         const deadline = @min(input.deadline_ns, std.math.add(u64, now, 2_000_000_000) catch return error.Deadline);
+        if (media) {
+            // Timeline now owns the exact retained bindings, including on an
+            // uncertain kick. Preflight failures are handled by normal reaping.
+            self.media.?.submit(if (header.engine == 2) .decode else .encode, input.fence,
+                .{ .address = ibs[0].address, .dwords = ibs[0].dwords }, deadline,
+                .{ .context = @intFromPtr(job), .retire = Job.retire }) catch |err| {
+                    for (&self.rt.?.timeline.entries) |*entry| if (entry.phase != .free and !entry.internal and std.meta.eql(entry.fence, input.fence)) { job.enqueued = true; break; };
+                    return err;
+                };
+            job.enqueued = true;
+            return;
+        }
         const handle = if (header.engine == 0) self.context.? else self.compute_context.?;
         try self.contexts.?.enqueue(handle, input.fence, now, deadline, self.commands[0..count], .{ .context = @intFromPtr(job), .retire = Job.retire });
         job.enqueued = true;

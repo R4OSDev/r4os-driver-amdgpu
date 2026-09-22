@@ -1,7 +1,7 @@
 // Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0
 const std = @import("std");
 const t = std.testing;
-comptime { _ = @import("queue_test.zig"); _ = @import("start_test.zig"); _ = @import("sdma_test.zig"); _ = @import("sdma_jobs.zig"); _ = @import("gc_test.zig"); _ = @import("display_test.zig"); _ = @import("atom_test.zig"); _ = @import("panel_test.zig"); _ = @import("hdmi_test.zig"); }
+comptime { _ = @import("vcn_test.zig"); _ = @import("queue_test.zig"); _ = @import("start_test.zig"); _ = @import("sdma_test.zig"); _ = @import("sdma_jobs.zig"); _ = @import("gc_test.zig"); _ = @import("display_test.zig"); _ = @import("atom_test.zig"); _ = @import("panel_test.zig"); _ = @import("hdmi_test.zig"); }
 const a = @import("r4os").abi;
 const driver = @import("main.zig");
 const identity = @import("identity.zig");
