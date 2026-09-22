@@ -32,6 +32,7 @@ pub const Owner = struct {
     touched: bool = false,
     boot_lit: bool = false,
     boot_brightness: ?u16 = null,
+    sleep_brightness: ?u16 = null,
     fingerprint: ?[32]u8 = null,
     failure: ?anyerror = null,
     restore_frame: u32 = 0,
@@ -44,7 +45,7 @@ pub const Owner = struct {
         if (boot.pipe != core.mode.pipe or boot.width != core.mode.width or boot.height != core.mode.height or core.mode.flags & 1 != 0 or
             table.dcf_khz != core.limits.dcf_khz or table.fabric_khz != core.limits.fabric_khz or table.soc_khz != core.limits.soc_khz) return error.Unconfirmed;
         self.* = .{ .self_address = @intFromPtr(self), .core = core, .table = table, .boot_mode = boot };
-        return .{ .context = self.self_address, .prepare = prepare, .stop = stop, .restore = restore, .modeset = modeset, .remove = remove, .pause_primary = pausePrimary };
+        return .{ .context = self.self_address, .prepare = prepare, .stop = stop, .restore = restore, .modeset = modeset, .remove = remove, .pause_primary = pausePrimary, .power = power };
     }
     fn from(raw: usize) *Owner { return @ptrFromInt(raw); }
     fn checked(result: c_int) !void {
@@ -97,6 +98,76 @@ pub const Owner = struct {
         const core = self.core.?;
         core.scanout_owner.stop(core.scanout_owner.epoch) catch |err| { self.failure = err; return false; };
         return true;
+    }
+    fn power(raw: usize, request: dc.PowerRequest) bool {
+        const self = from(raw);
+        self.screenPower(request) catch |err| { self.failure = err; return false; };
+        return true;
+    }
+    fn screenPower(self: *Owner, request: dc.PowerRequest) !void {
+        const core = try self.enter(); const storage = try core.workerStorage();
+        const life = core.scanoutFor(request.epoch);
+        if (!std.meta.eql(life.epoch, request.epoch) or life.pending != null or life.cursor_pending != null or
+            life.current == null or !self.touched or self.restored) return error.State;
+        const primary = life == &core.scanout_owner;
+        const rt = try core.workerPanel();
+        const hdmi: ?*@import("hdmi_runtime.zig").Runtime = if (core.hdmi_allocation.cpu_address != 0) @ptrFromInt(core.hdmi_allocation.cpu_address) else null;
+        if (request.off) {
+            if (life.phase != .active) return error.State;
+            if (primary) {
+                self.sleep_brightness = if (rt.protocol.?.brightness_known) rt.protocol.?.brightness else self.boot_brightness;
+                try self.stopHardware();
+            } else try (hdmi orelse return error.State).run(.stop, life.mode);
+            try life.stop(request.epoch);
+            if (primary) try rt.run(.hide, 0);
+            return;
+        }
+        if (life.phase != .stopped) return error.State;
+        if (primary) {
+            try rt.run(.discover, 0);
+            var selected = life.mode;
+            try self.selectMode(&rt.protocol.?, &selected);
+            if (!std.meta.eql(selected, life.mode)) return error.Stale;
+            try rt.run(.clock, 0); try rt.run(.stream_configure, 0); try rt.run(.train, 0);
+        } else {
+            const h = hdmi orelse return error.State;
+            // HPD/DDC refresh must preserve the exact published connection.
+            try h.run(.probe, life.mode);
+            if (h.connection.phase != .connected or !std.meta.eql(h.output, request.epoch.output)) return error.Stale;
+            try h.run(.clock, life.mode); try h.run(.configure, life.mode); try h.run(.enable, life.mode);
+        }
+        try life.wake(request.epoch, core.clock.?.nowNs(), core.clock.?.nowNs() + std.time.ns_per_s);
+        if (primary) try rt.run(.stream_on, 0) else try hdmi.?.run(.show, life.mode);
+        var confirmed = false;
+        for (0..1500) |_| {
+            if (try life.poll(request.epoch, core.clock.?.nowNs())) |receipt| {
+                var video: u32 = 0;
+                try checked(if (primary) c.r4dcn_link_video(storage, 0, life.mode.pipe, &video)
+                    else c.r4dcn_hdmi_active(storage, 1, life.mode.pipe, &video));
+                if (video != 1) return error.Unconfirmed;
+                try life.acknowledge(request.epoch, receipt.sequence); confirmed = true; break;
+            }
+            try core.workerDelay(1000);
+        }
+        if (!confirmed) return error.Timeout;
+        if (life.resume_cursor) {
+            confirmed = false;
+            const deadline = core.clock.?.nowNs() + std.time.ns_per_s;
+            for (0..1500) |_| {
+                if (life.phase == .active) life.restoreCursor(request.epoch, deadline) catch |err| {
+                    if (err != error.Busy) return err;
+                    try core.workerDelay(1000); continue;
+                };
+                if (try life.pollCursor(request.epoch, core.clock.?.nowNs())) |receipt| {
+                    try life.acknowledgeCursor(request.epoch, receipt.sequence); confirmed = true; break;
+                }
+                try core.workerDelay(1000);
+            }
+            if (!confirmed) return error.Timeout;
+        }
+        if (primary) try rt.run(.show, self.sleep_brightness orelse rt.protocol.?.brightness)
+        else try hdmi.?.audio.activate(storage);
+        core.health_epoch = 0; core.health_progress = 0;
     }
     fn removeHardware(self: *Owner) !void {
         const core = try self.enter(); const storage = try core.workerStorage();

@@ -1201,6 +1201,29 @@ const Integration = struct {
     var mode_extension: ?a.GfxDriverModeColor = null;
     var next_color_ticket: u64 = 300;
     var requested_color: ?@import("display_color.zig").color.Signal = null;
+    var screen_model = false;
+    var screen_busy = false;
+    var screen_unpause_busy = false;
+    var screen_state: [2]?a.GfxOutputPower = .{null, null};
+    var screen_intent: [2]a.GfxPowerRequest = .{.{}, .{}};
+    var screen_paused: [2]bool = .{false, false};
+    fn screenPublish(value: *const a.GfxOutputPower) callconv(.c) i32 {
+        if (screen_busy) return a.gfx_output_error_busy;
+        const i: usize = if (value.identity.connector_id == 0x310c) 1 else 0;
+        const life = if (i == 0) &R.owner.scanout_owner else &R.owner.extra_scanout;
+        std.debug.assert(screen_model and value.sequence != 0 and value.since_ns != 0 and
+            std.meta.eql(value.identity, life.epoch.output) and value.request_sequence <= screen_intent[i].sequence);
+        if (screen_state[i]) |old| std.debug.assert(value.sequence > old.sequence and value.since_ns >= old.since_ns);
+        if (value.phase == a.gfx_power_phase_off) std.debug.assert(screen_paused[i] and life.phase == .stopped and
+            F.words[d.control[i] / 4] & hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK == 0 and value.control_receipt != 0);
+        if (value.phase == a.gfx_power_phase_on) std.debug.assert(!screen_paused[i] and life.phase == .active and value.core_point != 0 and value.window_point != 0);
+        screen_state[i] = value.*; return 1;
+    }
+    fn screenRead(id: *const a.GfxOutputId, result: *a.GfxPowerRequest) callconv(.c) i32 {
+        const i: usize = if (id.connector_id == 0x310c) 1 else 0;
+        std.debug.assert(screen_model and screen_state[i] != null and std.meta.eql(screen_state[i].?.identity, id.*));
+        result.* = screen_intent[i]; result.identity = id.*; return 1;
+    }
     var audio_model = false;
     var audio_sink = true;
     var audio_source: a.GfxReceiverSource = .{};
@@ -1390,6 +1413,7 @@ const Integration = struct {
         out.* = .{ .publish = @intFromPtr(&publish), .withdraw = @intFromPtr(&withdraw), .output_pause = @intFromPtr(&pause),
             .mode_restore = @intFromPtr(&restoreMode), .mode_status = @intFromPtr(&modeStatus), .mode_enable = @intFromPtr(&modeEnable),
             .mode_take = @intFromPtr(&modeTake), .mode_complete = @intFromPtr(&modeComplete),
+            .power_publish = if (screen_model) @intFromPtr(&screenPublish) else 0, .power_read = if (screen_model) @intFromPtr(&screenRead) else 0,
             .mode_read_color = @intFromPtr(&readColor), .color_publish = @intFromPtr(&publishColor),
             .refresh_publish = @intFromPtr(&publishRefresh), .refresh_read = @intFromPtr(&readRefresh),
             .register_source = @intFromPtr(&registerAudio), .replace_receivers = @intFromPtr(&replaceAudio), .close_source = @intFromPtr(&closeAudio),
@@ -1483,7 +1507,11 @@ const Integration = struct {
         return 1;
     }
     fn pause(id: *const a.GfxOutputId, value: u32) callconv(.c) i32 {
-        if (id.connector_id == 0x310c) std.debug.assert(std.meta.eql(id.*, hdmi_identity) and value == 1);
+        if (id.connector_id == 0x310c) std.debug.assert(std.meta.eql(id.*, hdmi_identity) and (screen_model or value == 1));
+        if (screen_model) {
+            if (value == 0 and screen_unpause_busy) return a.gfx_output_error_busy;
+            screen_paused[if (id.connector_id == 0x310c) @as(usize, 1) else 0] = value != 0;
+        }
         return 1;
     }
     fn prepare(value: *const a.GfxNativeRegistration, held: u64, state: *a.GfxNativeState) callconv(.c) i32 {
@@ -1563,6 +1591,7 @@ const Integration = struct {
         reset_begin_calls = 0; reset_retire_calls = 0; common_reset_retired = false;
         mode_job = null; mode_extension = null; next_color_ticket = 300; published_colors = .{null,null}; published_refresh = .{null,null}; mode_reply = .{}; mode_complete_busy = false; mode_enable_calls = 0; publication_calls = 0;
         extra_active = false; extra_retired = false;
+        screen_state = .{null, null}; screen_intent = .{.{}, .{}}; screen_paused = .{false, false}; screen_busy = false; screen_unpause_busy = false;
         audio_source = .{}; audio_sequence = 0; audio_route = null; audio_ready_count = 0; audio_pending_count = 0; audio_closed = false; audio_publish_fail = false;
         AudioWire.reset();
         if (audio_model) R.owner.audio_peer = .{ .location = 0x02000601 };
@@ -1723,7 +1752,111 @@ const Integration = struct {
         try t.expectEqual(@as(i32, 1), release(&cursor_source.reference));
         try cleanup();
     }
+    fn screenWait(i: usize, phase: u32) !void {
+        for (0..3000) |_| {
+            step();
+            if (output.failure != null or (screen_state[i] != null and screen_state[i].?.phase == phase and
+                screen_state[i].?.request_sequence == screen_intent[i].sequence)) break;
+        }
+        if (output.failure != null or screen_state[i] == null or screen_state[i].?.phase != phase)
+            std.debug.print("[amd-screen-failure] wanted={d} state={?} output={?} pipeline={?} core={d}/{s} scan={s}\n", .{
+                phase, screen_state[i], output.failure, pipe.failure, R.owner.result, @tagName(R.owner.phase), @tagName(R.owner.scanout_owner.phase)});
+        try t.expect(output.failure == null and screen_state[i] != null and screen_state[i].?.phase == phase and
+            screen_state[i].?.request_sequence == screen_intent[i].sequence);
+    }
+    fn screenRequest(i: usize, off: bool) void {
+        screen_intent[i].sequence += 1; screen_intent[i].off = @intFromBool(off);
+        screen_intent[i].deadline_ns = if (off) F.ticks + 30 * std.time.ns_per_s else 0;
+    }
+    fn screenCycles() !void {
+        screen_model = true; defer screen_model = false;
+        try init(); try untilActive(); try screenWait(0, a.gfx_power_phase_on);
+        const identity = output.output; const epoch = output.epoch;
+        const pixels = R.owner.scanout_owner.current.?;
+        const rt: *@import("panel_runtime.zig").Runtime = @ptrFromInt(R.owner.panel_allocation.cpu_address);
+        const brightness = rt.protocol.?.brightness;
+        var cursor_source: a.GfxBufferReference = .{};
+        try t.expectEqual(@as(i32, 1), create(&.{ .width = 32, .height = 16, .byte_length = 2048, .format = a.gfx_buffer_format_argb8888,
+            .plane_count = 1, .plane_pitches = .{128,0,0,0}, .usage = a.gfx_buffer_usage_cpu_read | a.gfx_buffer_usage_cpu_write }, &cursor_source));
+        @memset(data[index(cursor_source.reference)][0..2048], 0x80);
+        var request = cursorRequest(1, a.display_cursor_operation_prepare, 0);
+        request.request.reference = cursor_source.reference; request.request.width = 32; request.request.height = 16;
+        request.request.pitch = 128; request.request.byte_length = 2048;
+        cursor_job = request; try cursorDone(1);
+        try t.expectEqual(@as(i32, 1), release(&cursor_source.reference));
+        F.words[reg("OTG0_OTG_STATUS_POSITION")] = 200 << hw.OTG0_OTG_STATUS_POSITION__OTG_VERT_COUNT__SHIFT;
+        cursor_job = cursorRequest(2, a.display_cursor_operation_show, 1); try cursorDone(2);
+        const cursor_before = R.owner.scanout_owner.cursor_current;
+        const references = R.memory.mapping_users;
+        screen_busy = true; screenRequest(0, true);
+        for (0..30) |_| step();
+        try t.expect(output.failure == null and !output.power.entries[0].pending and R.owner.scanout_owner.phase == .active);
+        screen_busy = false; try screenWait(0, a.gfx_power_phase_off);
+        try t.expect(!rt.protocol.?.powered and !rt.protocol.?.lit and std.meta.eql(output.output, identity) and
+            std.meta.eql(output.epoch, epoch) and std.meta.eql(R.owner.scanout_owner.current.?, pixels) and R.memory.mapping_users == references);
+        for (0..30) |_| step();
+        try t.expect(output.failure == null and output.power.permits(false) and !output.power.permits(true));
+        screen_unpause_busy = true; screenRequest(0, false);
+        for (0..3000) |_| { step(); if (output.power.entries[0].completed or output.failure != null) break; }
+        try t.expect(output.failure == null and output.power.entries[0].completed and R.owner.scanout_owner.phase == .active and
+            screen_paused[0] and screen_state[0].?.phase == a.gfx_power_phase_waking);
+        const receipt = output.power.entries[0].receipt;
+        for (0..5) |_| step();
+        try t.expect(output.power.entries[0].receipt == receipt and R.memory.mapping_users == references);
+        screen_unpause_busy = false; try screenWait(0, a.gfx_power_phase_on);
+        try t.expect(rt.protocol.?.powered and rt.protocol.?.lit and rt.protocol.?.brightness == brightness and
+            R.owner.scanout_owner.sequence == presentation.sequence and std.meta.eql(R.owner.scanout_owner.current.?, pixels));
+        // Wake reverses an already admitted off task; the off receipt must
+        // arrive first, and the newest copied request then drives on.
+        screenRequest(0, true);
+        for (0..300) |_| { step(); if (output.power.entries[0].pending) break; }
+        try t.expect(output.power.entries[0].pending);
+        screenRequest(0, false); try screenWait(0, a.gfx_power_phase_on);
+        try t.expect(output.power.entries[0].receipt == receipt + 2);
+        try t.expect(std.meta.eql(R.owner.scanout_owner.cursor_current, cursor_before) and R.owner.scanout_owner.cursor_sequence == 2 and
+            F.words[reg("CURSOR0_CURSOR_CONTROL")] & hw.CURSOR0_CURSOR_CONTROL__CURSOR_ENABLE_MASK != 0);
+        cursor_job = cursorRequest(3, a.display_cursor_operation_hide, 0); try cursorDone(3);
+        try cleanup();
+        // HDMI sleep leaves the lit panel present path usable and withdraws
+        // HDMI audio availability until the new physical wake receipt.
+        hdmi_model = true; audio_model = true;
+        defer { hdmi_model = false; audio_model = false; }
+        try init(); try untilActive(); try bothActive(); try screenWait(1, a.gfx_power_phase_on);
+        const original_hdmi = output.additional.output;
+        const original_audio = audio_ready_count;
+        screenRequest(1, true); try screenWait(1, a.gfx_power_phase_off);
+        try t.expect(audio_route.?.state == a.gfx_audio_route_pending and screen_state[0].?.phase == a.gfx_power_phase_on);
+        try panelJob(1);
+        for (0..300) |_| { step(); if (completed == 1) break; }
+        try t.expect(completed == 1 and output.failure == null and output.power.entries[1].phase == a.gfx_power_phase_off);
+        screenRequest(1, false); try screenWait(1, a.gfx_power_phase_on);
+        try t.expect(audio_ready_count > original_audio and audio_route.?.state == a.gfx_audio_route_ready and
+            std.meta.eql(output.additional.output, original_hdmi));
+        screenRequest(0, true); screenRequest(1, true);
+        try screenWait(0, a.gfx_power_phase_off); try screenWait(1, a.gfx_power_phase_off);
+        F.words[reg("DC_GPIO_HPD_Y")] &= ~@as(u32, 256);
+        for (0..1800) |_| { step(); if (hdmi_withdrawals == 1) break; }
+        try t.expect(hdmi_withdrawals == 1 and output.failure == null and !output.power.permits(true));
+        F.words[reg("DC_GPIO_HPD_Y")] |= 256;
+        // The off lease does not migrate onto a new connector generation.
+        screen_intent[1] = .{}; screen_state[1] = null; screen_paused[1] = false;
+        screenRequest(0, false); try screenWait(0, a.gfx_power_phase_on); try bothActive();
+        try screenWait(1, a.gfx_power_phase_on);
+        try t.expect(output.additional.output.connection_generation > original_hdmi.connection_generation);
+        try cleanup();
+        hdmi_model = false; audio_model = false;
+        // No progress during wake is an unavailable receipt and retained BOs.
+        try init(); try untilActive(); try screenWait(0, a.gfx_power_phase_on);
+        screenRequest(0, true); try screenWait(0, a.gfx_power_phase_off);
+        Pipeline.hold_frames = true; screenRequest(0, false);
+        for (0..3000) |_| { step(); if (output.failure != null) break; }
+        try t.expect(output.failure != null and screen_state[0].?.phase == a.gfx_power_phase_unavailable and
+            screen_paused[0] and R.owner.scanout_owner.current != null and R.memory.mapping_users != 0);
+        Pipeline.hold_frames = false; try cleanup();
+        std.debug.print("[amd-screen-power] physical protocol model: panel off/on, brightness/BO/identity retained, busy receipts, reversed intent and failed wake retention\n", .{});
+    }
     fn check() !void {
+        try screenCycles();
         try sleepingDisplay();
         var stage: []const u8 = "initial present";
         errdefer std.debug.print("[amd-integration-failure] stage={s} output={s}/{?} present={s}/{?} head={s}/{?} mode={s}/{?} core={d} pipe={?}\n",

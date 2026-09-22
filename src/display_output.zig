@@ -60,6 +60,7 @@ pub const Owner = struct {
     next_health: u64 = 0,
     health_retry_deadline: u64 = 0,
     statistics: @import("display_stats.zig").Owner = .{},
+    power: @import("display_power.zig").Owner = .{},
     color: @import("display_color.zig").Owner = .{},
     signal: ?@import("display_color.zig").color.Signal = null,
     cursor: @import("display_cursor.zig").Owner = .{},
@@ -113,7 +114,7 @@ pub const Owner = struct {
     }
     fn powerIdle(raw: usize) bool {
         const self = from(raw);
-        if (self.phase != .active or self.failure != null or self.primary_failure != null or
+        if (self.phase != .active or self.failure != null or self.primary_failure != null or self.power.transition() or
             @atomicLoad(u32, &self.restore_requested, .acquire) != 0 or
             !self.modes.permitsQueue() or self.mode_inbox != null or self.cursor.phase != .idle or
             self.present.?.input != null or self.connector.quarantined or
@@ -155,15 +156,17 @@ pub const Owner = struct {
         }
         try self.connector.poll(self);
         if (self.connector.waiting() or !powerIdle(@intFromPtr(self))) return;
-        try self.modeWork();
-        try self.cursor.pollDemand(self);
+        try self.power.poll(self, false);
+        if (self.power.transition()) return;
+        if (!self.power.held()) try self.modeWork();
+        if (self.power.permits(true)) try self.cursor.pollDemand(self);
         if (!powerIdle(@intFromPtr(self))) return;
         try self.connector.step(self);
         if (core.thread != 0) return;
-        if (now >= self.next_health) {
+        if (self.power.permits(true) and now >= self.next_health) {
             if (self.health_retry_deadline == 0) self.health_retry_deadline = now + 2 * std.time.ns_per_s;
             try core.healthCommand(); self.health_pending = true;
-        } else if (self.outputs.?.supportsBrightness() and now >= self.next_brightness) {
+        } else if (self.power.permits(true) and self.outputs.?.supportsBrightness() and now >= self.next_brightness) {
             try core.brightnessCommand(self.output); self.brightness_pending = true;
             self.next_brightness = now + std.time.ns_per_s;
         }
@@ -194,6 +197,10 @@ pub const Owner = struct {
                 continue;
             }
             const owner = if (primary) self.present.? else &head.presentation;
+            if (!self.power.permits(primary)) {
+                if (self.engine.?.queue.?.complete(&input.fence, a.gfx_queue_result_cancelled, 1) == 1) entry.* = null;
+                continue;
+            }
             if (!(if (primary) self.modes.permitsQueue() and self.cursor.permitsQueue() else head.modes.permitsQueue()) or !owner.available()) continue;
             entry.* = null; owner.accept(input); return;
         };
@@ -324,6 +331,10 @@ pub const Owner = struct {
             },
             .active => {
                 self.statistics.publish(self);
+                if (self.power.transition()) {
+                    try self.power.poll(self, true);
+                    if (self.power.transition()) return;
+                }
                 if (core.phase == .retained) return error.DeviceLost;
                 if (self.primary_failure == null) {
                     if (self.present.?.failed_output) try self.losePrimary(self.present.?.failure orelse error.Visibility);
@@ -365,6 +376,11 @@ pub const Owner = struct {
                 }
                 try self.connector.poll(self);
                 if (self.connector.waiting()) return;
+                try self.power.poll(self, true);
+                if (self.power.held()) {
+                    try self.screenService();
+                    return;
+                }
                 try self.modeWork();
                 if (self.cursor.phase != .idle) {
                     self.cursor.step(self) catch |err| { try self.losePrimary(err); return; };
@@ -393,6 +409,45 @@ pub const Owner = struct {
             },
             else => return error.State,
         }
+    }
+    fn screenService(self: *Owner) !void {
+        const core = self.core.?;
+        if (self.power.transition()) return;
+        if (self.cursor.phase != .idle and self.power.permits(true)) {
+            self.cursor.step(self) catch |err| { try self.losePrimary(err); return; };
+            if (self.cursor.phase != .idle or core.thread != 0) return;
+        }
+        if (self.additional.draining) self.additional.step(self);
+        if (core.thread != 0) return;
+        // Geometry changes require all peers awake. Consume and reject only
+        // new, unarmed apply jobs; a pending confirm prevented off admission.
+        try self.modeWork();
+        for ([_]*?a.GfxDriverModeJob{ &self.mode_inbox, &self.additional.mode_inbox }) |inbox| if (inbox.*) |job| {
+            if (job.operation != a.gfx_mode_operation_apply) return error.State;
+            const result = self.outputs.?.completeMode(&.{ .ticket = job.ticket, .sequence = job.sequence, .operation = job.operation,
+                .outcome = a.gfx_output_outcome_old_preserved, .quiesced = 2, .error_code = a.gfx_output_error_busy });
+            if (result == a.gfx_output_error_busy) return;
+            if (result != a.gfx_output_ok) return error.Publication;
+            inbox.* = null;
+        };
+        if (self.additional.draining) self.additional.step(self);
+        if (core.thread != 0) return;
+        if (self.power.permits(true)) {
+            self.cursor.step(self) catch |err| { try self.losePrimary(err); return; };
+            if (core.thread != 0) return;
+        }
+        try self.connector.step(self);
+        if (core.thread != 0) return;
+        if (self.power.permits(true) and self.cursor.phase == .idle and self.present.?.available()) {
+            if (self.last_time >= self.next_health) {
+                if (self.health_retry_deadline == 0) self.health_retry_deadline = self.last_time + 2 * std.time.ns_per_s;
+                try core.healthCommand(); self.health_pending = true;
+            } else if (self.outputs.?.supportsBrightness() and self.last_time >= self.next_brightness) {
+                try core.brightnessCommand(self.output); self.brightness_pending = true;
+                self.next_brightness = self.last_time + std.time.ns_per_s;
+            }
+        }
+        _ = self.display.?.schedule(&self.engine.?.binding);
     }
     fn losePrimary(self: *Owner, err: anyerror) !void {
         if (!self.additional.callback_confirmed or self.additional.draining or self.core.?.phase != .programmed) return err;

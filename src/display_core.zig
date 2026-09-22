@@ -29,7 +29,9 @@ pub const Hooks = struct {
     modeset: ?*const fn (usize, ModeRequest) bool = null,
     remove: ?*const fn (usize) bool = null,
     pause_primary: ?*const fn (usize) bool = null,
+    power: ?*const fn (usize, PowerRequest) bool = null,
 };
+pub const PowerRequest = struct { epoch: scanout.Epoch, off: bool };
 pub const ModeRequest = struct { mode: c.struct_r4dcn_mode, epoch: scanout.Epoch, image: scanout.Image, sequence: u64, deadline_ns: u64, signal: ?@import("display_color.zig").color.Signal = null };
 pub const ScanoutOperation = enum { bind, enable, flip, sample, acknowledge, stop, cursor, cursor_sample, cursor_acknowledge, rekey };
 pub const ScanoutRequest = struct {
@@ -57,6 +59,7 @@ pub const Owner = struct {
     candidate_plan: c.struct_r4dcn_plan = undefined,
     candidate_valid: bool = false,
     mode_request: ModeRequest = undefined,
+    power_request: PowerRequest = undefined,
     extra_mode: ?c.struct_r4dcn_mode = null,
     extra_scanout: scanout.Owner = .{},
     fixed_disp_khz: u32 = 0,
@@ -81,7 +84,7 @@ pub const Owner = struct {
     worker_result: i32 = 0,
     result: i32 = 0,
     phase: Phase = .empty,
-    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work, hdmi_publish, scanout_work, mode_plan, mode_apply, head_remove, primary_pause, health_work } = .prepare,
+    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work, hdmi_publish, scanout_work, mode_plan, mode_apply, head_remove, primary_pause, health_work, power_work } = .prepare,
     limits: c.struct_r4dcn_limits = std.mem.zeroes(c.struct_r4dcn_limits),
     mode: c.struct_r4dcn_mode = std.mem.zeroes(c.struct_r4dcn_mode),
     plan: c.struct_r4dcn_plan = std.mem.zeroes(c.struct_r4dcn_plan),
@@ -198,6 +201,7 @@ pub const Owner = struct {
         return switch (self.action) {
             .scanout_work => self.scanout_request.epoch.output.connector_id == connector,
             .mode_apply => self.mode_request.epoch.output.connector_id == connector,
+            .power_work => self.power_request.epoch.output.connector_id == connector,
             .mode_plan => self.candidate_mode.pipe == pipe,
             .health_work, .brightness_work, .primary_pause => pipe == self.mode.pipe,
             else => false,
@@ -211,6 +215,11 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
             self.hooks == null or self.hooks.?.remove == null) return error.State;
         try self.launch(.head_remove);
+    }
+    pub fn powerCommand(self: *Owner, request: PowerRequest) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            self.hooks == null or self.hooks.?.power == null or !std.meta.eql(self.scanoutFor(request.epoch).epoch, request.epoch)) return error.State;
+        self.power_request = request; try self.launch(.power_work);
     }
     pub fn pausePrimary(self: *Owner) Error!void {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
@@ -401,6 +410,12 @@ pub const Owner = struct {
                         (self.candidate_plan.disp_khz > self.fixed_disp_khz or self.candidate_plan.dpp_khz > self.fixed_disp_khz)) self.result = c.R4DCN_BANDWIDTH;
                 }
                 self.candidate_valid = self.result == 0;
+            },
+            .power_work => {
+                self.result = if (self.hooks.?.power.?(self.hooks.?.context, self.power_request)) 0 else c.R4DCN_IO;
+                // A link error leaves this head unavailable. A sticky MMIO
+                // failure still transfers the entire device to recovery.
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
             .head_remove => {
                 self.result = if (self.hooks.?.remove.?(self.hooks.?.context)) 0 else c.R4DCN_IO;

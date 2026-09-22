@@ -86,6 +86,7 @@ pub const Owner = struct {
     cursor_receipt: ?CursorReceipt = null,
     sequence: u64 = 0,
     cursor_sequence: u64 = 0,
+    resume_cursor: bool = false,
     frame: u64 = 0,
     raw_frame: u32 = 0,
     last_ns: u64 = 0,
@@ -143,6 +144,27 @@ pub const Owner = struct {
             self.phase = .retained; return err;
         };
         self.sequence = sequence;
+    }
+    /// Screen wake retains the exact image/epoch and advances only the private
+    /// scanout sequence. The outer present owner adopts it after task join.
+    pub fn wake(self: *Owner, epoch: Epoch, now: u64, deadline: u64) Error!void {
+        try self.identity(epoch);
+        if (self.phase != .stopped or self.pending != null or self.cursor_pending != null or
+            self.current == null or now < self.last_ns or self.sequence >= std.math.maxInt(u64) - 1) return error.State;
+        var sample: c.struct_r4dcn_scanout_sample = undefined;
+        try code(c.r4dcn_scanout_sample(self.storage, self.mode.pipe, &sample));
+        if (sample.running != 0 or sample.blank != 1 or sample.locked != 0 or
+            sample.requested_address != self.current.?.address or sample.end_ns < now) return error.State;
+        self.raw_frame = sample.frame; self.last_ns = sample.end_ns; self.phase = .ready;
+        self.resume_cursor = self.cursor_current.image != null;
+        try self.enable(epoch, self.sequence + 1, deadline);
+    }
+    /// Restore the already acknowledged cursor without consuming a new
+    /// common cursor job sequence. Its BO remains pinned across screen sleep.
+    pub fn restoreCursor(self: *Owner, epoch: Epoch, deadline: u64) Error!void {
+        try self.identity(epoch);
+        if (!self.resume_cursor or self.cursor_current.image == null) return error.State;
+        try self.cursorImpl(epoch, self.cursor_sequence, self.cursor_current, deadline, true);
     }
     pub fn flip(self: *Owner, epoch: Epoch, sequence: u64, image: Image, deadline: u64) Error!void {
         try self.identity(epoch);
@@ -210,8 +232,12 @@ pub const Owner = struct {
         if (self.phase != .stopped) self.phase = .retained;
     }
     pub fn cursor(self: *Owner, epoch: Epoch, sequence: u64, update: Cursor, deadline: u64) Error!void {
+        return self.cursorImpl(epoch, sequence, update, deadline, false);
+    }
+    fn cursorImpl(self: *Owner, epoch: Epoch, sequence: u64, update: Cursor, deadline: u64, restoring: bool) Error!void {
         try self.identity(epoch);
-        if (self.phase != .active or self.cursor_pending != null or sequence <= self.cursor_sequence or sequence == std.math.maxInt(u64)) return error.Busy;
+        if (self.phase != .active or self.cursor_pending != null or sequence == std.math.maxInt(u64) or
+            (if (restoring) !self.resume_cursor or sequence != self.cursor_sequence else sequence <= self.cursor_sequence)) return error.Busy;
         const native = try update.native();
         if (deadline <= self.last_ns or deadline - self.last_ns > 2 * std.time.ns_per_s) return error.Invalid;
         const sample = self.observe() catch |err| { if (err != error.Busy) self.phase = .retained; return err; };
@@ -252,7 +278,7 @@ pub const Owner = struct {
     pub fn acknowledgeCursor(self: *Owner, epoch: Epoch, sequence: u64) Error!void {
         try self.identity(epoch);
         if (self.phase != .cursor_receipt or self.cursor_receipt.?.sequence != sequence) return error.Stale;
-        self.cursor_current = self.cursor_receipt.?.update;
+        self.cursor_current = self.cursor_receipt.?.update; self.resume_cursor = false;
         self.cursor_pending = null; self.cursor_receipt = null; self.phase = .active;
     }
     /// A physical stop is required before cancelling a pending flip or losing
