@@ -1570,7 +1570,41 @@ const Integration = struct {
         try cleanup();
         try connections();
         try failedModeReset();
+        try nativePresent();
         std.debug.print("[amd-display-integration] real output prepare/commit, BO/PTE/SDMA copy, cursor barrier, partial damage, 1080p/720p rollback and retained partial handoff; model only\n", .{});
+    }
+    fn nativePresent() !void {
+        try init(); try untilActive();
+        const shape = output.shape;
+        source = try R.memory.create(shape.descriptor(&R.memory));
+        const source_index = index(source.reference);
+        // Explicit completed-render pixel stimulus. The production path below
+        // must use native UMA backing/PTEs, not a SYSTEM SG/CPU mapping.
+        @memset(data[source_index][0..@intCast(shape.bytes)], 0x5a);
+        job = .{ .fence = .{ .adapter_id = 1, .device_generation = 21, .reset_generation = 4, .timeline = 3, .point = 1, .slot = 2 },
+            .operation = a.gfx_queue_operation_present, .source_buffer = source.buffer, .byte_length = shape.width * 4,
+            .row_count = shape.height, .source_pitch = shape.pitch, .deadline_ns = F.ticks + 2 * std.time.ns_per_s,
+            .display_target = output.target };
+        try queueReady(); active_job = true; presentation.accept(job);
+        try t.expect(presentation.armed and presentation.source.ready and presentation.source.native_owner == 9 and
+            presentation.source.dma.lease.id == 0 and presentation.source.cpu.lease.id == 0);
+        try t.expect(R.memory.drop(source.reference) and R.memory.collect());
+        try t.expect(bos[source_index].live and completed == 0);
+        // Caller close and an unrelated earlier counter do not retire the BO.
+        step(); try t.expect(bos[source_index].live and completed == 0);
+        try completeDma(); Pipeline.hold_frames = true;
+        for (0..20) |_| step();
+        // The normal GC allocation pump collects release tickets separately
+        // from display completion. Exercise that owner here as well.
+        try t.expect(R.memory.collect());
+        try t.expect(!bos[source_index].live and completed == 0 and presentation.phase == .sample_wait);
+        Pipeline.hold_frames = false;
+        for (0..100) |_| { step(); if (completed == 1) break; }
+        try t.expect(completed == 1 and presentation.visible == 1 and output.failure == null);
+        const front = index(presentation.frames[presentation.front].reference.reference);
+        try t.expect(std.mem.allEqual(u8, data[front][0..@as(usize, shape.width) * 4], 0x5a));
+        try t.expect(std.mem.allEqual(u8, data[front][(@as(usize, shape.height) - 1) * shape.pitch..][0..@as(usize, shape.width) * 4], 0x5a));
+        try cleanup();
     }
     fn cleanup() !void {
         // Common restoration refuses before the whole device owner confirms.
