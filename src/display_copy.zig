@@ -47,7 +47,7 @@ pub const Owner = struct {
             descriptor.plane_count != 1 or descriptor.plane_offsets[0] != 0 or descriptor.plane_pitches[0] != @as(u64, shape.width) * 4 or
             descriptor.byte_length != descriptor.plane_pitches[0] * shape.height or descriptor.byte_length > buffers.max_bytes or
             descriptor.usage & a.gfx_buffer_usage_transfer_source == 0) return error.Invalid;
-        const va: @import("memory_layout.zig").Span = .{ .offset = 0x6200000000, .bytes = buffers.max_bytes };
+        const va: @import("memory_layout.zig").Span = .{ .offset = 0x6200000000 + ((self.frames[0].gpu_address - buffers.gpu_base) / (8 * buffers.max_bytes)) * buffers.max_bytes, .bytes = buffers.max_bytes };
         if (va.overlaps(memory.layout.?.mc) or va.overlaps(memory.layout.?.gart)) return error.Invalid;
         try self.source.adoptReference(memory, &self.reference, va.offset, self.pages[0..@intCast((descriptor.byte_length + 4095) / 4096)]);
         try self.source.publish(&memory.virtual, &memory.registers, false, false);

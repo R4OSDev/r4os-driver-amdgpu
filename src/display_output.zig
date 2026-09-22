@@ -63,7 +63,15 @@ pub const Owner = struct {
     cursor: @import("display_cursor.zig").Owner = .{},
     modes: @import("display_modes.zig").Owner = .{},
     connector: @import("display_connector.zig").Owner = .{},
+    additional: @import("display_head.zig").Owner = .{},
+    mode_inbox: ?a.GfxDriverModeJob = null,
+    slot_base: u8 = 0,
+    incoming: [64]?a.GfxDriverJob = @splat(null),
     hdmi_present: bool = false,
+    primary_failure: ?anyerror = null,
+    primary_stop_pending: bool = false,
+    primary_stop_attempted: bool = false,
+    primary_stopped: bool = false,
     pub fn request(self: *Owner, ctx: *const r4os.r4dev.DriverContext, native: *start.Owner, engine: *sdma.Owner,
         core: *dc.Owner, pipe: *pipeline.Owner, presentation: *present.Owner, frames: [2]*buffers.Image,
         board: *const @import("bios.zig").Board, table: clocks.Table, gb_addr_config: u32) !void
@@ -103,28 +111,64 @@ pub const Owner = struct {
     }
     fn available(raw: usize) bool {
         const self = from(raw);
-        return self.phase == .active and self.modes.permitsQueue() and !self.connector.waiting() and !self.brightness_pending and !self.health_pending and self.cursor.permitsQueue() and
-            @atomicLoad(u32, &self.restore_requested, .acquire) == 0 and self.present.?.available();
+        if (self.phase != .active or !self.modes.ready or self.core.?.thread != 0 or
+            @atomicLoad(u32, &self.restore_requested, .acquire) != 0) return false;
+        for (&self.incoming) |*entry| if (entry.* == null) return true;
+        return false;
     }
     fn accept(raw: usize, input: a.GfxDriverJob) bool {
         if (!present.supports(input.operation)) return false;
-        from(raw).present.?.accept(input); return true;
+        const self = from(raw);
+        for (&self.incoming) |*entry| if (entry.* == null) {
+            entry.* = input; self.dispatch(); return true;
+        };
+        return false;
+    }
+    fn dispatch(self: *Owner) void {
+        for (&self.incoming) |*entry| if (entry.*) |input| {
+            const primary = input.display_target.connector_id == 0 or input.display_target.connector_id == self.output.connector_id;
+            const head = &self.additional;
+            const known = (primary and self.primary_failure == null) or (!primary and head.phase == .active and !head.draining and std.meta.eql(input.display_target, head.target));
+            if (!known) {
+                if (self.engine.?.queue.?.complete(&input.fence, a.gfx_queue_result_cancelled, 1) == 1) entry.* = null;
+                continue;
+            }
+            const owner = if (primary) self.present.? else &head.presentation;
+            if (!(if (primary) self.modes.permitsQueue() and self.cursor.permitsQueue() else head.modes.permitsQueue()) or !owner.available()) continue;
+            entry.* = null; owner.accept(input); return;
+        };
+    }
+    fn modeWork(self: *Owner) !void {
+        if (self.mode_inbox != null or self.additional.mode_inbox != null) return;
+        var job: a.GfxDriverModeJob = .{};
+        const result = self.outputs.?.takeMode(&self.engine.?.binding, &job);
+        if (result == 0 or result == a.gfx_output_error_busy) return;
+        if (result != a.gfx_output_ok) return error.Publication;
+        if (self.additional.self_address != 0 and job.assignment.output.connector_id == self.additional.output.connector_id)
+            self.additional.mode_inbox = job else self.mode_inbox = job;
     }
     fn drain(raw: usize) bool {
         const self = from(raw);
-        self.present.?.work();
-        return self.present.?.input == null or self.present.?.ticket != null;
+        self.present.?.cancel_display = true; self.additional.presentation.cancel_display = true;
+        self.present.?.work(); self.additional.presentation.work();
+        for (&self.incoming) |*entry| if (entry.*) |job| {
+            if (self.engine.?.queue.?.complete(&job.fence, a.gfx_queue_result_cancelled, 1) != 1) return false;
+            entry.* = null;
+        };
+        return (self.present.?.input == null or self.present.?.ticket != null) and
+            (self.additional.presentation.input == null or self.additional.presentation.ticket != null);
     }
     fn work(raw: usize) void {
         const self = from(raw);
         if (self.self_address != raw) return;
-        self.present.?.work();
+        self.present.?.work(); self.additional.presentation.work();
         if (self.phase == .failed or self.phase == .closing or @atomicLoad(u32, &self.restore_requested, .acquire) != 0) return;
         const now = self.ctx.?.resources().?.nowNs();
         if (now < self.last_time or now == std.math.maxInt(u64)) { self.fail(error.Clock); return; }
         self.last_time = now;
         if ((self.phase != .active or !self.modes.ready) and now >= self.deadline) { self.fail(error.Deadline); return; }
         self.advance() catch |err| { self.fail(err); };
+        if (self.phase == .active) self.dispatch();
     }
     fn taskDone(self: *Owner) !bool {
         if (!self.core.?.poll()) return false;
@@ -220,14 +264,35 @@ pub const Owner = struct {
             },
             .active => {
                 self.statistics.publish(self);
-                if (self.present.?.failed_output) return self.present.?.failure orelse error.Visibility;
-                if (self.present.?.input) |job| if (self.last_time >= job.deadline_ns) return error.Deadline;
+                if (core.phase == .retained) return error.DeviceLost;
+                if (self.primary_failure == null) {
+                    if (self.present.?.failed_output) try self.losePrimary(self.present.?.failure orelse error.Visibility);
+                    if (self.present.?.input) |job| if (self.last_time >= job.deadline_ns) { try self.losePrimary(error.Deadline); };
+                }
+                if (self.primary_failure != null) {
+                    try self.modeWork();
+                    // Finish the exact owner's task before considering a new
+                    // primary stop. Connector/mode work can already be in flight
+                    // when the panel's presentation reports loss.
+                    try self.connector.poll(self);
+                    if (self.connector.waiting()) return;
+                    if (self.additional.waiting()) {
+                        self.additional.step(self);
+                        if (self.additional.waiting() or core.thread != 0) return;
+                    }
+                    try self.primaryRetirement();
+                    if (core.thread != 0) return;
+                    self.additional.step(self);
+                    if (core.thread != 0) return;
+                    if (!self.connector.waiting()) try self.connector.step(self);
+                    return;
+                }
                 if (self.health_pending) {
                     if (!core.poll()) return;
                     self.health_pending = false;
-                    if (core.result != 0 and core.result != dc.c.R4DCN_BUSY) return error.Visibility;
+                    if (core.result != 0 and core.result != dc.c.R4DCN_BUSY) { try self.losePrimary(error.Visibility); return; }
                     if (core.result == dc.c.R4DCN_BUSY) {
-                        if (self.last_time >= self.health_retry_deadline) return error.Deadline;
+                        if (self.last_time >= self.health_retry_deadline) { try self.losePrimary(error.Deadline); return; }
                         self.next_health = self.last_time;
                     } else { self.next_health = self.last_time + 250 * std.time.ns_per_ms; self.health_retry_deadline = 0; }
                 }
@@ -240,17 +305,27 @@ pub const Owner = struct {
                 }
                 try self.connector.poll(self);
                 if (self.connector.waiting()) return;
-                try self.modes.step(self);
-                if (!self.modes.permitsQueue()) return;
-                try self.cursor.step(self);
+                try self.modeWork();
+                if (self.cursor.phase != .idle) {
+                    self.cursor.step(self) catch |err| { try self.losePrimary(err); return; };
+                    if (self.cursor.phase != .idle or core.thread != 0) return;
+                }
+                if (self.additional.waiting()) {
+                    self.additional.step(self);
+                    if (self.additional.waiting() or core.thread != 0) return;
+                }
+                if (self.modes.waiting() or core.thread == 0) self.modes.step(self) catch |err| { try self.losePrimary(err); return; };
+                if (core.thread != 0) return;
+                if (self.modes.permitsQueue()) self.cursor.step(self) catch |err| { try self.losePrimary(err); return; };
+                if (core.thread != 0) return;
+                self.additional.step(self);
+                if (core.thread != 0) return;
                 try self.connector.step(self);
-                // HDMI shares the single DCN task with panel health and
-                // brightness. Its result must be joined before another user.
                 if (self.connector.waiting()) return;
-                if (self.cursor.phase == .idle and self.present.?.available() and self.last_time >= self.next_health) {
+                if (self.modes.permitsQueue() and self.cursor.phase == .idle and self.present.?.available() and self.last_time >= self.next_health) {
                     if (self.health_retry_deadline == 0) self.health_retry_deadline = self.last_time + 2 * std.time.ns_per_s;
                     try core.healthCommand(); self.health_pending = true;
-                } else if (self.cursor.phase == .idle and self.present.?.available() and self.outputs.?.supportsBrightness() and self.last_time >= self.next_brightness) {
+                } else if (self.modes.permitsQueue() and self.cursor.phase == .idle and self.present.?.available() and self.outputs.?.supportsBrightness() and self.last_time >= self.next_brightness) {
                     try core.brightnessCommand(self.output); self.brightness_pending = true;
                     self.next_brightness = self.last_time + std.time.ns_per_s;
                 }
@@ -258,6 +333,30 @@ pub const Owner = struct {
             },
             else => return error.State,
         }
+    }
+    fn losePrimary(self: *Owner, err: anyerror) !void {
+        if (!self.additional.callback_confirmed or self.additional.draining or self.core.?.phase != .programmed) return err;
+        self.primary_failure = err; self.present.?.cancel_display = true;
+        self.present.?.failed_output = true; self.present.?.failure = err;
+        _ = self.outputs.?.pauseOutput(&self.output, true);
+    }
+    fn primaryRetirement(self: *Owner) !void {
+        const core = self.core.?;
+        if (core.thread != 0) {
+            if (!core.taskFor(self.mode.pipe, self.epoch.output.connector_id) or !core.poll()) return;
+            if (core.phase == .retained) return error.DeviceLost;
+        }
+        self.health_pending = false; self.brightness_pending = false;
+        if (self.primary_stop_pending) {
+            self.primary_stop_pending = false;
+            self.primary_stopped = core.result == 0 and core.scanout_owner.phase == .stopped;
+        }
+        _ = self.cursor.abandon(self);
+        _ = self.modes.abandon(self);
+        if (self.present.?.input != null or self.primary_stop_attempted) return;
+        try core.pausePrimary(); self.primary_stop_pending = true; self.primary_stop_attempted = true;
+        // An unconfirmed stop retains this head's images. Repeated stop tasks
+        // must not starve a healthy peer; whole-device recovery may retry later.
     }
     fn buildPublication(self: *Owner) !void {
         const runtime: *@import("panel_runtime.zig").Runtime = @ptrFromInt(self.core.?.panel_allocation.cpu_address);

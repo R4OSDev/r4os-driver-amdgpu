@@ -44,7 +44,7 @@ pub const Owner = struct {
         if (boot.pipe != core.mode.pipe or boot.width != core.mode.width or boot.height != core.mode.height or core.mode.flags & 1 != 0 or
             table.dcf_khz != core.limits.dcf_khz or table.fabric_khz != core.limits.fabric_khz or table.soc_khz != core.limits.soc_khz) return error.Unconfirmed;
         self.* = .{ .self_address = @intFromPtr(self), .core = core, .table = table, .boot_mode = boot };
-        return .{ .context = self.self_address, .prepare = prepare, .stop = stop, .restore = restore, .modeset = modeset };
+        return .{ .context = self.self_address, .prepare = prepare, .stop = stop, .restore = restore, .modeset = modeset, .remove = remove, .pause_primary = pausePrimary };
     }
     fn from(raw: usize) *Owner { return @ptrFromInt(raw); }
     fn checked(result: c_int) !void {
@@ -68,6 +68,7 @@ pub const Owner = struct {
         if (!self.touched) return true;
         // The original DP blank routine retries transient MMIO failures and
         // proves stop before the other connector's pad-state checks.
+        self.removeHardware() catch |err| { self.failure = err; return false; };
         self.stopHardware() catch |err| { self.failure = err; return false; };
         if (self.core.?.hdmi_storage_valid) {
             const runtime: *@import("hdmi_runtime.zig").Runtime = @ptrFromInt(self.core.?.hdmi_allocation.cpu_address);
@@ -86,37 +87,77 @@ pub const Owner = struct {
         self.switchHardware(request) catch |err| { self.failure = err; return false; };
         return true;
     }
+    fn remove(raw: usize) bool {
+        const self = from(raw);
+        self.removeHardware() catch |err| { self.failure = err; return false; }; return true;
+    }
+    fn pausePrimary(raw: usize) bool {
+        const self = from(raw);
+        self.stopHardware() catch |err| { self.failure = err; return false; };
+        const core = self.core.?;
+        core.scanout_owner.stop(core.scanout_owner.epoch) catch |err| { self.failure = err; return false; };
+        return true;
+    }
+    fn removeHardware(self: *Owner) !void {
+        const core = try self.enter(); const storage = try core.workerStorage();
+        if (core.extra_mode) |mode| {
+            const runtime: *@import("hdmi_runtime.zig").Runtime = @ptrFromInt(core.hdmi_allocation.cpu_address);
+            try runtime.run(.stop, mode);
+            if (core.extra_scanout.self_address != 0) try core.extra_scanout.stop(core.extra_scanout.epoch)
+            else try checked(c.r4dcn_scanout_stop(storage, @as(u32, 1) << @intCast(mode.pipe)));
+            try checked(c.r4dcn_remove(storage, mode.pipe));
+            try runtime.run(.stop, mode);
+            core.extra_mode = null;
+        }
+    }
     fn switchHardware(self: *Owner, request: dc.ModeRequest) !void {
-        const core = try self.enter(); const storage = try core.workerStorage(); const runtime = try core.workerPanel();
-        if (!self.touched or self.restored or core.scanout_owner.phase != .active or core.scanout_owner.cursor_current.image != null) return error.State;
+        const core = try self.enter(); const storage = try core.workerStorage();
+        if (!self.touched or self.restored or core.fixed_disp_khz == 0) return error.State;
+        const primary = request.mode.pipe == core.mode.pipe;
+        const life = if (primary) &core.scanout_owner else &core.extra_scanout;
+        if (life.self_address != 0 and (life.phase != .active or life.cursor_current.image != null)) return error.State;
+        const panel_runtime = try core.workerPanel();
+        const hdmi_runtime: ?*@import("hdmi_runtime.zig").Runtime = if (core.hdmi_allocation.cpu_address != 0) @ptrFromInt(core.hdmi_allocation.cpu_address) else null;
         var selected = request.mode;
-        try self.selectMode(&runtime.protocol.?, &selected);
-        if (!std.meta.eql(selected, request.mode)) return error.Unsupported;
-        const brightness = if (runtime.protocol.?.brightness_known) runtime.protocol.?.brightness else self.boot_brightness orelse 65535;
-        try self.stopHardware();
-        try core.scanout_owner.stop(core.scanout_owner.epoch);
-        try checked(c.r4dcn_quiesce(storage));
-        try runtime.run(.hide, 0);
-        try runtime.run(.discover, 0); try self.selectMode(&runtime.protocol.?, &selected);
-        core.mode = selected;
-        try checked(c.r4dcn_prepare(storage, &core.mode, 1, &core.plan));
-        try self.applyClocks(core.plan);
-        try runtime.run(.clock, 0); try runtime.run(.stream_configure, 0); try runtime.run(.train, 0);
-        try checked(c.r4dcn_program(storage));
-        core.scanout_owner = .{};
-        try core.scanout_owner.bind(storage, request.epoch, core.mode, request.image);
-        const now = core.clock.?.nowNs();
-        const deadline = @min(request.deadline_ns, now + std.time.ns_per_s);
-        try core.scanout_owner.enable(request.epoch, request.sequence, deadline);
-        try runtime.run(.stream_on, 0);
+        const brightness = if (panel_runtime.protocol.?.brightness_known) panel_runtime.protocol.?.brightness else self.boot_brightness orelse 65535;
+        if (primary) {
+            try self.selectMode(&panel_runtime.protocol.?, &selected);
+            if (!std.meta.eql(selected, request.mode)) return error.Unsupported;
+            try self.stopHardware();
+        } else {
+            const hdmi = hdmi_runtime orelse return error.Unsupported;
+            if (selected.flags & 1 == 0 or hdmi.output.adapter_id == 0 or hdmi.connection.phase != .connected) return error.Stale;
+            try hdmi.run(.stop, selected);
+        }
+        if (life.self_address != 0) try life.stop(life.epoch);
+        if (primary) {
+            try panel_runtime.run(.hide, 0); try panel_runtime.run(.discover, 0);
+            try self.selectMode(&panel_runtime.protocol.?, &selected);
+        }
+        // The candidate contains every live peer at its unchanged geometry.
+        // Its addresses are planning metadata; update preserves peer flips.
+        try checked(c.r4dcn_update(storage, try core.candidateStorage(), selected.pipe));
+        if (primary) core.mode = selected else core.extra_mode = selected;
+        core.plan = core.candidate_plan;
+        if (primary) {
+            try panel_runtime.run(.clock, 0); try panel_runtime.run(.stream_configure, 0); try panel_runtime.run(.train, 0);
+        } else {
+            try hdmi_runtime.?.run(.clock, selected); try hdmi_runtime.?.run(.configure, selected); try hdmi_runtime.?.run(.enable, selected);
+        }
+        life.* = .{};
+        try life.bind(storage, request.epoch, selected, request.image);
+        try life.enable(request.epoch, request.sequence, @min(request.deadline_ns, core.clock.?.nowNs() + std.time.ns_per_s));
+        if (primary) try panel_runtime.run(.stream_on, 0) else try hdmi_runtime.?.run(.show, selected);
         core.mode_receipt = null;
         for (0..1500) |_| {
-            if (try core.scanout_owner.poll(request.epoch, core.clock.?.nowNs())) |receipt| {
-                var video: u32 = 0; try checked(c.r4dcn_link_video(storage, 0, core.mode.pipe, &video));
+            if (try life.poll(request.epoch, core.clock.?.nowNs())) |receipt| {
+                var video: u32 = 0;
+                try checked(if (primary) c.r4dcn_link_video(storage, 0, selected.pipe, &video)
+                    else c.r4dcn_hdmi_active(storage, 1, selected.pipe, &video));
                 if (video != 1) return error.Unconfirmed;
                 core.mode_receipt = receipt;
-                try core.scanout_owner.acknowledge(request.epoch, request.sequence);
-                try runtime.run(.show, brightness);
+                try life.acknowledge(request.epoch, request.sequence);
+                if (primary) try panel_runtime.run(.show, brightness);
                 return;
             }
             try core.workerDelay(1000);
@@ -185,7 +226,8 @@ pub const Owner = struct {
         // DP is waiting for its next VBlank to stop transmitting video.
         try checked(c.r4dcn_dp_stream_stop(storage, 0));
         try checked(c.r4dcn_link_action(storage, 0, c.R4DCN_BACKLIGHT_OFF));
-        try checked(c.r4dcn_inherited_stop(storage));
+        if (core.scanout_owner.self_address == 0) try checked(c.r4dcn_inherited_stop(storage))
+        else try checked(c.r4dcn_scanout_stop(storage, @as(u32, 1) << @intCast(core.mode.pipe)));
         try checked(c.r4dcn_link_action(storage, 0, c.R4DCN_LINK_DISABLE));
     }
     fn applyClocks(self: *Owner, plan: c.struct_r4dcn_plan) !void {
@@ -195,12 +237,17 @@ pub const Owner = struct {
         if (self.point.driver.active and !try self.point.driver.poll(registers, true)) return error.Busy;
         if (self.point.vbios.active and !try self.point.vbios.poll(registers, true)) return error.Busy;
         self.point = .{};
-        try self.point.begin(registers, self.table, plan.disp_khz, true);
+        // The direct-HDMI board ceiling is 340 MHz. A confirmed 600 MHz
+        // full-rate display/DPP point leaves joint DML admission room without
+        // live clock changes. Firmware ACK and ASIC ceilings remain mandatory.
+        try self.point.begin(registers, self.table, @max(plan.disp_khz, 600000), true);
         for (0..3000) |_| {
             if (try self.point.step(registers)) {
                 const actual = self.point.actual_disp_khz;
-                const dpp = if (plan.dpp_khz <= plan.disp_khz / 2) actual / 2 else actual;
+                const dpp = actual;
                 if (actual < plan.disp_khz or actual > core.limits.disp_khz or dpp < plan.dpp_khz or dpp > core.limits.dpp_khz) return error.Unconfirmed;
+                try checked(c.r4dcn_fixed_clock(try core.workerStorage(), actual));
+                core.fixed_disp_khz = actual;
                 return;
             }
             try core.workerDelay(1000);

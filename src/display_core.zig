@@ -27,6 +27,8 @@ pub const Hooks = struct {
     // synthetic callers which never acquired a physical output stream.
     stop: ?*const fn (usize) bool = null,
     modeset: ?*const fn (usize, ModeRequest) bool = null,
+    remove: ?*const fn (usize) bool = null,
+    pause_primary: ?*const fn (usize) bool = null,
 };
 pub const ModeRequest = struct { mode: c.struct_r4dcn_mode, epoch: scanout.Epoch, image: scanout.Image, sequence: u64, deadline_ns: u64 };
 pub const ScanoutOperation = enum { bind, enable, flip, sample, acknowledge, stop, cursor, cursor_sample, cursor_acknowledge, rekey };
@@ -55,6 +57,10 @@ pub const Owner = struct {
     candidate_plan: c.struct_r4dcn_plan = undefined,
     candidate_valid: bool = false,
     mode_request: ModeRequest = undefined,
+    extra_mode: ?c.struct_r4dcn_mode = null,
+    extra_scanout: scanout.Owner = .{},
+    fixed_disp_khz: u32 = 0,
+    stop_extra: bool = false,
     mode_receipt: ?scanout.Receipt = null,
     health_epoch: u64 = 0,
     health_frame: u32 = 0,
@@ -74,7 +80,7 @@ pub const Owner = struct {
     worker_result: i32 = 0,
     result: i32 = 0,
     phase: Phase = .empty,
-    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work, hdmi_publish, scanout_work, mode_plan, mode_apply, health_work } = .prepare,
+    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work, hdmi_publish, scanout_work, mode_plan, mode_apply, head_remove, primary_pause, health_work } = .prepare,
     limits: c.struct_r4dcn_limits = std.mem.zeroes(c.struct_r4dcn_limits),
     mode: c.struct_r4dcn_mode = std.mem.zeroes(c.struct_r4dcn_mode),
     plan: c.struct_r4dcn_plan = std.mem.zeroes(c.struct_r4dcn_plan),
@@ -149,18 +155,21 @@ pub const Owner = struct {
     /// frontend or the live C object's internal streams/plane pointers.
     pub fn planMode(self: *Owner, mode: c.struct_r4dcn_mode) Error!void {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
-            self.scanout_owner.phase != .active or self.scanout_owner.cursor_current.image != null or mode.pipe != self.mode.pipe) return error.State;
+            (self.scanout_owner.phase != .active and self.scanout_owner.phase != .stopped) or mode.pipe >= 4 or
+            (mode.pipe == self.mode.pipe and self.scanout_owner.cursor_current.image != null)) return error.State;
         self.candidate_mode = mode; self.candidate_valid = false;
         try self.launch(.mode_plan);
     }
     pub fn applyMode(self: *Owner, request: ModeRequest) Error!void {
+        const life = if (request.mode.pipe == self.mode.pipe) &self.scanout_owner else &self.extra_scanout;
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
             !self.candidate_valid or !std.meta.eql(request.mode, self.candidate_mode) or self.hooks == null or self.hooks.?.modeset == null or
             request.epoch.memory != self.memory.?.epoch or request.epoch.backend.adapter_id != self.memory.?.adapter or
-            !std.meta.eql(request.epoch.backend, self.scanout_owner.epoch.backend) or !std.meta.eql(request.epoch.output, self.scanout_owner.epoch.output) or
-            request.epoch.display != self.scanout_owner.epoch.display or request.deadline_ns <= self.clock.?.nowNs() or
-            request.epoch.mode <= self.scanout_owner.epoch.mode or request.sequence <= self.scanout_owner.sequence or request.sequence == std.math.maxInt(u64) or
+            !std.meta.eql(request.epoch.backend, self.scanout_owner.epoch.backend) or request.deadline_ns <= self.clock.?.nowNs() or
+            request.sequence == 0 or request.sequence == std.math.maxInt(u64) or request.epoch.mode == 0 or
             request.image.address != request.mode.mc_address or request.image.bytes != request.mode.buffer_bytes) return error.State;
+        if (life.self_address != 0 and (!std.meta.eql(request.epoch.output, life.epoch.output) or request.epoch.display != life.epoch.display or
+            request.epoch.mode <= life.epoch.mode or request.sequence <= life.sequence)) return error.Stale;
         // Confirm the exact caller-retained private BO again after preparation.
         var descriptor: a.GfxBufferDescriptor = .{};
         if (self.memory.?.memory.?.bufferDescribe(&request.image.reference, &descriptor) != 1 or descriptor.driver_owner == 0 or
@@ -178,11 +187,38 @@ pub const Owner = struct {
             (self.phase != .programmed and !(request.operation == .stop and self.phase == .retained))) return error.State;
         if (request.epoch.backend.adapter_id != self.memory.?.adapter or request.epoch.memory != self.memory.?.epoch)
             return error.Stale;
-        if (request.operation != .bind and request.operation != .rekey and (self.scanout_owner.self_address == 0 or !std.meta.eql(request.epoch, self.scanout_owner.epoch))) return error.Stale;
+        if (request.operation != .bind and request.operation != .rekey and (self.scanoutFor(request.epoch).self_address == 0 or !std.meta.eql(request.epoch, self.scanoutFor(request.epoch).epoch))) return error.Stale;
         if ((request.operation == .bind or request.operation == .flip) and request.image == null) return error.Invalid;
         if (request.operation == .cursor and request.cursor == null) return error.Invalid;
         self.scanout_request = request;
         try self.launch(.scanout_work);
+    }
+    pub fn taskFor(self: *const Owner, pipe: u32, connector: u32) bool {
+        return switch (self.action) {
+            .scanout_work => self.scanout_request.epoch.output.connector_id == connector,
+            .mode_apply => self.mode_request.epoch.output.connector_id == connector,
+            .mode_plan => self.candidate_mode.pipe == pipe,
+            .health_work, .brightness_work, .primary_pause => pipe == self.mode.pipe,
+            else => false,
+        };
+    }
+    pub fn scanoutFor(self: *Owner, epoch: scanout.Epoch) *scanout.Owner {
+        return if (self.scanout_owner.self_address != 0 and epoch.output.connector_id != self.scanout_owner.epoch.output.connector_id)
+            &self.extra_scanout else &self.scanout_owner;
+    }
+    pub fn removeExtra(self: *Owner) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            self.hooks == null or self.hooks.?.remove == null) return error.State;
+        try self.launch(.head_remove);
+    }
+    pub fn pausePrimary(self: *Owner) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            self.hooks == null or self.hooks.?.pause_primary == null) return error.State;
+        try self.launch(.primary_pause);
+    }
+    pub fn candidateStorage(self: *Owner) Error!*anyopaque {
+        if (workerCheck(self) != 1 or self.candidate_allocation.cpu_address == 0) return error.State;
+        return @ptrFromInt(self.candidate_allocation.cpu_address);
     }
     pub fn bindPanel(self: *Owner) Error!void {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or
@@ -217,6 +253,7 @@ pub const Owner = struct {
         const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
         if (runtime.self_address != @intFromPtr(runtime)) return error.State;
         self.effects = true; self.frontend_attempted = true; self.quiet = false;
+        if (self.stop_extra) runtime.connection.invalidate();
         runtime.run(operation, self.mode) catch return error.State;
     }
     pub fn panelCommand(self: *Owner, operation: panel.Operation, value: u16) Error!void {
@@ -331,7 +368,11 @@ pub const Owner = struct {
         switch (self.action) {
             .health_work => {
                 self.result = self.healthInWorker();
-                if (self.result != 0 and self.result != c.R4DCN_BUSY) self.phase = .retained;
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
+            },
+            .primary_pause => {
+                self.result = if (self.hooks.?.pause_primary.?(self.hooks.?.context)) 0 else c.R4DCN_IO;
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
             .mode_plan => {
                 if (!self.initialized or self.phase != .programmed) return c.R4DCN_STATE;
@@ -345,15 +386,25 @@ pub const Owner = struct {
                 const storage_ptr: *anyopaque = @ptrFromInt(allocation.cpu_address);
                 self.result = c.r4dcn_init(storage_ptr, bytes, &io, &self.limits);
                 if (self.result == 0) {
-                    self.result = c.r4dcn_prepare(storage_ptr, &self.candidate_mode, 1, &self.candidate_plan);
-                    c.r4dcn_destroy(storage_ptr);
+                    var modes: [2]c.struct_r4dcn_mode = undefined;
+                    modes[0] = if (self.candidate_mode.pipe == self.mode.pipe) self.candidate_mode else self.mode;
+                    var count: u32 = 1;
+                    if (self.candidate_mode.pipe != self.mode.pipe) { modes[1] = self.candidate_mode; count = 2; }
+                    else if (self.extra_mode) |extra| { modes[1] = extra; count = 2; }
+                    self.result = c.r4dcn_prepare(storage_ptr, &modes, count, &self.candidate_plan);
+                    if (self.result == 0 and self.fixed_disp_khz != 0 and
+                        (self.candidate_plan.disp_khz > self.fixed_disp_khz or self.candidate_plan.dpp_khz > self.fixed_disp_khz)) self.result = c.R4DCN_BANDWIDTH;
                 }
                 self.candidate_valid = self.result == 0;
+            },
+            .head_remove => {
+                self.result = if (self.hooks.?.remove.?(self.hooks.?.context)) 0 else c.R4DCN_IO;
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
             .mode_apply => {
                 if (!self.initialized or self.phase != .programmed or self.hooks == null or self.hooks.?.modeset == null) return c.R4DCN_STATE;
                 self.result = if (self.hooks.?.modeset.?(self.hooks.?.context, self.mode_request)) 0 else c.R4DCN_IO;
-                if (self.result != 0) self.phase = .retained;
+                if (self.result != 0 and (self.extra_mode == null or c.r4dcn_fault(self.storage()) != 0)) self.phase = .retained;
             },
             .scanout_work => {
                 self.result = 0;
@@ -364,7 +415,7 @@ pub const Owner = struct {
                         else => c.R4DCN_IO,
                     };
                 };
-                if (self.scanout_owner.phase == .retained or c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
             .panel_bind => {
                 if (!self.initialized or self.phase != .planned or self.board == null or self.panel_allocation.handle != 0) return c.R4DCN_STATE;
@@ -491,17 +542,19 @@ pub const Owner = struct {
     fn scanoutInWorker(self: *Owner) scanout.Error!void {
         if (workerCheck(self) != 1 or self.action != .scanout_work) return error.State;
         const request = self.scanout_request;
+        const life = self.scanoutFor(request.epoch);
+        const mode = if (life == &self.scanout_owner) self.mode else self.extra_mode orelse return error.State;
         switch (request.operation) {
-            .bind => try self.scanout_owner.bind(self.storage().?, request.epoch, self.mode, request.image.?),
-            .rekey => try self.scanout_owner.rekey(request.epoch),
-            .enable => try self.scanout_owner.enable(request.epoch, request.sequence, request.deadline_ns),
-            .flip => try self.scanout_owner.flip(request.epoch, request.sequence, request.image.?, request.deadline_ns),
-            .sample => if (try self.scanout_owner.poll(request.epoch, self.clock.?.nowNs()) == null) { self.result = c.R4DCN_BUSY; },
-            .acknowledge => try self.scanout_owner.acknowledge(request.epoch, request.sequence),
-            .stop => try self.scanout_owner.stop(request.epoch),
-            .cursor => try self.scanout_owner.cursor(request.epoch, request.sequence, request.cursor.?, request.deadline_ns),
-            .cursor_sample => if (try self.scanout_owner.pollCursor(request.epoch, self.clock.?.nowNs()) == null) { self.result = c.R4DCN_BUSY; },
-            .cursor_acknowledge => try self.scanout_owner.acknowledgeCursor(request.epoch, request.sequence),
+            .bind => try life.bind(self.storage().?, request.epoch, mode, request.image.?),
+            .rekey => try life.rekey(request.epoch),
+            .enable => try life.enable(request.epoch, request.sequence, request.deadline_ns),
+            .flip => try life.flip(request.epoch, request.sequence, request.image.?, request.deadline_ns),
+            .sample => if (try life.poll(request.epoch, self.clock.?.nowNs()) == null) { self.result = c.R4DCN_BUSY; },
+            .acknowledge => try life.acknowledge(request.epoch, request.sequence),
+            .stop => try life.stop(request.epoch),
+            .cursor => try life.cursor(request.epoch, request.sequence, request.cursor.?, request.deadline_ns),
+            .cursor_sample => if (try life.pollCursor(request.epoch, self.clock.?.nowNs()) == null) { self.result = c.R4DCN_BUSY; },
+            .cursor_acknowledge => try life.acknowledgeCursor(request.epoch, request.sequence),
         }
     }
     fn healthInWorker(self: *Owner) c_int {
@@ -544,7 +597,7 @@ pub const Owner = struct {
     }
     fn write(raw: ?*anyopaque, offset: u32, value: u32) callconv(.c) c_int {
         const self = from(raw);
-        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .hdmi_work and self.action != .scanout_work and self.action != .mode_apply and self.action != .health_work and self.action != .abort)) return -1;
+        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .hdmi_work and self.action != .scanout_work and self.action != .mode_apply and self.action != .head_remove and self.action != .primary_pause and self.action != .health_work and self.action != .abort)) return -1;
         self.memory.?.registers.write(offset, value) catch return -1;
         self.memory.?.registers.barrier() catch return -1;
         return 0;

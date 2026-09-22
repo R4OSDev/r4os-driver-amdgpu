@@ -25,7 +25,7 @@ pub const Owner = struct {
             .source_timeline = p.source_fence.timeline, .source_point = p.source_fence.point,
             .pending = switch (p.phase) { .copying => a.display_presentation_pending_copy,
                 .flip_retry => a.display_presentation_pending_ready,
-                .flip_wait, .sample_wait, .ack_wait => a.display_presentation_pending_flip, else => 0 },
+                .flip_wait, .sample_retry, .sample_wait, .ack_retry, .ack_wait => a.display_presentation_pending_flip, else => 0 },
         };
         if (!self.disabled and (self.last == null or !std.meta.eql(value, self.last.?))) {
             if (value.sequence == std.math.maxInt(u64)) self.disabled = true else {

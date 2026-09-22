@@ -48,6 +48,8 @@ struct r4dcn {
  unsigned count,mask,prepared,programmed;
  unsigned running,tg_locked,cursor_locked;
  uint32_t dprefclk_khz;
+ uint32_t fixed_disp_khz;
+ struct r4dcn_mode modes[R4DCN_PIPES];
  struct dc_context ctx;
  struct dc dc;
  struct resource_pool pool;

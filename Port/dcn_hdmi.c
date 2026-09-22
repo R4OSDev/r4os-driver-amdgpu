@@ -174,3 +174,14 @@ int r4dcn_hdmi_stopped(void *storage,uint32_t index,uint32_t *stopped){
  }
  if(d->fault)result=d->fault;r4dcn_leave(d);return result;
 }
+int r4dcn_hdmi_active(void *storage,uint32_t index,uint32_t pipe,uint32_t *active){
+ struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;struct r4dcn_link *l=link(d,index);
+ if(!l || !active || pipe>=4 || !l->hdmi_configured || l->hdmi_pipe!=pipe || d->fault)result=R4DCN_STATE;
+ else {
+  uint32_t control=rd(d,tg_regs[pipe].OTG_CONTROL);
+  uint32_t enable=OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK|OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK;
+  *active=l->enabled && dcn10_is_dig_enabled(&l->encoder.base) && (control&enable)==enable &&
+   l->stream.base.funcs->dig_source_otg(&l->stream.base)==pipe && !(rd(d,l->stream.regs->HDMI_GC)&DIG0_HDMI_GC__HDMI_GC_AVMUTE_MASK);
+ }
+ if(d->fault)result=d->fault;r4dcn_leave(d);return result;
+}

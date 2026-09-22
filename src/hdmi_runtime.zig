@@ -68,7 +68,9 @@ pub const Runtime = struct {
                 // Pixel-clock writes are native activation effects even when
                 // a later link/stream operation fails before output publication.
                 self.activation_attempted = true;
-                try checked(c.r4dcn_reference_clock_program(self.storage, index, &self.dprefclk_khz));
+                // DPREFCLK was confirmed during the primary takeover. A live
+                // HDMI addition must not reprogram the shared reference.
+                try checked(c.r4dcn_reference_clock_get(self.storage, &self.dprefclk_khz));
                 try checked(c.r4dcn_pixel_clock_program(self.storage, index, mode.pipe));
             },
             .probe, .service => {
@@ -95,7 +97,7 @@ pub const Runtime = struct {
                 if (self.connection.phase == .connected) self.connection.changed(token, self.receiver.fingerprint) catch return error.State;
             },
             .configure => {
-                if (self.connection.phase != .probing or !self.receiver.valid or !try hpd(self.self_address)) return error.State;
+                if ((self.connection.phase != .probing and self.connection.phase != .connected) or !self.receiver.valid or !try hpd(self.self_address)) return error.State;
                 if (mode.flags & 1 == 0 or mode.h_front > std.math.maxInt(u32) - mode.width or
                     mode.h_sync > std.math.maxInt(u32) - mode.width - mode.h_front or mode.v_front > std.math.maxInt(u32) - mode.height or
                     mode.v_sync > std.math.maxInt(u32) - mode.height - mode.v_front) return error.Invalid;
@@ -123,7 +125,7 @@ pub const Runtime = struct {
                 try checked(c.r4dcn_link_action(self.storage, index, c.R4DCN_LINK_DISABLE));
                 var stopped: u32 = 0;
                 try checked(c.r4dcn_hdmi_stopped(self.storage, index, &stopped));
-                if (stopped == 1) self.activation_attempted = false;
+                if (stopped == 1) { self.activation_attempted = false; self.configured = false; }
             },
         }
     }

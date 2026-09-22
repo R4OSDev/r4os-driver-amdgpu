@@ -42,6 +42,12 @@ int r4dcn_prepare(void *, const struct r4dcn_mode *, uint32_t, struct r4dcn_plan
 /* Program only disabled/blanked DCN1 frontends after the owner has confirmed
  * clock, memory and link preparation. Output enable/pageflip belongs to /18. */
 int r4dcn_program(void *);
+/* Confirmed fixed clock, full-rate DPP. Set only while every TG is stopped.
+ * A live update consumes an independently prepared joint DML candidate;
+ * only the changed, stopped head is reprogrammed. */
+int r4dcn_fixed_clock(void *,uint32_t actual_disp_khz);
+int r4dcn_update(void *,const void *candidate,uint32_t changed_pipe);
+int r4dcn_remove(void *,uint32_t pipe);
 int r4dcn_quiesce(void *);
 int r4dcn_fault(const void *);
 void r4dcn_destroy(void *);
@@ -89,6 +95,7 @@ int r4dcn_hdmi_configure(void *,uint32_t,uint32_t pipe,const uint8_t avi[17]);
 int r4dcn_hdmi_enable(void *,uint32_t);
 int r4dcn_hdmi_mute(void *,uint32_t,uint32_t mute);
 int r4dcn_hdmi_stopped(void *,uint32_t,uint32_t *stopped);
+int r4dcn_hdmi_active(void *,uint32_t,uint32_t pipe,uint32_t *active);
 /* Native scanout. Timestamps bound a coherent register observation; they are
  * NOT an interrupt timestamp or the instant at which a pixel was displayed.
  * The frame counter is the original 24-bit OTG counter, including rollover. */
@@ -118,5 +125,6 @@ int r4dcn_scanout_cursor(void *,uint32_t pipe,const struct r4dcn_cursor *);
  * Bind has no MMIO effects; program requires the selected TG and DIG stopped. */
 int r4dcn_pixel_clock_bind(void *,uint32_t link,uint32_t crystal_khz);
 int r4dcn_reference_clock_program(void *,uint32_t link,uint32_t *actual_khz);
+int r4dcn_reference_clock_get(void *,uint32_t *actual_khz);
 int r4dcn_pixel_clock_program(void *,uint32_t link,uint32_t pipe);
 #endif

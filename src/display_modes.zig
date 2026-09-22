@@ -33,7 +33,26 @@ pub const Owner = struct {
     reply: a.GfxDriverModeCompletion = .{},
     failure: ?anyerror = null,
     copy: @import("display_copy.zig").Owner = .{},
+    pub fn waiting(self: *const Owner) bool {
+        return self.phase == .catalog_wait or self.phase == .rekey_wait or self.phase == .plan_wait or self.phase == .apply_wait;
+    }
     pub fn permitsQueue(self: *const Owner) bool { return self.ready and self.phase == .idle; }
+    /// A disconnected head completes only jobs actually taken from the
+    /// common mailbox. The common stop/retirement path owns borrowed BOs.
+    pub fn abandon(self: *Owner, output: anytype) bool {
+        if (!self.copy.close()) return false;
+        if (output.mode_inbox) |job| {
+            if (self.job != null) return false;
+            self.job = job; output.mode_inbox = null;
+        }
+        if (self.job) |job| {
+            const reply: a.GfxDriverModeCompletion = .{ .ticket = job.ticket, .sequence = job.sequence, .operation = job.operation,
+                .outcome = a.gfx_output_outcome_lost, .quiesced = 0, .error_code = a.gfx_output_error_stale };
+            if (output.outputs.?.completeMode(&reply) != a.gfx_output_ok) return false;
+            self.job = null; self.pending = null;
+        }
+        return self.pending == null;
+    }
     pub fn step(self: *Owner, output: anytype) !void {
         if (self.self_address == 0) {
             self.self_address = @intFromPtr(self); self.phase = .catalog;
@@ -42,10 +61,8 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self)) return error.State;
         if (self.phase == .idle) {
             if (!output.present.?.available() or output.cursor.phase != .idle) return;
-            var job: a.GfxDriverModeJob = .{};
-            const status = output.outputs.?.takeMode(&output.engine.?.binding, &job);
-            if (status == 0 or status == a.gfx_output_error_busy) return;
-            if (status != a.gfx_output_ok) return error.Publication;
+            const job = output.mode_inbox orelse return;
+            output.mode_inbox = null;
             self.job = job; self.hardware_armed = false; self.failure = null;
             self.accept(output) catch |err| { try self.reject(err); };
             return;
@@ -71,7 +88,7 @@ pub const Owner = struct {
         if (job.version != 1 or job.size < @sizeOf(a.GfxDriverModeJob) or job.ticket == 0 or job.sequence == 0 or
             job.reserved0 != 0 or !std.meta.eql(job.backend, output.epoch.backend) or
             !std.meta.eql(assignment.output, output.output) or core.memory.?.epoch != output.epoch.memory or
-            job.deadline_ns <= output.last_time or output.cursor.visible or core.scanout_owner.cursor_current.image != null) return error.Stale;
+            job.deadline_ns <= output.last_time or output.cursor.visible or core.scanoutFor(output.epoch).cursor_current.image != null) return error.Stale;
         if (job.operation == a.gfx_mode_operation_apply) {
             if (self.pending != null) return error.State;
             if (assignment.version != 1 or assignment.size < @sizeOf(a.GfxScanoutState) or assignment.reserved0 != 0 or
@@ -89,6 +106,7 @@ pub const Owner = struct {
             self.previous_mode = output.mode; self.previous_mode.mc_address = self.previous[0].mc_address;
             self.shape = try buffers.Shape.make(job.mode.width, job.mode.height, false);
             self.next_mode = try nativeMode(job.mode, output.mode.pipe, assignment.bits_per_color, self.previous[0].mc_address);
+            self.next_mode.flags |= output.mode.flags & 1;
             self.index = 0; self.phase = .allocate;
         } else {
             const pending = self.pending orelse return error.Stale;
@@ -143,8 +161,8 @@ pub const Owner = struct {
                 }
                 const limits = &output.publication.info.limits;
                 limits.flags = a.gfx_output_limit_modeset;
-                limits.total_pixel_clock_hz = limits.max_pixel_clock_hz;
-                limits.bandwidth_bytes_per_second = limits.max_pixel_clock_hz * 4;
+                limits.total_pixel_clock_hz = @as(u64, core.fixed_disp_khz) * 2000;
+                limits.bandwidth_bytes_per_second = @as(u64, core.limits.fabric_khz) * core.limits.channels * 16000;
                 var identity: a.GfxOutputId = .{};
                 const status = output.outputs.?.publish(&output.publication, &identity);
                 if (status == a.gfx_output_error_busy) return;
@@ -163,7 +181,7 @@ pub const Owner = struct {
             },
             .allocate => {
                 const frame = self.banks[self.next_bank][self.index];
-                try frame.allocate(output.native.?.memory.?, self.shape, @as(u8, self.next_bank) * 4 + self.index);
+                try frame.allocate(output.native.?.memory.?, self.shape, output.slot_base + @as(u8, self.next_bank) * 4 + self.index);
                 self.phase = .publish_buffer;
             },
             .publish_buffer => {
@@ -185,7 +203,7 @@ pub const Owner = struct {
                 if (!core.poll()) return;
                 if (core.result != 0 or !core.candidate_valid) return error.Unsupported;
                 self.next_epoch = output.epoch;
-                if (self.next_epoch.mode == std.math.maxInt(u64) or core.scanout_owner.sequence >= std.math.maxInt(u64) - 1) return error.Capacity;
+                if (self.next_epoch.mode == std.math.maxInt(u64) or core.scanoutFor(output.epoch).sequence >= std.math.maxInt(u64) - 1) return error.Capacity;
                 self.next_epoch.mode += 1; self.phase = .apply;
             },
             .apply => {
@@ -193,7 +211,7 @@ pub const Owner = struct {
                 const image = try frames[0].scanout();
                 self.hardware_armed = true;
                 try core.applyMode(.{ .mode = self.next_mode, .epoch = self.next_epoch, .image = image,
-                    .sequence = core.scanout_owner.sequence + 1, .deadline_ns = self.job.?.deadline_ns });
+                    .sequence = core.scanoutFor(output.epoch).sequence + 1, .deadline_ns = self.job.?.deadline_ns });
                 self.phase = .apply_wait;
             },
             .apply_wait => {
@@ -252,7 +270,7 @@ fn describe(value: timing.Timing, id: u32) a.GfxOutputMode {
         .h_total = value.h_total, .h_sync_start = value.h_start, .h_sync_end = value.h_end,
         .v_total = value.v_total, .v_sync_start = value.v_start, .v_sync_end = value.v_end, .refresh_millihz = value.millihz() };
 }
-fn nativeMode(mode: a.GfxOutputMode, pipe: u32, bpc: u32, address: u64) !dc.c.struct_r4dcn_mode {
+pub fn nativeMode(mode: a.GfxOutputMode, pipe: u32, bpc: u32, address: u64) !dc.c.struct_r4dcn_mode {
     if (mode.version != 1 or mode.size < @sizeOf(a.GfxOutputMode) or mode.reserved0 != 0 or mode.pixel_clock_hz == 0 or
         mode.pixel_clock_hz % 1000 != 0 or mode.pixel_clock_hz > 720_000_000 or mode.flags & ~@as(u32, 14) != 0 or
         mode.width > mode.h_sync_start or mode.h_sync_start >= mode.h_sync_end or mode.h_sync_end > mode.h_total or

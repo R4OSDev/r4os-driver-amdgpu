@@ -191,6 +191,7 @@ fn recoverNative() bool {
     if (display_output.self_address != 0) display_output.phase = .closing;
     if (!display_output.beginReset()) return false;
     if (!display_runtime.close() or !sdma_runtime.close()) return false;
+    if (!display_output.additional.reset()) return false;
     if (!display_output.modes.close()) return false;
     if (!display_output.cursor.close(&memory_runtime, true)) return false;
     for (&display_images) |*frame| if (!frame.close(true)) return false;

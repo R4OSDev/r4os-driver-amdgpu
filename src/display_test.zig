@@ -57,21 +57,23 @@ const F = struct {
         words[offset / 4] = value;
         if (scanout_model) {
             const idx = offset / 4;
-            if (idx == reg("OTG0_OTG_CONTROL")) {
+            inline for (0..4) |i| {
+            if (idx == d.control[i] / 4) {
                 words[idx] &= ~@as(u32, hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK);
                 if (hold_stop or value & hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK != 0) words[idx] |= hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK;
             }
-            if (idx == reg("HUBP0_DCHUBP_CNTL")) {
+            if (idx == d.hubp_cntl[i] / 4) {
                 words[idx] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK | hw.HUBP0_DCHUBP_CNTL__HUBP_NO_OUTSTANDING_REQ_MASK);
                 if (value & hw.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK != 0) words[idx] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK | hw.HUBP0_DCHUBP_CNTL__HUBP_NO_OUTSTANDING_REQ_MASK;
             }
-            if (idx == reg("OTG0_OTG_BLANK_CONTROL")) {
+            if (idx == reg(std.fmt.comptimePrint("OTG{d}_OTG_BLANK_CONTROL", .{i}))) {
                 words[idx] &= ~@as(u32, hw.OTG0_OTG_BLANK_CONTROL__OTG_CURRENT_BLANK_STATE_MASK);
                 if (value & hw.OTG0_OTG_BLANK_CONTROL__OTG_BLANK_DATA_EN_MASK != 0) words[idx] |= hw.OTG0_OTG_BLANK_CONTROL__OTG_CURRENT_BLANK_STATE_MASK;
             }
-            if (idx == reg("OTG0_OTG_MASTER_UPDATE_LOCK")) {
+            if (idx == reg(std.fmt.comptimePrint("OTG{d}_OTG_MASTER_UPDATE_LOCK", .{i}))) {
                 words[idx] &= ~@as(u32, hw.OTG0_OTG_MASTER_UPDATE_LOCK__UPDATE_LOCK_STATUS_MASK);
                 if (value & 1 != 0) words[idx] |= hw.OTG0_OTG_MASTER_UPDATE_LOCK__UPDATE_LOCK_STATUS_MASK;
+            }
             }
         }
         return 0;
@@ -941,6 +943,8 @@ const Pipeline = struct {
     var hold_frames = false;
     var hold_video = false;
     var next_frame: u64 = 0;
+    var next_hdmi_frame: u64 = 0;
+    var hold_hdmi_frames = false;
     fn nativeRead(raw: ?*anyopaque, address: u32, out: [*c]u32) callconv(.c) c_int {
         if (Integration.hdmi_model and @import("hdmi_test.zig").SharedI2c.handles(address)) return @import("hdmi_test.zig").SharedI2c.read(raw, address, out);
         return F.read(raw, address, out);
@@ -967,6 +971,16 @@ const Pipeline = struct {
             const address = (@as(u64, F.words[d.primary_hi[0] / 4]) << 32) | F.words[d.primary[0] / 4];
             latchScanout(address, (F.words[reg("OTG0_OTG_STATUS_FRAME_COUNT")] + 1) & 0xffffff);
         }
+        if (Integration.hdmi_model and !hold_hdmi_frames and F.ticks >= next_hdmi_frame and
+            F.words[d.control[1] / 4] & hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK != 0) {
+            next_hdmi_frame = F.ticks + 33 * std.time.ns_per_ms;
+            const address = (@as(u64, F.words[d.primary_hi[1] / 4]) << 32) | F.words[d.primary[1] / 4];
+            F.words[d.inuse[1] / 4] = @truncate(address); F.words[d.inuse_hi[1] / 4] = @truncate(address >> 32);
+            F.words[reg("HUBPREQ1_DCSURF_SURFACE_EARLIEST_INUSE")] = @truncate(address);
+            F.words[reg("HUBPREQ1_DCSURF_SURFACE_EARLIEST_INUSE_HIGH")] = @truncate(address >> 32);
+            F.words[reg("HUBPREQ1_DCSURF_FLIP_CONTROL")] &= ~@as(u32, hw.HUBPREQ0_DCSURF_FLIP_CONTROL__SURFACE_FLIP_PENDING_MASK);
+            F.words[reg("OTG1_OTG_STATUS_FRAME_COUNT")] = (F.words[reg("OTG1_OTG_STATUS_FRAME_COUNT")] + 1) & 0xffffff;
+        }
     }
     fn read(_: usize, space: atom.Space, index: u32) atom.Error!u32 {
         if (space != .mmio or index >= F.words.len) return error.Bounds;
@@ -978,9 +992,10 @@ const Pipeline = struct {
         // this modeled firmware doorbell. The production interpreter still
         // validates/replays the real PS format and command revisions.
         const command = (value >> 8) & 255;
+        const encoder = if (value & 255 == 1) reg("DIG1_DIG_BE_EN_CNTL") else reg("DIG0_DIG_BE_EN_CNTL");
         switch (command) {
-            0 => F.words[reg("DIG0_DIG_BE_EN_CNTL")] &= ~@as(u32, hw.DIG0_DIG_BE_EN_CNTL__DIG_ENABLE_MASK),
-            1 => F.words[reg("DIG0_DIG_BE_EN_CNTL")] |= hw.DIG0_DIG_BE_EN_CNTL__DIG_ENABLE_MASK,
+            0 => F.words[encoder] &= ~@as(u32, hw.DIG0_DIG_BE_EN_CNTL__DIG_ENABLE_MASK),
+            1 => F.words[encoder] |= hw.DIG0_DIG_BE_EN_CNTL__DIG_ENABLE_MASK,
             2 => F.words[reg("LVTMA_PWRSEQ_CNTL")] &= ~@as(u32, hw.LVTMA_PWRSEQ_CNTL__LVTMA_BLON_MASK),
             3 => F.words[reg("LVTMA_PWRSEQ_CNTL")] |= hw.LVTMA_PWRSEQ_CNTL__LVTMA_BLON_MASK,
             12 => F.words[reg("LVTMA_PWRSEQ_STATE")] = hw.LVTMA_PWRSEQ_STATE__LVTMA_PWRSEQ_TARGET_STATE_R_MASK,
@@ -1017,7 +1032,7 @@ const Pipeline = struct {
     }
     fn environment() !void {
         active = false; owner = .{}; hold_frames = false; hold_video = false; next_frame = 0; pointer = 0;
-        current = &owner;
+        current = &owner; next_hdmi_frame = 0; hold_hdmi_frames = false;
         try R.reset(); fixture.rom(&R.rom);
         fixture.set(b.c.struct_atom_rom_header_v2_2, "masterhwfunction_offset", R.rom[0x100..], 0xb00);
         fixture.header(R.rom[0xb00..], @sizeOf(b.c.struct_atom_master_list_of_command_functions_v2_1) + 4, 2, 1);
@@ -1040,8 +1055,10 @@ const Pipeline = struct {
         F.words[reg("DIG0_DIG_BE_EN_CNTL")] = hw.DIG0_DIG_BE_EN_CNTL__DIG_ENABLE_MASK;
         F.words[smu.MP1_SMN_C2PMSG_90 / 4] = 1; F.words[clocks.Vbios.response_register / 4] = 1;
         for (0..4) |i| F.words[hw.R4DCN_MPC_STATUS(i) / 4] = hw.MPCC0_MPCC_STATUS__MPCC_IDLE_MASK;
-        F.words[hw.R4DCN_TG_CLOCK_0 / 4] = hw.OTG0_OTG_CLOCK_CONTROL__OTG_CLOCK_ON_MASK;
-        F.words[hw.R4DCN_INPUT_CLOCK_0 / 4] = hw.ODM0_OPTC_INPUT_CLOCK_CONTROL__OPTC_INPUT_CLK_ON_MASK;
+        inline for (0..4) |i| {
+            F.words[reg(std.fmt.comptimePrint("OTG{d}_OTG_CLOCK_CONTROL", .{i}))] = hw.OTG0_OTG_CLOCK_CONTROL__OTG_CLOCK_ON_MASK;
+            F.words[reg(std.fmt.comptimePrint("ODM{d}_OPTC_INPUT_CLOCK_CONTROL", .{i}))] = hw.ODM0_OPTC_INPUT_CLOCK_CONTROL__OPTC_INPUT_CLK_ON_MASK;
+        }
         R.native.guard = .{}; try R.native.guard.capture(&R.memory.registers, mode.mc_address, mode.pitch_bytes);
         R.memory.registers.clock = .{ .table = .{ .now_ns = @intFromPtr(&R.clock) } };
     }
@@ -1120,11 +1137,11 @@ const Integration = struct {
     var mode_copy: @import("display_copy.zig").Owner = .{};
     var layout: @import("memory_layout.zig").Layout = undefined;
     var tables: [128 * 512]u64 align(4096) = undefined;
-    var bos: [8]BO = @splat(.{});
-    var data: [8][8 * 1024 * 1024]u8 align(4096) = undefined;
+    var bos: [16]BO = @splat(.{});
+    var data: [16][8 * 1024 * 1024]u8 align(4096) = undefined;
     var refs: [64]Ref = @splat(.{});
     var leases: [64]Lease = @splat(.{});
-    var window_live: [8]bool = @splat(false);
+    var window_live: [16]bool = @splat(false);
     var boot_bytes: [7680 * 1080]u8 align(4096) = undefined;
     var arena: [storage.bytes / 4]u32 align(4096) = undefined;
     var bells: [1024]u32 align(4096) = undefined;
@@ -1132,6 +1149,10 @@ const Integration = struct {
     var source: a.GfxBufferReference = .{};
     var job: a.GfxDriverJob = .{};
     var active_job = false;
+    var hdmi_source: a.GfxBufferReference = .{};
+    var hdmi_job: a.GfxDriverJob = .{};
+    var hdmi_active_job = false;
+    var hdmi_completed: u32 = 0;
     var completed: u32 = 0;
     var complete_busy = false;
     var reported: a.DisplayPresentationStats = .{};
@@ -1276,7 +1297,28 @@ const Integration = struct {
         out.* = .{ .prepare_held = @intFromPtr(&prepare), .transition = @intFromPtr(&transition), .schedule = @intFromPtr(&schedule),
             .presentation_stats = @intFromPtr(&stats), .presentation_info = @intFromPtr(&presentInfo), .cursor_configure = @intFromPtr(&cursorConfigure),
             .cursor_take = @intFromPtr(&cursorTake), .cursor_complete = @intFromPtr(&cursorComplete),
-            .device_reset = @intFromPtr(&deviceReset), .prepare_reset = @intFromPtr(&prepareReset) }; return 1;
+            .device_reset = @intFromPtr(&deviceReset), .prepare_reset = @intFromPtr(&prepareReset),
+            .output_register = @intFromPtr(&additionalRegister), .output_transition = @intFromPtr(&additionalTransition) }; return 1;
+    }
+    var extra_active = false;
+    var extra_retired = false;
+    fn additionalRegister(input: *const a.GfxAdditionalOutput, out: *a.GfxOutputTarget) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(input.output, hdmi_identity) and input.head_id == 1 and !extra_active);
+        out.* = .{ .adapter_id = input.backend.adapter_id, .device_generation = input.backend.device_generation,
+            .connector_id = input.output.connector_id, .connection_generation = input.output.connection_generation,
+            .head_id = 1, .display_generation = (@as(u64, 1) << 63) + input.output.connection_generation };
+        extra_retired = false; return 1;
+    }
+    fn additionalTransition(target: *const a.GfxOutputTarget, operation: u32, quiet: u32) callconv(.c) i32 {
+        std.debug.assert(target.head_id == 1 and std.meta.eql(target.*, output.additional.target));
+        if (operation == 0) {
+            std.debug.assert(quiet == 0 and output.additional.initial_receipt != null and R.owner.extra_scanout.phase == .active);
+            extra_active = true;
+        } else if (operation == 2) {
+            std.debug.assert(quiet == 1 and output.additional.hardware_stopped and output.additional.presentation.input == null);
+            extra_active = false; extra_retired = true;
+        } else extra_active = false;
+        return 1;
     }
     fn prepareReset(_: *const a.GfxNativeRegistration, _: u64, _: u64, _: *a.GfxNativeState) callconv(.c) i32 { return a.gfx_output_error_unsupported; }
     fn deviceReset(backend: *const a.GfxBackendBinding, generation: u64, quiet: u32, state: *a.GfxNativeState) callconv(.c) i32 {
@@ -1315,8 +1357,8 @@ const Integration = struct {
     }
     fn modeComplete(value: *const a.GfxDriverModeCompletion) callconv(.c) i32 {
         if (mode_complete_busy) return a.gfx_output_error_busy;
-        std.debug.assert(!engine.client.?.available(engine.client.?.context) and R.owner.thread == 0 and R.owner.scanout_owner.phase == .active);
-        std.debug.assert(output.modes.copy.self_address == 0);
+        std.debug.assert(R.owner.thread == 0 and (R.owner.scanout_owner.phase == .active or R.owner.scanout_owner.phase == .stopped));
+        std.debug.assert(output.modes.copy.self_address == 0 and output.additional.modes.copy.self_address == 0);
         if (value.operation != a.gfx_mode_operation_apply or value.outcome != a.gfx_output_outcome_applied) common_mode_retained = false;
         mode_reply = value.*; return 1;
     }
@@ -1325,7 +1367,7 @@ const Integration = struct {
     fn publish(value: *const a.GfxOutputPublication, id: *a.GfxOutputId) callconv(.c) i32 {
         if (value.info.connector_kind == a.gfx_output_kind_hdmi) {
             std.debug.assert(hdmi_model and value.info.flags == a.gfx_output_flag_connected and value.info.identity.connection_generation == 0 and
-                value.info.mode_count != 0 and value.info.edid_bytes == 256 and std.meta.eql(value.info.limits, output.publication.info.limits));
+                value.info.mode_count != 0 and value.info.edid_bytes == 256 and value.info.possible_heads == 2 and value.info.limits.bpc_mask == 1 << 8);
             hdmi_publications += 1; id.* = value.info.identity; id.connection_generation = 10 + hdmi_publications;
             hdmi_identity = id.*; return 1;
         }
@@ -1398,10 +1440,18 @@ const Integration = struct {
         std.debug.assert(operations & (@as(u64, 1) << a.gfx_queue_operation_present) != 0); return 1;
     }
     fn retain(fence: *const a.GfxFence, side: u32, out: *a.GfxBufferReference) callconv(.c) i32 {
+        if (hdmi_active_job and std.meta.eql(fence.*, hdmi_job.fence)) {
+            std.debug.assert(side == 0); out.* = reference(index(hdmi_source.reference)); out.flags = a.gfx_buffer_reference_mapping_only; return 1;
+        }
         std.debug.assert(active_job and side == 0 and std.meta.eql(fence.*, job.fence));
         out.* = reference(index(source.reference)); out.flags = a.gfx_buffer_reference_mapping_only; return 1;
     }
     fn complete(fence: *const a.GfxFence, result: u32, quiet: u32) callconv(.c) i32 {
+        if (hdmi_active_job and std.meta.eql(fence.*, hdmi_job.fence)) {
+            std.debug.assert(quiet == 1);
+            if (result == a.gfx_queue_result_complete) std.debug.assert(output.additional.presentation.receipt != null and R.owner.extra_scanout.phase == .active);
+            hdmi_completed += 1; hdmi_active_job = false; return 1;
+        }
         std.debug.assert(active_job and quiet == 1 and std.meta.eql(fence.*, job.fence));
         if (complete_busy) return -4;
         if (result == a.gfx_queue_result_complete) std.debug.assert(presentation.receipt != null and R.owner.scanout_owner.phase == .active);
@@ -1413,10 +1463,11 @@ const Integration = struct {
         @import("bios_fixture.zig").checksum(&Pipeline.edid,127);
         output = .{}; presentation = .{}; pipe = .{}; engine = .{}; queue = .{}; images = .{ .{}, .{} };
         bos = @splat(.{}); refs = @splat(.{}); leases = @splat(.{}); window_live = @splat(false);
-        source = .{}; job = .{}; active_job = false; completed = 0; complete_busy = false; release_busy = false;
+        source = .{}; job = .{}; active_job = false; hdmi_source = .{}; hdmi_job = .{}; hdmi_active_job = false; hdmi_completed = 0; completed = 0; complete_busy = false; release_busy = false;
         cursor_job = null; cursor_reply = .{}; cursor_busy = false; prepare_calls = 0; partial_prepare = false; commit_calls = 0; stats_calls = 0;
         reset_begin_calls = 0; reset_retire_calls = 0; common_reset_retired = false;
         mode_job = null; mode_reply = .{}; mode_complete_busy = false; mode_enable_calls = 0; publication_calls = 0;
+        extra_active = false; extra_retired = false;
         hdmi_publications = 0; hdmi_withdrawals = 0; hdmi_identity = .{}; hdmi_withdraw_busy = false;
         common_mode_retained = false; reset_mode_source = .{};
         if (hdmi_model) {
@@ -1539,6 +1590,10 @@ const Integration = struct {
         try engine.engine.ring.observe(@intCast(engine.engine.ring.write & (engine.engine.ring.words.len - 1)));
     }
     fn check() !void {
+        var stage: []const u8 = "initial present";
+        errdefer std.debug.print("[amd-integration-failure] stage={s} output={s}/{?} present={s}/{?} head={s}/{?} mode={s}/{?} core={d} pipe={?}\n",
+            .{stage, @tagName(output.phase), output.failure, @tagName(presentation.phase), presentation.failure,
+              @tagName(output.additional.phase), output.additional.failure, @tagName(output.modes.phase), output.modes.failure, R.owner.result, pipe.failure});
         try init(); try untilActive();
         try t.expect(prepare_calls == 2 and commit_calls == 2 and output.callback_confirmed and R.native.hold.native_adopted);
         try t.expect(info.flags & a.display_presentation_info_visibility != 0 and reported.visible_ns != 0 and reported.gpu_timestamp == 0 and reported.irq_sequence == 0);
@@ -1552,25 +1607,26 @@ const Integration = struct {
         try t.expect(presentation.armed and completed == 0 and presentation.source.ready);
         try completeDma(); Pipeline.hold_frames = true;
         for (0..20) |_| step();
-        try t.expect(completed == 0 and !presentation.source.ready and presentation.phase == .sample_wait);
+        try t.expect(completed == 0 and !presentation.source.ready and (presentation.phase == .sample_wait or presentation.phase == .sample_retry));
         Pipeline.hold_frames = false; complete_busy = true;
         for (0..80) |_| { step(); if (presentation.retired) break; }
         try t.expect(presentation.retired and completed == 0 and presentation.visible == 1 and !presentation.available());
         try t.expectEqual(@as(u8, 0x71), data[index(images[1].reference.reference)][0]);
         complete_busy = false; for (0..3) |_| step();
         try t.expect(completed == 1 and presentation.available() and reported.source_point == 1 and reported.visible_count == 1);
-        try cursorAndDamage();
-        try internalCopy();
-        try commonModes();
-        try hardwareMode();
-        try cleanup();
+        stage = "cursorAndDamage"; try cursorAndDamage();
+        stage = "internalCopy"; try internalCopy();
+        stage = "commonModes"; try commonModes();
+        stage = "hardwareMode"; try hardwareMode();
+        stage = "cleanup"; try cleanup();
         try init(); partial_prepare = true;
         for (0..2000) |_| { step(); if (output.phase == .failed) break; }
         try t.expect(output.phase == .failed and output.failure.? == error.Prepare and R.native.hold.native_adopted);
-        try cleanup();
-        try connections();
-        try failedModeReset();
-        try nativePresent();
+        stage = "cleanup"; try cleanup();
+        stage = "multihead"; try multihead();
+        stage = "connections"; try connections();
+        stage = "failedModeReset"; try failedModeReset();
+        stage = "nativePresent"; try nativePresent();
         std.debug.print("[amd-display-integration] real output prepare/commit, BO/PTE/SDMA copy, cursor barrier, partial damage, 1080p/720p rollback and retained partial handoff; model only\n", .{});
     }
     fn nativePresent() !void {
@@ -1597,7 +1653,7 @@ const Integration = struct {
         // The normal GC allocation pump collects release tickets separately
         // from display completion. Exercise that owner here as well.
         try t.expect(R.memory.collect());
-        try t.expect(!bos[source_index].live and completed == 0 and presentation.phase == .sample_wait);
+        try t.expect(!bos[source_index].live and completed == 0 and (presentation.phase == .sample_wait or presentation.phase == .sample_retry));
         Pipeline.hold_frames = false;
         for (0..100) |_| { step(); if (completed == 1) break; }
         try t.expect(completed == 1 and presentation.visible == 1 and output.failure == null);
@@ -1622,6 +1678,7 @@ const Integration = struct {
         }
         try t.expect(R.owner.self_address == 0 and pipe.restored);
         try t.expect(output.cursor.close(&R.memory, true));
+        try t.expect(output.additional.reset());
         try t.expect(output.modes.close());
         for (&images) |*image| try t.expect(image.close(true));
         try t.expect(R.memory.mapping_users == 0 and R.memory.engine_users == 1);
@@ -1638,6 +1695,153 @@ const Integration = struct {
         for (&refs) |*ref| try t.expect(!ref.live);
         for (&leases) |*lease| try t.expect(!lease.live);
         Pipeline.active = false;
+    }
+    fn bothActive() !void {
+        for (0..1500) |_| {
+            step();
+            if (output.additional.phase == .active or output.additional.failure != null or output.failure != null) break;
+        }
+        if (output.additional.phase != .active) std.debug.print("[amd-head-start] phase={s} fail={?} core={d}/{s} pipe={?} HDMI={x} ctl={x}\n",
+            .{@tagName(output.additional.phase), output.additional.failure, R.owner.result, @tagName(R.owner.phase), pipe.failure,
+              F.words[reg("DIG1_DIG_BE_EN_CNTL")], F.words[d.control[1] / 4]});
+        try t.expect(output.additional.phase == .active and extra_active and output.failure == null and output.primary_failure == null);
+        try queueReady();
+    }
+    fn panelJob(point: u64) !void {
+        source = output.shadow.reference;
+        job = .{ .fence = .{ .adapter_id = 1, .device_generation = 21, .reset_generation = 4, .timeline = 3, .point = point, .slot = 2 },
+            .operation = a.gfx_queue_operation_present, .source_buffer = source.buffer, .byte_length = mode.width * 4, .row_count = mode.height,
+            .source_pitch = mode.width * 4, .deadline_ns = F.ticks + 2 * std.time.ns_per_s, .display_target = output.target };
+        active_job = true; try t.expect(engine.client.?.accept(engine.client.?.context, job));
+        for (0..100) |_| { if (presentation.ticket != null) break; step(); }
+        try t.expect(presentation.ticket != null); try completeDma();
+    }
+    fn hdmiJob(point: u64) !void {
+        const head = &output.additional;
+        hdmi_job = .{ .fence = .{ .adapter_id = 1, .device_generation = 21, .reset_generation = 4, .timeline = 7, .point = point, .slot = 3 },
+            .operation = a.gfx_queue_operation_present, .source_buffer = hdmi_source.buffer, .byte_length = head.mode.width * 4, .row_count = head.mode.height,
+            .source_pitch = head.shape.pitch, .deadline_ns = F.ticks + 2 * std.time.ns_per_s, .display_target = head.target };
+        hdmi_active_job = true; try t.expect(engine.client.?.accept(engine.client.?.context, hdmi_job));
+        for (0..100) |_| { if (head.presentation.ticket != null) break; step(); }
+        try t.expect(head.presentation.ticket != null); try completeTicket(head.presentation.ticket.?);
+    }
+    fn multihead() !void {
+        hdmi_model = true; defer hdmi_model = false;
+        try init(); try untilActive();
+        const panel_address = R.owner.scanout_owner.current.?.address;
+        try bothActive();
+        const head = &output.additional;
+        const first_target = head.target;
+        try t.expect(R.owner.scanout_owner.current.?.address == panel_address and R.owner.plan.count == 2 and
+            head.target.head_id != output.target.head_id and head.epoch.display != output.epoch.display and
+            head.frames[0].mc_address != images[0].mc_address and R.owner.fixed_disp_khz >= 600000);
+        // Original joint DML and the confirmed shared-clock ceiling reject
+        // excess demand before any peer register or image is changed.
+        var excessive = head.mode; excessive.pixel_khz = 720000;
+        const writes = F.writes;
+        try R.owner.planMode(excessive);
+        for (0..20) |_| { if (R.live and !R.ran) R.run(); if (R.owner.poll()) break; }
+        try t.expect(R.owner.thread == 0 and R.owner.result != 0 and !R.owner.candidate_valid and
+            F.writes == writes and R.owner.scanout_owner.current.?.address == panel_address and R.owner.extra_scanout.phase == .active);
+        hdmi_source = try R.memory.create(head.shape.descriptor(&R.memory));
+        @memset(data[index(hdmi_source.reference)][0..@intCast(head.shape.bytes)], 0xa6);
+        Pipeline.hold_hdmi_frames = true;
+        try hdmiJob(1);
+        for (0..40) |_| step();
+        try t.expect(hdmi_completed == 0 and !head.presentation.source.ready and head.presentation.input != null);
+        const before = completed;
+        try panelJob(1);
+        for (0..150) |_| { step(); if (completed > before) break; }
+        try t.expect(completed == before + 1 and hdmi_completed == 0 and head.presentation.input != null and output.failure == null);
+        try panelJob(2);
+        for (0..150) |_| { step(); if (completed > before + 1) break; }
+        try t.expect(completed == before + 2 and hdmi_completed == 0);
+        Pipeline.hold_hdmi_frames = false;
+        for (0..150) |_| { step(); if (hdmi_completed == 1 and head.presentation.input == null) break; }
+        try t.expect(hdmi_completed == 1 and head.presentation.visible == 1 and head.presentation.source_fence.timeline == 7 and presentation.source_fence.timeline == 3);
+        try t.expectEqual(@as(u8, 0xa6), data[index(head.frames[head.presentation.front].reference.reference)][0]);
+        try hdmiModeRoundtrip(false);
+        const panel_sequence = presentation.sequence;
+        // The physical HDMI stop and canonical target retirement precede
+        // withdrawal. Busy withdrawal retains its private images and peer.
+        hdmi_withdraw_busy = true; F.words[reg("DC_GPIO_HPD_Y")] &= ~@as(u32, 256);
+        for (0..1400) |_| { step(); if (head.hardware_stopped and extra_retired) break; }
+        try t.expect(head.hardware_stopped and extra_retired and head.images[0].self_address != 0 and
+            R.owner.scanout_owner.phase == .active and presentation.sequence == panel_sequence and output.failure == null);
+        try panelJob(3);
+        for (0..100) |_| { step(); if (!active_job) break; }
+        try t.expect(!active_job and hdmi_withdrawals == 0);
+        hdmi_withdraw_busy = false;
+        for (0..700) |_| { step(); if (head.self_address == 0) break; }
+        try t.expect(head.self_address == 0 and hdmi_withdrawals == 1);
+        F.words[reg("DC_GPIO_HPD_Y")] |= 256;
+        try bothActive();
+        try t.expect(head.target.connection_generation > first_target.connection_generation and head.target.display_generation != first_target.display_generation);
+        // Conversely, loss of the internal panel leaves HDMI scanning. No
+        // device reset or timer-based release of the primary images occurs.
+        F.words[reg("DC_GPIO_HPD_Y")] &= ~@as(u32, 1);
+        for (0..700) |_| { step(); if (output.primary_stopped) break; }
+        try t.expect(output.primary_stopped and output.primary_failure != null and output.restore_requested == 0 and output.failure == null and
+            head.phase == .active and R.owner.extra_scanout.phase == .active and images[0].self_address != 0);
+        try hdmiJob(2);
+        for (0..150) |_| { step(); if (hdmi_completed == 2 and head.presentation.input == null) break; }
+        try t.expect(hdmi_completed == 2 and output.failure == null);
+        // The surviving HDMI mode owner must still join its own tasks after
+        // primary isolation, including the common apply/confirm transaction.
+        try hdmiModeRoundtrip(true);
+        F.words[reg("DC_GPIO_HPD_Y")] |= 1;
+        try t.expectEqual(@as(i32, 1), release(&hdmi_source.reference)); hdmi_source = .{};
+        try cleanup();
+        std.debug.print("[amd-multihead] actual joint DML and native dual-head programming, independent 60/30Hz stimuli, peer presents during held HDMI receipt, unplug/retained-withdraw/reconnect and isolated panel stop; model only\n", .{});
+    }
+    fn hdmiModeRoundtrip(confirm: bool) !void {
+        const head = &output.additional;
+        errdefer std.debug.print("[amd-hdmi-mode] confirm={} phase={s} failure={?} head={?} core={d} pipe={?} reply={d}/{d}/{d} epoch={d}\n",
+            .{confirm, @tagName(head.modes.phase), head.modes.failure, head.failure, R.owner.result, pipe.failure,
+              mode_reply.ticket, mode_reply.sequence, mode_reply.outcome, head.epoch.mode});
+        try queueReady();
+        const before = head.epoch.mode;
+        const peer_mode = output.epoch.mode;
+        const peer_address = R.owner.scanout_owner.current.?.address;
+        const selected = for (head.publication.modes[0..head.publication.info.mode_count]) |candidate| {
+            if (candidate.width == head.mode.width and candidate.height == head.mode.height) break candidate;
+        } else return error.TestUnexpectedResult;
+        // The common mode owner lends a tightly packed SYSTEM alias; native
+        // presentation sources are a separate contract exercised above.
+        var mode_source: a.GfxBufferReference = .{};
+        try t.expectEqual(@as(i32, 1), create(&.{ .width = selected.width, .height = selected.height,
+            .byte_length = @as(u64, selected.width) * selected.height * 4, .format = a.gfx_buffer_format_xrgb8888,
+            .plane_count = 1, .plane_pitches = .{selected.width * 4, 0, 0, 0},
+            .usage = a.gfx_buffer_usage_cpu_write | a.gfx_buffer_usage_transfer_source | a.gfx_buffer_usage_scanout }, &mode_source));
+        var request: a.GfxDriverModeJob = .{ .ticket = if (confirm) 302 else 301, .sequence = 1,
+            .operation = a.gfx_mode_operation_apply, .backend = binding, .mode = selected, .reference = mode_source,
+            .deadline_ns = F.ticks + 5 * std.time.ns_per_s,
+            .assignment = .{ .output = head.output, .mode_id = selected.mode_id, .head_id = head.mode.pipe,
+                .plane_id = head.mode.pipe, .pll_id = head.mode.pipe, .source_width = selected.width, .source_height = selected.height,
+                .destination_width = selected.width, .destination_height = selected.height, .bits_per_color = 8, .buffer = mode_source.buffer } };
+        mode_job = request;
+        var token: u64 = 0;
+        for (0..1000) |_| {
+            step();
+            if (head.modes.copy.ticket) |ticket| if (head.modes.copy.armed and ticket.token != token) {
+                try completeTicket(ticket); token = ticket.token;
+            };
+            if (mode_reply.ticket == request.ticket or head.failure != null or output.failure != null) break;
+        }
+        try t.expect(mode_reply.ticket == request.ticket and mode_reply.outcome == a.gfx_output_outcome_applied and
+            head.epoch.mode == before + 1 and head.modes.pending != null and output.epoch.mode == peer_mode and
+            R.owner.scanout_owner.current.?.address == peer_address);
+        request.sequence = 2; request.operation = if (confirm) a.gfx_mode_operation_confirm else a.gfx_mode_operation_rollback;
+        request.deadline_ns = F.ticks + 5 * std.time.ns_per_s; mode_job = request;
+        for (0..1000) |_| {
+            step();
+            if ((mode_reply.ticket == request.ticket and mode_reply.sequence == 2) or head.failure != null or output.failure != null) break;
+        }
+        try t.expect(mode_reply.ticket == request.ticket and mode_reply.sequence == 2 and
+            mode_reply.outcome == (if (confirm) a.gfx_output_outcome_applied else a.gfx_output_outcome_old_preserved) and
+            head.modes.pending == null and head.modes.phase == .idle and output.failure == null and head.failure == null and
+            output.epoch.mode == peer_mode and R.owner.scanout_owner.current.?.address == peer_address);
+        try t.expectEqual(@as(i32, 1), release(&mode_source.reference));
     }
     fn connections() !void {
         hdmi_model = true; defer hdmi_model = false;
@@ -1670,10 +1874,13 @@ const Integration = struct {
         output.connector.next_probe = 0;
         for (0..3500) |_| { step(); if (hdmi_publications == 3 and runtime.connection.phase == .connected) break; }
         try t.expect(hdmi_withdrawals == 2 and runtime.connection.generation == 3 and runtime.output.connection_generation == 13 and output.failure == null);
-        // Loss of the active eDP link requests bounded whole-device recovery.
+        // Once the replacement HDMI head is active, eDP loss pauses only its
+        // own consumer. The single-output recovery case remains covered above.
+        try bothActive();
         F.words[reg("DC_GPIO_HPD_Y")] &= ~@as(u32, 1);
-        for (0..400) |_| { step(); if (output.phase == .failed) break; }
-        try t.expect(output.phase == .failed and output.failure.? == error.Visibility and output.restore_requested == 1);
+        for (0..700) |_| { step(); if (output.primary_stopped) break; }
+        try t.expect(output.phase == .active and output.primary_failure.? == error.Visibility and
+            output.primary_stopped and output.restore_requested == 0 and R.owner.extra_scanout.phase == .active);
         F.words[reg("DC_GPIO_HPD_Y")] |= 1;
         try cleanup();
         try t.expect(hdmi_withdrawals == 3 and !R.hdmi_heap_live);

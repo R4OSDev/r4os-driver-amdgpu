@@ -71,7 +71,7 @@ pub const Runtime = struct {
             try checked(c.r4dcn_pixel_clock_bind(self.storage, 0, self.crystal_khz));
             self.clock_bound = true;
         }
-        try checked(c.r4dcn_reference_clock_program(self.storage, 0, &self.dprefclk_khz));
+        if (self.dprefclk_khz == 0) try checked(c.r4dcn_reference_clock_program(self.storage, 0, &self.dprefclk_khz));
         try checked(c.r4dcn_pixel_clock_program(self.storage, 0, self.pipe));
     }
     fn checked(result: c_int) panel.Error!void {

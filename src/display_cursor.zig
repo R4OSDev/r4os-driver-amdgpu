@@ -179,6 +179,16 @@ pub const Owner = struct {
         if (memory.memory.?.bufferUnmap(&self.read.lease) != 1) return false;
         self.read = .{}; return true;
     }
+    pub fn abandon(self: *Owner, output: anytype) bool {
+        if (!self.closeRead(output.native.?.memory.?)) return false;
+        if (self.job) |job| {
+            const reply: a.GfxDriverCursorCompletion = .{ .sequence = job.sequence, .display_generation = job.request.display_generation,
+                .outcome = a.gfx_output_outcome_lost, .error_code = a.gfx_output_error_stale, .visibility = a.display_cursor_visibility_unknown };
+            if (output.display.?.cursorComplete(&reply) != a.gfx_output_ok) return false;
+            self.job = null;
+        }
+        self.phase = .failed; self.lost = true; return true;
+    }
     /// Only after core.close proved cursor and scanout stopped/restored.
     pub fn close(self: *Owner, memory: *@import("memory_owner.zig").Owner, stopped: bool) bool {
         if (!stopped or !self.closeRead(memory)) return false;

@@ -86,6 +86,7 @@ static int mode(struct r4dcn *d,const struct r4dcn_mode *m) {
  sc->ratios.horz=sc->ratios.vert=sc->ratios.horz_c=sc->ratios.vert_c=dc_fixpt_one;
  sc->taps.h_taps=sc->taps.v_taps=sc->taps.h_taps_c=sc->taps.v_taps_c=1;
  sc->format=PIXEL_FORMAT_ARGB8888;sc->lb_params.depth=LB_PIXEL_DEPTH_30BPP;
+ d->modes[i]=*m;
  d->state.streams[d->count++]=s;d->state.stream_count=d->count;d->mask|=1u<<i;
  return 0;
 }
@@ -115,25 +116,12 @@ static bool frontend_quiet(struct r4dcn *d,unsigned i) {
  uint32_t control=dm_read_reg(&d->ctx,tg_regs[i].OTG_CONTROL);
  return !(control&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE)) && hubp1_in_blank(&d->hubps[i].base);
 }
-int r4dcn_program(void *storage) {
- struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
- if(!d->prepared || d->programmed || d->fault) { r4dcn_leave(d);return R4DCN_STATE; }
- /* Watermarks and MPC are shared. The outer transition owner must blank all
-  * four frontends, including pipes absent from this new plan. */
- for(unsigned i=0;i<R4DCN_PIPES;i++) {
-  if(!frontend_quiet(d,i))result=R4DCN_STATE;
- }
- if(result || d->fault) { r4dcn_leave(d);return d->fault?d->fault:result; }
- d->programmed=1;
- mpc1_mpc_init(&d->mpc.base);
- for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)mpc1_assert_idle_mpcc(&d->mpc.base,i);
- hubbub1_program_watermarks(&d->hubbub.base,&d->state.bw_ctx.bw.dcn.watermarks,d->limits.ref_khz/1000,false);
- for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)if(d->mask&(1u<<i)) {
+static void program_pipe(struct r4dcn *d,unsigned i) {
   struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct hubp *h=&d->hubps[i].base;
   optc1_enable_optc_clock(&d->tgs[i].base,true);hubp1_clk_cntl(h,true);hubp1_vtg_sel(h,i);
-  if(d->fault)break;
+  if(d->fault)return;
   const struct dc_clocks *clocks=&d->state.bw_ctx.bw.dcn.clk;
-  dpp1_dppclk_control(&d->dpps[i].base,clocks->dppclk_khz<=clocks->dispclk_khz/2,true);
+  dpp1_dppclk_control(&d->dpps[i].base,!d->fixed_disp_khz && clocks->dppclk_khz<=clocks->dispclk_khz/2,true);
   opp1_pipe_clock_control(&d->opps[i].base,true);
   optc1_program_timing(&d->tgs[i].base,&p->stream->timing,p->pipe_dlg_param.vready_offset,p->pipe_dlg_param.vstartup_start,
    p->pipe_dlg_param.vupdate_offset,p->pipe_dlg_param.vupdate_width,0,p->stream->signal,false);
@@ -156,7 +144,96 @@ int r4dcn_program(void *storage) {
   opp1_set_dyn_expansion(&d->opps[i].base,COLOR_SPACE_SRGB,p->stream->timing.display_color_depth,p->stream->signal);
   if(!hubp1_program_surface_flip_and_addr(h,&p->plane_state->address,true))d->fault=R4DCN_IO;
  }
+int r4dcn_program(void *storage) {
+ struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
+ if(!d->prepared || d->programmed || d->fault) { r4dcn_leave(d);return R4DCN_STATE; }
+ /* Watermarks and MPC are shared. The outer transition owner must blank all
+  * four frontends, including pipes absent from this new plan. */
+ for(unsigned i=0;i<R4DCN_PIPES;i++) {
+  if(!frontend_quiet(d,i))result=R4DCN_STATE;
+ }
+ if(result || d->fault) { r4dcn_leave(d);return d->fault?d->fault:result; }
+ d->programmed=1;
+ mpc1_mpc_init(&d->mpc.base);
+ for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)mpc1_assert_idle_mpcc(&d->mpc.base,i);
+ hubbub1_program_watermarks(&d->hubbub.base,&d->state.bw_ctx.bw.dcn.watermarks,d->limits.ref_khz/1000,false);
+ for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)if(d->mask&(1u<<i))program_pipe(d,i);
  r4dcn_leave(d);return d->fault;
+}
+/* No clock change while a peer is scanning. Fixed full-rate DPP is a
+ * conservative initial policy; dynamic power transitions own later lowering. */
+int r4dcn_fixed_clock(void *storage,uint32_t khz) {
+ struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
+ if(d->fault || khz<100000 || khz>d->limits.disp_khz || khz>d->limits.dpp_khz)result=R4DCN_INVALID;
+ for(unsigned i=0;!result && i<R4DCN_PIPES;i++)if(!frontend_quiet(d,i))result=R4DCN_STATE;
+ if(!result && !d->fault)d->fixed_disp_khz=khz;
+ r4dcn_leave(d);return d->fault?d->fault:result;
+}
+static void unlink_pipe(struct r4dcn *d,unsigned i) {
+ struct mpc_tree *tree=&d->opps[i].base.mpc_tree_params;
+ if(tree->opp_list)mpc1_remove_mpcc(&d->mpc.base,tree,tree->opp_list);
+ mpc1_assert_idle_mpcc(&d->mpc.base,i);
+}
+int r4dcn_remove(void *storage,uint32_t pipe) {
+ struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
+ if(pipe>=R4DCN_PIPES || !d->programmed || d->fault || !(d->mask&(1u<<pipe)) ||
+  (d->running&(1u<<pipe)) || !frontend_quiet(d,pipe))result=R4DCN_STATE;
+ if(!result && !d->fault) {
+  unlink_pipe(d,pipe);
+  if(!d->fault) {
+   d->mask&=~(1u<<pipe);d->count=0;
+   memset(d->state.streams,0,sizeof(d->state.streams));
+   for(unsigned i=0;i<R4DCN_PIPES;i++)if(d->mask&(1u<<i))d->state.streams[d->count++]=&d->streams[i];
+   d->state.stream_count=d->count;
+  }
+ }
+ r4dcn_leave(d);return d->fault?d->fault:result;
+}
+int r4dcn_update(void *storage,const void *candidate,uint32_t pipe) {
+ struct r4dcn *d=storage;const struct r4dcn *n=candidate;
+ int result=r4dcn_enter(d);if(result)return result;
+ if(!n || n==d || n->self!=(uintptr_t)n || !n->prepared || n->programmed || n->fault ||
+  !d->prepared || !d->programmed || d->fault || !d->fixed_disp_khz || pipe>=R4DCN_PIPES ||
+  !(n->mask&(1u<<pipe)) || (d->running&(1u<<pipe)) ||
+  (n->mask&~(1u<<pipe))!=(d->mask&~(1u<<pipe)) || memcmp(&d->limits,&n->limits,sizeof(d->limits)))result=R4DCN_STATE;
+ if(!result && (n->state.bw_ctx.bw.dcn.clk.dispclk_khz>d->fixed_disp_khz ||
+  n->state.bw_ctx.bw.dcn.clk.dppclk_khz>d->fixed_disp_khz))result=R4DCN_BANDWIDTH;
+ if(!result && !frontend_quiet(d,pipe))result=R4DCN_STATE;
+ /* An unrelated timing/address change must never ride along this update.
+  * Pending peer flips keep their own request address and receipt. */
+ for(unsigned i=0;!result && i<R4DCN_PIPES;i++)if(i!=pipe && (d->mask&(1u<<i))) {
+  if(memcmp(&d->modes[i],&n->modes[i],sizeof(struct r4dcn_mode)))result=R4DCN_STATE;
+  uint32_t lock=dm_read_reg(&d->ctx,tg_regs[i].OTG_MASTER_UPDATE_LOCK);
+  if(lock&(tg_mask.OTG_MASTER_UPDATE_LOCK|tg_mask.UPDATE_LOCK_STATUS) ||
+   ((d->tg_locked|d->cursor_locked)&(1u<<i)))result=R4DCN_BUSY;
+ }
+ if(result || d->fault) { r4dcn_leave(d);return d->fault?d->fault:result; }
+ if(d->mask&(1u<<pipe))unlink_pipe(d,pipe);
+ /* Copy only calculated values, never candidate-context pointers or MPC
+  * state. The peer's active plane, address and cursor are untouched. */
+ d->mask&=~(1u<<pipe);d->count=0;
+ memset(&d->streams[pipe],0,sizeof(d->streams[pipe]));memset(&d->planes[pipe],0,sizeof(d->planes[pipe]));
+ memset(&d->state.res_ctx.pipe_ctx[pipe],0,sizeof(struct pipe_ctx));
+ result=mode(d,&n->modes[pipe]);
+ d->count=0;
+ for(unsigned i=0;i<R4DCN_PIPES;i++)if(d->mask&(1u<<i)) {
+  d->state.streams[d->count++]=&d->streams[i];
+  struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];const struct pipe_ctx *q=&n->state.res_ctx.pipe_ctx[i];
+  p->rq_regs=q->rq_regs;p->dlg_regs=q->dlg_regs;p->ttu_regs=q->ttu_regs;p->pipe_dlg_param=q->pipe_dlg_param;
+ }
+ d->state.stream_count=d->count;d->state.bw_ctx.bw.dcn=n->state.bw_ctx.bw.dcn;
+ hubbub1_program_watermarks(&d->hubbub.base,&d->state.bw_ctx.bw.dcn.watermarks,d->limits.ref_khz/1000,false);
+ for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)if(i!=pipe && (d->running&(1u<<i))) {
+  struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct timing_generator *tg=&d->tgs[i].base;
+  d->tg_locked|=1u<<i;optc1_lock(tg);
+  hubp1_program_requestor(&d->hubps[i].base,&p->rq_regs);
+  hubp1_program_deadline(&d->hubps[i].base,&p->dlg_regs,&p->ttu_regs);
+  tg->funcs->program_global_sync(tg,p->pipe_dlg_param.vready_offset,p->pipe_dlg_param.vstartup_start,
+   p->pipe_dlg_param.vupdate_offset,p->pipe_dlg_param.vupdate_width,0);
+  optc1_unlock(tg);if(!d->fault)d->tg_locked&=~(1u<<i);
+ }
+ if(!result && !d->fault)program_pipe(d,pipe);
+ r4dcn_leave(d);return d->fault?d->fault:result;
 }
 int r4dcn_quiesce(void *storage) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;

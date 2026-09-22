@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.14 adds native eDP takeover, transactional modes, real scanout/flip
-and cursor receipts, and HDMI receiver service for R4OS 0.80.18. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.15 adds active eDP-plus-HDMI heads with joint DML admission,
+independent presentation and per-output loss handling for R4OS 0.80.20. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -135,8 +135,8 @@ Busy or unsafe retirement retains resources; replacement cannot reuse old
 jobs or output identities. A disconnect during unpublished activation retains
 the restoration duty. The native run loop publishes actual common HDMI
 receiver identities, samples HPD every 100ms and rechecks EDID every 2s when
-no mode decision is pending. Active HDMI scanout and simultaneous heads
-follow in /20; the primary native output currently uses eDP.
+no mode decision is pending. Active HDMI scanout now has its own target, private frames, transactional
+modes and visibility receipts. The primary native output uses eDP.
 See Docs/Drivers/AMDHDMI08017.txt/.json for the software-only evidence.
 
 
@@ -152,13 +152,34 @@ Partial damage preserves the previous frame before updating its rectangle.
 The original DCN1 cursor is 64x64 premultiplied ARGB with bounded signed
 clipping; show follows the actual present barrier. Near-VUPDATE Busy retries
 before writes. Common completion Busy retains jobs, references and backing.
-Panel-link loss, stalled counters, uncertain writes or expired jobs trigger
-a bounded device reset and reconstruction, with all leases held until proven
-engine/scanout quiescence. HDMI, brightness and health work share one task.
+Panel-link loss or a stalled head isolates that output when a healthy peer
+exists. A shared engine/MMIO failure still requires bounded device reset and
+reconstruction, with leases held until proven engine/scanout quiescence.
+HDMI, brightness and health work share one task.
 
 Presentation statistics use actual observed counter/address receipts and
 monotonic host time; refresh intervals are estimates. Host tests exercise real
 C/Zig owners against explicit software responses. They do not measure GPU
 pixels, electrical links, real VBlank, Windows execution or laptop behavior.
-See Docs/Drivers/AMDPresentation08018.txt and its JSON evidence. Desktop
-provider integration follows in /19, multihead in /20 and physical tests /39.
+See Docs/Drivers/AMDPresentation08018.txt and its JSON evidence. Desktop provider integration is recorded in /19, multihead in /20 and
+physical tests remain /39.
+
+
+Multihead (0.80.20)
+------------------
+Each output owns its scanout receipt, BO pair, mode banks and source VA.
+Queue admission is bounded and skips a busy peer; flips release the DCN task
+between sample/ACK operations. Only the launching owner consumes a task result.
+Original DML plans both heads before isolated pipe changes. Initial clocks
+reserve at least 600 MHz, with confirmed actual values and ASIC limits;
+shared clocks do not change while peers scan. Watermarks only rise during
+updates. Dynamic lowering remains the power milestone /34.
+
+HDMI retirement proves link and frontend stop before canonical target removal
+and image release. Busy withdrawal retains resources. Reconnect uses fresh
+receiver and output generations. Panel loss can leave HDMI and its mode
+transactions running; unproven primary resources stay held for recovery /36.
+The common Desktop retains layout, scale, clone, primary selection and input
+policy; additional heads use software cursors. Logical disable is black/idle,
+while physical screen-power and laptop sleep policy belong to /35.
+See Docs/Desktop/AMDMehrschirm08020.txt/.json for the model and SMP4 evidence.

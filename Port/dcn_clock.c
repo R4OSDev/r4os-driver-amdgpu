@@ -56,6 +56,12 @@ static enum bp_result pixel_clock(struct dc_bios *bios,struct bp_pixel_clock_par
  return BP_RESULT_OK;
 }
 static const struct dc_vbios_funcs clock_bios_functions={.set_pixel_clock=pixel_clock};
+int r4dcn_reference_clock_get(void *storage,uint32_t *actual_khz) {
+ struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
+ if(!actual_khz || !d->dprefclk_khz || d->fault)result=R4DCN_STATE;
+ else *actual_khz=d->dprefclk_khz;
+ r4dcn_leave(d);return result;
+}
 int r4dcn_reference_clock_program(void *storage,uint32_t index,uint32_t *actual_khz) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(index>=4 || !d->links[index].bound || !actual_khz || d->fault)result=R4DCN_STATE;

@@ -45,7 +45,7 @@ pub const Image = struct {
     ready: bool = false,
     copy_token: u64 = 0,
     pub fn allocate(self: *Image, memory: *mem.Owner, shape: Shape, slot: u8) !void {
-        if (self.self_address != 0 or slot >= 8 or memory.self_address != @intFromPtr(memory) or !memory.prepared or
+        if (self.self_address != 0 or slot >= 16 or memory.self_address != @intFromPtr(memory) or !memory.prepared or
             memory.engine_users == std.math.maxInt(u32) or !memory.controller.enabled or memory.controller.epoch != memory.epoch) return error.State;
         if (!std.meta.eql(shape, try Shape.make(shape.width, shape.height, shape.format == a.gfx_buffer_format_argb8888))) return error.Invalid;
         const map = memory.layout.?;
@@ -80,6 +80,19 @@ pub const Image = struct {
         self.copied = stop;
         if (stop != self.shape.height) return false;
         for (@as(usize, self.shape.pitch) * self.shape.height..@as(usize, @intCast(self.shape.bytes))) |i| target[i] = 0;
+        try self.memory.?.registers.barrier(); self.initialized = true; return true;
+    }
+    /// Initial additional output is black until its first composed frame.
+    /// Keep the same bounded row work and no uninitialized scanout padding.
+    pub fn clear(self: *Image) !bool {
+        if (self.self_address != @intFromPtr(self) or self.initialized or self.reachable or self.ready or self.window.value.cpu_address == 0) return error.State;
+        const target: [*]volatile u8 = @ptrFromInt(self.window.value.cpu_address);
+        const begin = @as(usize, self.copied) * self.shape.pitch;
+        const stop = @min(self.shape.height, self.copied + @max(@as(u32, 1), (256 * 1024) / self.shape.pitch));
+        const end = if (stop == self.shape.height) self.shape.bytes else @as(u64, stop) * self.shape.pitch;
+        for (begin..@intCast(end)) |i| target[i] = 0;
+        self.copied = stop;
+        if (stop != self.shape.height) return false;
         try self.memory.?.registers.barrier(); self.initialized = true; return true;
     }
     /// Caller-provided cursor pixels use premultiplied ARGB. The unused rows
