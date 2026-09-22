@@ -51,7 +51,7 @@ int r4dcn_init(void *storage,size_t bytes,const struct r4dcn_io *io,const struct
  r4dcn_leave(d);return d->fault;
 }
 static int mode(struct r4dcn *d,const struct r4dcn_mode *m) {
- if(m->pipe>=R4DCN_PIPES || m->flags&~15u || (m->flags&9u)==9u || m->width<16 || m->height<16 || m->width>4096 || m->height>4096 ||
+ if(m->pipe>=R4DCN_PIPES || m->flags&~31u || (m->flags&9u)==9u || ((m->flags&16u) && (!(m->flags&1u) || (m->flags&8u))) || m->width<16 || m->height<16 || m->width>4096 || m->height>4096 ||
   m->h_total>8192 || m->v_total>8192 || m->h_total<=m->width || m->v_total<=m->height ||
   !m->h_sync || !m->v_sync || !m->h_front || !m->v_front ||
   (uint64_t)m->h_front+m->h_sync>m->h_total-m->width || (uint64_t)m->v_front+m->v_sync>m->v_total-m->height ||
@@ -60,13 +60,14 @@ static int mode(struct r4dcn *d,const struct r4dcn_mode *m) {
   m->buffer_bytes<(uint64_t)m->pitch_bytes*m->height || m->buffer_bytes>(1ull<<48)-m->mc_address || d->mask&(1u<<m->pipe)) return R4DCN_INVALID;
  unsigned i=m->pipe;struct dc_stream_state *s=&d->streams[i];struct dc_plane_state *p=&d->planes[i];
  s->ctx=&d->ctx;s->signal=(m->flags&1)?SIGNAL_TYPE_HDMI_TYPE_A:SIGNAL_TYPE_EDP;
+ s->phy_pix_clk=(m->flags&16)?(m->pixel_khz*5+3)/4:m->pixel_khz;
  s->timing=(struct dc_crtc_timing){.h_addressable=m->width,.v_addressable=m->height,.h_total=m->h_total,.v_total=m->v_total,
   .h_front_porch=m->h_front,.v_front_porch=m->v_front,.h_sync_width=m->h_sync,.v_sync_width=m->v_sync,
-  .pix_clk_100hz=m->pixel_khz*10,.pixel_encoding=PIXEL_ENCODING_RGB,.display_color_depth=(m->flags&8)?COLOR_DEPTH_666:COLOR_DEPTH_888};
+  .pix_clk_100hz=m->pixel_khz*10,.pixel_encoding=PIXEL_ENCODING_RGB,.display_color_depth=(m->flags&8)?COLOR_DEPTH_666:(m->flags&16)?COLOR_DEPTH_101010:COLOR_DEPTH_888};
  s->timing.flags.HSYNC_POSITIVE_POLARITY=!!(m->flags&2);s->timing.flags.VSYNC_POSITIVE_POLARITY=!!(m->flags&4);
  if(!optc1_validate_timing(&d->tgs[i].base,&s->timing)) return R4DCN_UNSUPPORTED;
  s->src=s->dst=(struct rect){0,0,(int)m->width,(int)m->height};
- p->ctx=&d->ctx;p->format=SURFACE_PIXEL_FORMAT_GRPH_ARGB8888;p->rotation=ROTATION_ANGLE_0;
+ p->ctx=&d->ctx;p->format=(m->flags&16)?SURFACE_PIXEL_FORMAT_GRPH_ARGB2101010:SURFACE_PIXEL_FORMAT_GRPH_ARGB8888;p->rotation=ROTATION_ANGLE_0;
  p->plane_size.surface_size=s->src;p->plane_size.surface_pitch=m->pitch_bytes/4;
  p->src_rect=p->dst_rect=p->clip_rect=s->src;p->visible=true;
  uint32_t gb=d->limits.gb_addr_config;
@@ -85,7 +86,7 @@ static int mode(struct r4dcn *d,const struct r4dcn_mode *m) {
  sc->viewport=sc->recout=sc->viewport_c=s->src;sc->h_active=m->width;sc->v_active=m->height;
  sc->ratios.horz=sc->ratios.vert=sc->ratios.horz_c=sc->ratios.vert_c=dc_fixpt_one;
  sc->taps.h_taps=sc->taps.v_taps=sc->taps.h_taps_c=sc->taps.v_taps_c=1;
- sc->format=PIXEL_FORMAT_ARGB8888;sc->lb_params.depth=LB_PIXEL_DEPTH_30BPP;
+ sc->format=(m->flags&16)?PIXEL_FORMAT_ARGB2101010:PIXEL_FORMAT_ARGB8888;sc->lb_params.depth=LB_PIXEL_DEPTH_30BPP;
  d->modes[i]=*m;
  d->state.streams[d->count++]=s;d->state.stream_count=d->count;d->mask|=1u<<i;
  return 0;
@@ -130,6 +131,8 @@ static void program_pipe(struct r4dcn *d,unsigned i) {
    ROTATION_ANGLE_0,&p->plane_state->dcc,false,0);
   min_set_viewport(h,&p->plane_res.scl_data.viewport,&p->plane_res.scl_data.viewport_c);
   d->dpps[i].base.funcs->dpp_full_bypass(&d->dpps[i].base);
+  /* Original bypass assumes ARGB8888. Keep CM bypass, set the actual CNVC format. */
+  dpp1_cnv_setup(&d->dpps[i].base,p->plane_state->format,0,(struct dc_csc_transform){0},COLOR_SPACE_SRGB,NULL);
   dpp1_dscl_set_scaler_manual_scale(&d->dpps[i].base,&p->plane_res.scl_data);
   struct mpc_tree *tree=&d->opps[i].base.mpc_tree_params;
   *tree=(struct mpc_tree){.opp_id=i};
@@ -138,7 +141,7 @@ static void program_pipe(struct r4dcn *d,unsigned i) {
   if(!mpc1_insert_plane(&d->mpc.base,tree,&blend,&stereo,NULL,i,i))d->fault=R4DCN_STATE;
   mpc1_set_bg_color(&d->mpc.base,&blend.black_color,i);
   struct bit_depth_reduction_params depth={0};
-  depth.flags.TRUNCATE_ENABLED=1;depth.flags.TRUNCATE_DEPTH=p->stream->timing.display_color_depth==COLOR_DEPTH_666?0:1;
+  depth.flags.TRUNCATE_ENABLED=p->stream->timing.display_color_depth!=COLOR_DEPTH_101010;depth.flags.TRUNCATE_DEPTH=p->stream->timing.display_color_depth==COLOR_DEPTH_666?0:1;
   struct clamping_and_pixel_encoding_params clamp={.clamping_level=CLAMPING_FULL_RANGE,.pixel_encoding=PIXEL_ENCODING_RGB};
   opp1_program_fmt(&d->opps[i].base,&depth,&clamp);
   opp1_set_dyn_expansion(&d->opps[i].base,COLOR_SPACE_SRGB,p->stream->timing.display_color_depth,p->stream->signal);

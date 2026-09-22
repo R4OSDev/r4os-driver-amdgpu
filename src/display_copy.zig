@@ -43,7 +43,7 @@ pub const Owner = struct {
         if (memory.memory.?.bufferDescribe(&self.reference.reference, &descriptor) != 1) return error.Stale;
         const shape = self.frames[0].shape;
         if (descriptor.version != 1 or descriptor.size < @sizeOf(a.GfxBufferDescriptor) or descriptor.width != shape.width or descriptor.height != shape.height or
-            descriptor.location != a.gfx_buffer_location_system or descriptor.format != a.gfx_buffer_format_xrgb8888 or descriptor.modifier != 0 or
+            descriptor.location != a.gfx_buffer_location_system or descriptor.format != shape.format or descriptor.modifier != 0 or
             descriptor.plane_count != 1 or descriptor.plane_offsets[0] != 0 or descriptor.plane_pitches[0] != @as(u64, shape.width) * 4 or
             descriptor.byte_length != descriptor.plane_pitches[0] * shape.height or descriptor.byte_length > buffers.max_bytes or
             descriptor.usage & a.gfx_buffer_usage_transfer_source == 0) return error.Invalid;

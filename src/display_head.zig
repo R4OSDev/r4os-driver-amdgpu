@@ -32,6 +32,8 @@ pub const Owner = struct {
     // Additional heads use the desktop's already transformed software cursor.
     cursor: struct { phase: enum { idle } = .idle, visible: bool = false } = .{},
     statistics: @import("display_stats.zig").Owner = .{},
+    color: @import("display_color.zig").Owner = .{},
+    signal: ?@import("display_color.zig").color.Signal = null,
     mode_inbox: ?a.GfxDriverModeJob = null,
     slot_base: u8 = 8,
     phase: Phase = .empty,
@@ -107,6 +109,9 @@ pub const Owner = struct {
         for (self.publication.modes[0..self.publication.info.mode_count]) |candidate| if (candidate.mode_id == self.publication.info.preferred_mode_id) { selected = candidate; break; };
         self.shape = try buffers.Shape.make(selected.width, selected.height, false);
         self.mode = try modes.nativeMode(selected, self.mode.pipe, 8, 4096); self.mode.flags |= 1;
+        const hdmi: *@import("hdmi_runtime.zig").Runtime = @ptrFromInt(self.core.?.hdmi_allocation.cpu_address);
+        const colors = @import("display_color.zig");
+        self.signal = colors.defaultSignal(&hdmi.receiver.report, try colors.timing(&hdmi.receiver.report, self.mode));
         self.phase = .allocate;
     }
     pub fn step(self: *Owner, parent: anytype) void {
@@ -131,7 +136,7 @@ pub const Owner = struct {
         } else if (core.thread != 0) return;
         switch (self.phase) {
             .allocate => { try self.frames[self.index].allocate(self.engine.?.memory.?, self.shape, self.slot_base + self.index); self.phase = .clear; },
-            .clear => { if (try self.frames[self.index].clear()) self.phase = .publish_buffer; },
+            .clear => { if (try self.frames[self.index].clearColor(if (self.signal.?.range == .limited) 0xff101010 else 0)) self.phase = .publish_buffer; },
             .publish_buffer => {
                 try self.frames[self.index].publish();
                 if (self.index == 0) { self.index = 1; self.phase = .allocate; } else self.phase = .register;
@@ -152,7 +157,7 @@ pub const Owner = struct {
             .plan_wait => { if (core.result != 0 or !core.candidate_valid) return error.Unsupported; self.phase = .apply; },
             .apply => {
                 try core.applyMode(.{ .mode = self.mode, .epoch = self.epoch, .image = try self.frames[0].scanout(), .sequence = 1,
-                    .deadline_ns = self.last_time + 2 * std.time.ns_per_s }); self.phase = .apply_wait;
+                    .deadline_ns = self.last_time + 2 * std.time.ns_per_s, .signal = self.signal }); self.phase = .apply_wait;
             },
             .apply_wait => {
                 if (core.result != 0) return error.Visibility;

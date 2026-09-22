@@ -1,7 +1,8 @@
 ﻿# AMDGPU
 
-Version 0.1.15 adds active eDP-plus-HDMI heads with joint DML admission,
-independent presentation and per-output loss handling for R4OS 0.80.20. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.16 adds confirmed per-output color facts, RGB10 HDMI, static
+PQ/HLG metadata and correct full/limited pixel encoding for R4OS 0.80.21.
+The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
@@ -121,11 +122,19 @@ commands. No Linux GPIO allocation, fake I2C success or guessed board clock
 is involved. Acquisition failure, NACK and ordinary timeout release hardware
 arbitration and restore the actual pad mask. MMIO failures retain effects.
 
-The source remains HDMI1.4 (340MHz ceiling) even when the receiver advertises
-HDMI2/FRL/deep color. Only complete EDID-confirmed RGB8 timings are selected;
-CTA modes needing an unimplemented limited-range transform stay excluded
-until /21. AVI checksum, full-range selection and video packets are generated;
-audio samples/InfoFrames stay muted for /22. Data-only USB-C is not an output.
+The source remains uncompressed RGB HDMI1.4 TMDS with a 340MHz ceiling.
+RGB8/10, full/limited range, PQ/HLG and static metadata require joint current
+source, board, EDID and bandwidth admission. XR30 uses actual HUBP/CNVC,
+OPP, 5:4 clock and encoder programming. Encoded mode images and prior color
+state survive apply/confirm/rollback; SDR sends an explicit metadata reset.
+Canonical legacy mode images receive bounded one-time limited conversion;
+ordinary Desktop frames already match the published encoding. SYSTEM-source
+presentation also enables the shared SDR ICC/VCGT path. Hardware LUT/CTM
+caps stay zero. Six-bit eDP remains SDR without an invented eight-bit color
+state. VRR is explicitly fixed/unavailable: this source profile implements
+neither adaptive eDP nor HDMI EMP/FreeSync-VSIF. No DP-MST, DSC or FRL is
+advertised. Audio samples/InfoFrames stay muted for /22; USB-C is data-only.
+See Docs/Desktop/AMDFarbe08021.txt/.json for implementation and limits.
 
 HPD stabilizes for 100ms before new admission. Observed disconnect or changed
 EDID fingerprints invalidate the old receiver; pause, drain, confirmed

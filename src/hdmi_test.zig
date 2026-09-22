@@ -163,6 +163,14 @@ pub const SharedI2c = struct {
     pub fn handles(offset: u32) bool { return offset >= reg("DC_I2C_CONTROL") * 4 and offset <= reg("DC_I2C_READ_REQUEST_INTERRUPT") * 4; }
     pub fn read(raw: ?*anyopaque, offset: u32, out: [*c]u32) c_int { return Native.read(raw, offset, out); }
     pub fn write(raw: ?*anyopaque, offset: u32, value: u32) c_int { return Native.write(raw, offset, value); }
+    pub fn colorCapabilities(limited: bool) void {
+        // Explicit synthetic HDMI deep-color, BT2020-RGB and PQ/HLG metadata.
+        Sink.bytes[141] = 0x10;
+        if (limited) Sink.bytes[145] = 0;
+        Sink.bytes[130] = 26;
+        Sink.bytes[146..154].* = .{ 0xe3, 5, 0x80, 0, 0xe3, 6, 13, 1 };
+        Sink.checksum();
+    }
     pub fn changed() void { Sink.bytes[12] +%= 1; Sink.checksum(); }
     pub fn requests() usize { return Native.i2c_go; }
 };
@@ -228,6 +236,17 @@ test "HDMI original I2C arbitration FIFO E-DDC release and stream infoframes" {
     try t.expect(n.words[reg("DIG0_HDMI_INFOFRAME_CONTROL0")] & hw.DIG0_HDMI_INFOFRAME_CONTROL0__HDMI_AUDIO_INFO_SEND_MASK == 0);
     try t.expect(n.words[reg("DIG0_HDMI_GENERIC_PACKET_CONTROL0")] & hw.DIG0_HDMI_GENERIC_PACKET_CONTROL0__HDMI_GENERIC0_SEND_MASK != 0);
     try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_hdmi_enable(&n.bytes, 1)); // No frontend commit yet.
+    var deep = mode; deep.flags |= 16;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&n.bytes, &deep, 1, &plan));
+    const deep_calls = n.count;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_pixel_clock_program(&n.bytes, 1, 0));
+    try t.expectEqual(@as(u32, 1856250), n.commands[deep_calls][0]); // 148.5MHz * 5/4, in 100Hz.
+    try t.expectEqual(@as(u32, 0), n.commands[deep_calls][2]); // DCN1 programs 5:4 directly after ATOM.
+    try t.expectEqual(@as(u32, 1), (n.words[hw.DCE_BASE__INST0_SEG1 + hw.mmPHYPLLA_PIXCLK_RESYNC_CNTL] >> 4) & 3);
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_hdmi_configure(&n.bytes, 1, 0, &avi));
+    try t.expectEqual(@as(u32, 3), n.commands[deep_calls + 1][2]); // PANEL_10BIT_PER_COLOR.
+    try t.expectEqual(@as(u32, 18562), n.commands[deep_calls + 1][1]); // Physical TMDS clock in 10kHz.
+    try t.expect(n.words[reg("DIG0_HDMI_CONTROL")] & hw.DIG0_HDMI_CONTROL__HDMI_DEEP_COLOR_ENABLE_MASK != 0);
     avi[3] = 0;
     const writes = n.writes;
     try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_hdmi_configure(&n.bytes, 1, 0, &avi));
@@ -284,9 +303,34 @@ test "HDMI admits only complete receiver timings and the direct HDMI1.4 board ro
     try t.expect(std.meta.eql(record, preserved));
     receiver.valid = true;
     try t.expectEqual(@as(u32, 1920), chosen.width);
+    try t.expectEqual(@as(u16, 16), chosen.vic); // Base DTD merged with its CTA VIC.
     const avi = try receiver.avi(chosen);
     var sum: u8 = 0; for (avi) |byte| sum +%= byte;
     try t.expect(sum == 0 and avi[6] == 8 and avi[7] == chosen.vic);
+    const colors = @import("display_color.zig");
+    SharedI2c.colorCapabilities(false);
+    try receiver.read(s.io, 340_000_000);
+    const hdr: colors.color.Signal = .{ .format = .xr30, .bpc = 10, .transfer = .pq, .primaries = .bt2020,
+        .range = .limited, .reference_white = 2_030_000, .peak = 10_000_000, .metadata = .{ .max_cll = 1000, .max_fall = 400 } };
+    const plan = try colors.hdmiPlan(&receiver.report, chosen, hdr, 340_000_000);
+    try t.expect(plan.tmds_hz == 185625000 and plan.metadata_bytes == 30 and plan.metadata[4] == 2);
+    const hdr_avi = try colors.avi(&receiver.report, chosen, hdr, 340_000_000);
+    try t.expect(hdr_avi[5] == 0xc0 and hdr_avi[6] == 0x64);
+    var excessive = chosen; excessive.clock_hz = 297_000_000;
+    try t.expectError(error.Bandwidth, colors.hdmiPlan(&receiver.report, excessive, hdr, 340_000_000));
+    receiver.report.hdr_static = 0;
+    try t.expectError(error.Unsupported, colors.hdmiPlan(&receiver.report, chosen, hdr, 340_000_000));
+    SharedI2c.colorCapabilities(true); try receiver.read(s.io, 340_000_000);
+    var cta = chosen; cta.vic = 16;
+    const limited = colors.defaultSignal(&receiver.report, cta);
+    try t.expect(limited.range == .limited);
+    const limited_avi = try colors.avi(&receiver.report, cta, limited, 340_000_000);
+    try t.expect(limited_avi[6] == 0 and limited_avi[7] == 16);
+    try t.expectError(error.Unsupported, colors.hdmiPlan(&receiver.report, cta, colors.sdr, 340_000_000));
+    try t.expectEqual(@as(u32, 0xff101010), colors.limitedPixel(0));
+    try t.expectEqual(@as(u32, 0xffebebeb), colors.limitedPixel(0x00ffffff));
+    try t.expectEqual(@as(u32, 0xff7e7e7e), colors.limitedPixel(0x00808080));
+    s.init(); try receiver.read(s.io, 340_000_000);
     var forged = chosen; forged.clock_hz += 1000;
     try t.expect(!receiver.admits(forged));
     forged = chosen; forged.vic = 99;

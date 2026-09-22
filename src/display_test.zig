@@ -1169,6 +1169,13 @@ const Integration = struct {
     var reset_retire_calls: u32 = 0;
     var common_reset_retired = false;
     var mode_job: ?a.GfxDriverModeJob = null;
+    var mode_extension: ?a.GfxDriverModeColor = null;
+    var next_color_ticket: u64 = 300;
+    var requested_color: ?@import("display_color.zig").color.Signal = null;
+    var color_model = false;
+    var limited_model = false;
+    var published_colors: [2]?a.GfxOutputColorState = .{null, null};
+    var published_refresh: [2]?a.GfxOutputRefresh = .{null, null};
     var mode_reply: a.GfxDriverModeCompletion = .{};
     var mode_complete_busy = false;
     var mode_enable_calls: u32 = 0;
@@ -1263,6 +1270,7 @@ const Integration = struct {
     }
     fn mapCpu(ref: *const a.GfxBufferHandle, access: u32, offset: u64, bytes: u64, out: *a.GfxBufferMap) callconv(.c) i32 {
         const i = index(ref.*); std.debug.assert(access == a.gfx_buffer_map_read and offset == 0 and bytes <= bos[i].descriptor.byte_length and !bos[i].committed);
+        if (bos[i].descriptor.usage & a.gfx_buffer_usage_cpu_read == 0) return a.gfx_buffer_error_unsupported;
         out.* = .{ .lease = newLease(i, 1), .cpu_address = @intFromPtr(&data[i]), .byte_length = bytes, .cache_policy = a.gfx_buffer_cache_write_back }; return 1;
     }
     fn unmapCpu(lease: *const a.GfxBufferHandle) callconv(.c) i32 { if (release_busy) return -4; dropLease(lease.*); return 1; }
@@ -1343,8 +1351,24 @@ const Integration = struct {
     fn outputQuery(out: *a.GfxDriverOutputApi) callconv(.c) i32 {
         out.* = .{ .publish = @intFromPtr(&publish), .withdraw = @intFromPtr(&withdraw), .output_pause = @intFromPtr(&pause),
             .mode_restore = @intFromPtr(&restoreMode), .mode_status = @intFromPtr(&modeStatus), .mode_enable = @intFromPtr(&modeEnable),
-            .mode_take = @intFromPtr(&modeTake), .mode_complete = @intFromPtr(&modeComplete) }; return 1;
+            .mode_take = @intFromPtr(&modeTake), .mode_complete = @intFromPtr(&modeComplete),
+            .mode_read_color = @intFromPtr(&readColor), .color_publish = @intFromPtr(&publishColor),
+            .refresh_publish = @intFromPtr(&publishRefresh), .refresh_read = @intFromPtr(&readRefresh) }; return 1;
     }
+    fn readColor(ticket: u64, sequence: u64, out: *a.GfxDriverModeColor) callconv(.c) i32 {
+        out.* = mode_extension orelse return 0;
+        out.ticket = ticket; out.sequence = sequence; return 1;
+    }
+    fn publishColor(value: *const a.GfxOutputColorState) callconv(.c) i32 {
+        std.debug.assert(value.flags & 7 == 7 and value.revision == 0);
+        const head: usize = if (value.identity.connector_id == 0x310c) 1 else 0;
+        published_colors[head] = value.*; return 1;
+    }
+    fn publishRefresh(value: *const a.GfxOutputRefresh) callconv(.c) i32 {
+        std.debug.assert(value.capabilities.flags & a.gfx_refresh_cap_capable == 0 and value.status.reason == a.gfx_refresh_reason_unavailable);
+        published_refresh[value.target.head_id] = value.*; return 1;
+    }
+    fn readRefresh(_: *const a.GfxOutputTarget, _: *a.GfxRefreshRequest) callconv(.c) i32 { return 0; }
     fn modeEnable(backend: *const a.GfxBackendBinding) callconv(.c) i32 {
         std.debug.assert(std.meta.eql(backend.*, binding) and output.callback_confirmed and R.owner.scanout_owner.phase == .active);
         mode_enable_calls += 1; return if (mode_enable_calls == 1) a.gfx_output_error_busy else 1;
@@ -1466,12 +1490,13 @@ const Integration = struct {
         source = .{}; job = .{}; active_job = false; hdmi_source = .{}; hdmi_job = .{}; hdmi_active_job = false; hdmi_completed = 0; completed = 0; complete_busy = false; release_busy = false;
         cursor_job = null; cursor_reply = .{}; cursor_busy = false; prepare_calls = 0; partial_prepare = false; commit_calls = 0; stats_calls = 0;
         reset_begin_calls = 0; reset_retire_calls = 0; common_reset_retired = false;
-        mode_job = null; mode_reply = .{}; mode_complete_busy = false; mode_enable_calls = 0; publication_calls = 0;
+        mode_job = null; mode_extension = null; next_color_ticket = 300; published_colors = .{null,null}; published_refresh = .{null,null}; mode_reply = .{}; mode_complete_busy = false; mode_enable_calls = 0; publication_calls = 0;
         extra_active = false; extra_retired = false;
         hdmi_publications = 0; hdmi_withdrawals = 0; hdmi_identity = .{}; hdmi_withdraw_busy = false;
         common_mode_retained = false; reset_mode_source = .{};
         if (hdmi_model) {
             @import("hdmi_test.zig").SharedI2c.reset();
+            if (color_model) @import("hdmi_test.zig").SharedI2c.colorCapabilities(limited_model);
             R.board.path_count = 2; R.board.paths[1] = R.board.paths[0];
             R.board.paths[1].connector = 0x310c; R.board.paths[1].encoder = 0x221e; R.board.paths[1].aux_ddc_line = 1;
             R.board.paths[1].i2c_pin.?.register = @intCast(reg("DC_GPIO_DDC2_A"));
@@ -1624,6 +1649,7 @@ const Integration = struct {
         try t.expect(output.phase == .failed and output.failure.? == error.Prepare and R.native.hold.native_adopted);
         stage = "cleanup"; try cleanup();
         stage = "multihead"; try multihead();
+        stage = "color"; try colorModes();
         stage = "connections"; try connections();
         stage = "failedModeReset"; try failedModeReset();
         stage = "nativePresent"; try nativePresent();
@@ -1812,13 +1838,23 @@ const Integration = struct {
         try t.expectEqual(@as(i32, 1), create(&.{ .width = selected.width, .height = selected.height,
             .byte_length = @as(u64, selected.width) * selected.height * 4, .format = a.gfx_buffer_format_xrgb8888,
             .plane_count = 1, .plane_pitches = .{selected.width * 4, 0, 0, 0},
-            .usage = a.gfx_buffer_usage_cpu_write | a.gfx_buffer_usage_transfer_source | a.gfx_buffer_usage_scanout }, &mode_source));
-        var request: a.GfxDriverModeJob = .{ .ticket = if (confirm) 302 else 301, .sequence = 1,
+            .usage = a.gfx_buffer_usage_cpu_read | a.gfx_buffer_usage_cpu_write | a.gfx_buffer_usage_transfer_source | a.gfx_buffer_usage_scanout }, &mode_source));
+        next_color_ticket += 1;
+        var request: a.GfxDriverModeJob = .{ .ticket = next_color_ticket, .sequence = 1,
             .operation = a.gfx_mode_operation_apply, .backend = binding, .mode = selected, .reference = mode_source,
             .deadline_ns = F.ticks + 5 * std.time.ns_per_s,
             .assignment = .{ .output = head.output, .mode_id = selected.mode_id, .head_id = head.mode.pipe,
                 .plane_id = head.mode.pipe, .pll_id = head.mode.pipe, .source_width = selected.width, .source_height = selected.height,
                 .destination_width = selected.width, .destination_height = selected.height, .bits_per_color = 8, .buffer = mode_source.buffer } };
+        @memset(data[index(mode_source.reference)][0..@intCast(selected.width * selected.height * 4)], 0xff);
+        var encoded: a.GfxBufferReference = .{};
+        if (requested_color) |signal| {
+            var descriptor = bos[index(mode_source.reference)].descriptor;
+            descriptor.format = @import("display_color.zig").format(signal);
+            try t.expectEqual(@as(i32, 1), create(&descriptor, &encoded));
+            @memset(data[index(encoded.reference)][0..@intCast(descriptor.byte_length)], 0x4d);
+            mode_extension = .{ .signal = try @import("display_color.zig").color.signalRequest(a.GfxColorSignal, signal), .reference = encoded };
+        }
         mode_job = request;
         var token: u64 = 0;
         for (0..1000) |_| {
@@ -1831,6 +1867,21 @@ const Integration = struct {
         try t.expect(mode_reply.ticket == request.ticket and mode_reply.outcome == a.gfx_output_outcome_applied and
             head.epoch.mode == before + 1 and head.modes.pending != null and output.epoch.mode == peer_mode and
             R.owner.scanout_owner.current.?.address == peer_address);
+        if (requested_color) |signal| {
+            try t.expect(output.additional.shape.format == @import("display_color.zig").format(signal) and std.meta.eql(output.additional.signal.?, signal));
+            const actual = output.additional.frames[output.additional.present.?.front];
+            try t.expectEqual(@as(u8, 0x4d), data[index(actual.reference.reference)][0]);
+            const cnvc = F.words[reg("CNVC_CFG1_CNVC_SURFACE_PIXEL_FORMAT")];
+            try t.expectEqual(@as(u32, if (signal.bpc == 10) 10 else 8), cnvc & 255);
+            try t.expect((F.words[reg("DIG1_HDMI_CONTROL")] & hw.DIG0_HDMI_CONTROL__HDMI_DEEP_COLOR_ENABLE_MASK != 0) == (signal.bpc == 10));
+            const eotf: u32 = switch (signal.transfer) { .srgb => 0, .pq => 2, .hlg => 3 };
+            try t.expectEqual(@as(u32, 0x001a0187), F.words[reg("DIG1_AFMT_GENERIC_HDR")]);
+            try t.expectEqual(eotf, (F.words[reg("DIG1_AFMT_GENERIC_0")] >> 8) & 255);
+        } else if (limited_model) {
+            const actual = output.additional.frames[output.additional.present.?.front];
+            try t.expectEqual(@as(u8, 235), data[index(actual.reference.reference)][0]);
+            try t.expect(output.additional.modes.copy.ticket == null and output.additional.modes.pattern.memory == null);
+        }
         request.sequence = 2; request.operation = if (confirm) a.gfx_mode_operation_confirm else a.gfx_mode_operation_rollback;
         request.deadline_ns = F.ticks + 5 * std.time.ns_per_s; mode_job = request;
         for (0..1000) |_| {
@@ -1841,7 +1892,38 @@ const Integration = struct {
             mode_reply.outcome == (if (confirm) a.gfx_output_outcome_applied else a.gfx_output_outcome_old_preserved) and
             head.modes.pending == null and head.modes.phase == .idle and output.failure == null and head.failure == null and
             output.epoch.mode == peer_mode and R.owner.scanout_owner.current.?.address == peer_address);
+        mode_extension = null;
+        if (encoded.reference.id != 0) try t.expectEqual(@as(i32, 1), release(&encoded.reference));
         try t.expectEqual(@as(i32, 1), release(&mode_source.reference));
+    }
+    fn colorModes() !void {
+        hdmi_model = true; color_model = true;
+        defer { hdmi_model = false; color_model = false; limited_model = false; requested_color = null; mode_extension = null; }
+        try init(); try bothActive(); for (0..5) |_| step();
+        try t.expect(published_colors[0] != null and published_colors[1] != null and published_refresh[1] != null);
+        try t.expect(published_colors[0].?.formats == 1 and published_colors[1].?.formats == 3 and
+            published_colors[1].?.max_tmds_clock_hz == 340_000_000 and published_colors[1].?.max_frl_rate == 0 and published_colors[1].?.dsc_depths == 0);
+        try t.expect(info.flags & a.display_presentation_info_system_source != 0);
+        const colors = @import("display_color.zig");
+        requested_color = .{ .format = .xr30, .bpc = 10, .transfer = .pq, .primaries = .bt2020,
+            .range = .limited, .reference_white = 2_030_000, .peak = 10_000_000, .metadata = .{ .max_cll = 1000, .max_fall = 400 } };
+        try hdmiModeRoundtrip(false);
+        try t.expect(output.additional.signal.?.bpc == 8 and output.additional.mode.flags & 16 == 0);
+        requested_color.?.transfer = .hlg;
+        try hdmiModeRoundtrip(true);
+        try t.expect(output.additional.signal.?.transfer == .hlg);
+        requested_color = colors.sdr;
+        try hdmiModeRoundtrip(true);
+        try t.expect(output.additional.signal.?.transfer == .srgb);
+        try cleanup();
+        limited_model = true; requested_color = null;
+        try init(); try bothActive();
+        try t.expect(output.additional.signal.?.range == .limited);
+        const image = output.additional.frames[output.additional.present.?.front];
+        try t.expectEqual(@as(u8, 16), data[index(image.reference.reference)][0]);
+        try hdmiModeRoundtrip(false); try hdmiModeRoundtrip(true);
+        try cleanup();
+        std.debug.print("[amd-color] actual XR30 BO/SDMA/DCN/CNVC/HDMI apply, PQ rollback, HLG confirm, SDR restore, per-head source facts and default-limited pixel conversion; explicit model stimuli only\n", .{});
     }
     fn connections() !void {
         hdmi_model = true; defer hdmi_model = false;

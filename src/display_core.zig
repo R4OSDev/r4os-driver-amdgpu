@@ -30,7 +30,7 @@ pub const Hooks = struct {
     remove: ?*const fn (usize) bool = null,
     pause_primary: ?*const fn (usize) bool = null,
 };
-pub const ModeRequest = struct { mode: c.struct_r4dcn_mode, epoch: scanout.Epoch, image: scanout.Image, sequence: u64, deadline_ns: u64 };
+pub const ModeRequest = struct { mode: c.struct_r4dcn_mode, epoch: scanout.Epoch, image: scanout.Image, sequence: u64, deadline_ns: u64, signal: ?@import("display_color.zig").color.Signal = null };
 pub const ScanoutOperation = enum { bind, enable, flip, sample, acknowledge, stop, cursor, cursor_sample, cursor_acknowledge, rekey };
 pub const ScanoutRequest = struct {
     operation: ScanoutOperation,
@@ -174,7 +174,7 @@ pub const Owner = struct {
         var descriptor: a.GfxBufferDescriptor = .{};
         if (self.memory.?.memory.?.bufferDescribe(&request.image.reference, &descriptor) != 1 or descriptor.driver_owner == 0 or
             descriptor.adapter_id != self.memory.?.adapter or descriptor.device_generation != self.memory.?.epoch or
-            descriptor.location != a.gfx_buffer_location_device_local or descriptor.format != a.gfx_buffer_format_xrgb8888 or
+            descriptor.location != a.gfx_buffer_location_device_local or descriptor.format != (if (request.mode.flags & 16 != 0) a.gfx_buffer_format_xrgb2101010 else a.gfx_buffer_format_xrgb8888) or
             descriptor.modifier != 0 or descriptor.plane_count != 1 or descriptor.width != request.mode.width or descriptor.height != request.mode.height or
             descriptor.plane_offsets[0] != 0 or descriptor.plane_pitches[0] != request.mode.pitch_bytes or descriptor.byte_length != request.mode.buffer_bytes or
             descriptor.usage & a.gfx_buffer_usage_scanout == 0) return error.Invalid;

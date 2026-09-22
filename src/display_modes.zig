@@ -7,7 +7,8 @@ const dc = @import("display_core.zig");
 const buffers = @import("display_buffers.zig");
 const panel = @import("panel_runtime.zig");
 const timing = @import("r4gfx_edid").timing;
-pub const Phase = enum { empty, catalog, catalog_wait, publish_catalog, rekey, rekey_wait, idle, allocate, publish_buffer, copy,
+const colors = @import("display_color.zig");
+pub const Phase = enum { empty, catalog, catalog_wait, publish_catalog, rekey, rekey_wait, idle, allocate, pattern, publish_buffer, pattern_close, copy,
     copy_wait, plan, plan_wait, apply, apply_wait, retire_previous, reject_cleanup, reply, failed };
 pub const Owner = struct {
     self_address: usize = 0,
@@ -28,6 +29,11 @@ pub const Owner = struct {
     shape: buffers.Shape = undefined,
     job: ?a.GfxDriverModeJob = null,
     pending: ?a.GfxDriverModeJob = null,
+    extension: ?a.GfxDriverModeColor = null,
+    next_signal: colors.color.Signal = colors.sdr,
+    previous_signal: ?colors.color.Signal = null,
+    implicit_limited: bool = false,
+    pattern: @import("display_pattern.zig").Owner = .{},
     last_sequence: u64 = 0,
     hardware_armed: bool = false,
     reply: a.GfxDriverModeCompletion = .{},
@@ -40,7 +46,7 @@ pub const Owner = struct {
     /// A disconnected head completes only jobs actually taken from the
     /// common mailbox. The common stop/retirement path owns borrowed BOs.
     pub fn abandon(self: *Owner, output: anytype) bool {
-        if (!self.copy.close()) return false;
+        if (!self.copy.close() or !self.pattern.close()) return false;
         if (output.mode_inbox) |job| {
             if (self.job != null) return false;
             self.job = job; output.mode_inbox = null;
@@ -89,6 +95,16 @@ pub const Owner = struct {
             job.reserved0 != 0 or !std.meta.eql(job.backend, output.epoch.backend) or
             !std.meta.eql(assignment.output, output.output) or core.memory.?.epoch != output.epoch.memory or
             job.deadline_ns <= output.last_time or output.cursor.visible or core.scanoutFor(output.epoch).cursor_current.image != null) return error.Stale;
+        var extension: ?a.GfxDriverModeColor = null;
+        if (output.outputs.?.supportsModeColor()) {
+            var value: a.GfxDriverModeColor = .{};
+            const status = output.outputs.?.readModeColor(job.ticket, job.sequence, &value);
+            if (status != 0 and status != a.gfx_output_ok) return error.Stale;
+            if (status == a.gfx_output_ok) {
+                if (value.version != 1 or value.size != @sizeOf(a.GfxDriverModeColor) or value.ticket != job.ticket or value.sequence != job.sequence) return error.Stale;
+                _ = try colors.color.requestedSignal(value.signal); extension = value;
+            }
+        }
         if (job.operation == a.gfx_mode_operation_apply) {
             if (self.pending != null) return error.State;
             if (assignment.version != 1 or assignment.size < @sizeOf(a.GfxScanoutState) or assignment.reserved0 != 0 or
@@ -101,24 +117,44 @@ pub const Owner = struct {
             var found = false;
             for (output.publication.modes[0..output.publication.info.mode_count]) |mode| if (std.meta.eql(mode, job.mode)) { found = true; break; };
             if (!found) return error.Stale;
+            self.extension = extension;
             self.next_bank = 1 - self.active_bank;
             self.previous = .{ output.present.?.frames[output.present.?.front], output.present.?.frames[1 - output.present.?.front] };
             self.previous_mode = output.mode; self.previous_mode.mc_address = self.previous[0].mc_address;
+            self.previous_signal = output.signal;
             self.shape = try buffers.Shape.make(job.mode.width, job.mode.height, false);
             self.next_mode = try nativeMode(job.mode, output.mode.pipe, assignment.bits_per_color, self.previous[0].mc_address);
             self.next_mode.flags |= output.mode.flags & 1;
+            if (self.next_mode.flags & 1 != 0) {
+                const hdmi: *@import("hdmi_runtime.zig").Runtime = @ptrFromInt(core.hdmi_allocation.cpu_address);
+                if (!hdmi.receiver.valid or hdmi.connection.phase != .connected or !std.meta.eql(hdmi.output, output.output)) return error.Stale;
+                const selected = try colors.timing(&hdmi.receiver.report, self.next_mode);
+                self.next_signal = if (extension) |value| try colors.color.requestedSignal(value.signal)
+                    else colors.defaultSignal(&hdmi.receiver.report, selected);
+                _ = try colors.hdmiPlan(&hdmi.receiver.report, selected, self.next_signal, hdmi.receiver.max_tmds_hz);
+            } else {
+                self.next_signal = if (extension) |value| try colors.color.requestedSignal(value.signal) else colors.sdr;
+                // eDP stream owner currently implements SDR RGB6/8 only.
+                if (!std.meta.eql(self.next_signal, colors.sdr) or (extension != null and self.next_mode.flags & 8 != 0)) return error.Unsupported;
+            }
+            self.implicit_limited = extension == null and self.next_signal.range == .limited;
+            self.shape = try buffers.Shape.encoded(job.mode.width, job.mode.height, colors.format(self.next_signal));
+            if (self.next_signal.bpc == 10) self.next_mode.flags |= 16;
             self.index = 0; self.phase = .allocate;
         } else {
             const pending = self.pending orelse return error.Stale;
             if (job.ticket != pending.ticket or job.sequence <= self.last_sequence or
                 !std.meta.eql(job.assignment, pending.assignment) or !std.meta.eql(job.mode, pending.mode) or
                 !std.meta.eql(job.reference, pending.reference)) return error.Stale;
+            if ((extension == null) != (self.extension == null)) return error.Stale;
+            if (extension) |value| if (!std.meta.eql(value.signal, self.extension.?.signal) or !std.meta.eql(value.reference, self.extension.?.reference)) return error.Stale;
             if (job.operation == a.gfx_mode_operation_confirm) {
                 self.next_bank = self.active_bank;
                 self.phase = .retire_previous;
             } else if (job.operation == a.gfx_mode_operation_rollback) {
-                self.next_bank = 1 - self.active_bank; self.next_mode = self.previous_mode;
-                self.shape = self.previous[0].shape; self.phase = .plan;
+                self.extension = extension;
+            self.next_bank = 1 - self.active_bank; self.next_mode = self.previous_mode;
+                self.shape = self.previous[0].shape; self.next_signal = self.previous_signal orelse colors.sdr; self.phase = .plan;
             } else return error.Invalid;
         }
         self.last_sequence = job.sequence;
@@ -182,14 +218,22 @@ pub const Owner = struct {
             .allocate => {
                 const frame = self.banks[self.next_bank][self.index];
                 try frame.allocate(output.native.?.memory.?, self.shape, output.slot_base + @as(u8, self.next_bank) * 4 + self.index);
-                self.phase = .publish_buffer;
+                self.phase = if (self.implicit_limited) .pattern else .publish_buffer;
+            },
+            .pattern => {
+                if (try self.pattern.step(output.native.?.memory.?.memory.?, self.job.?.reference, self.banks[self.next_bank][self.index])) self.phase = .publish_buffer;
             },
             .publish_buffer => {
-                try self.banks[self.next_bank][self.index].publishGpuTarget();
-                if (self.index == 0) { self.index = 1; self.phase = .allocate; } else self.phase = .copy;
+                if (self.implicit_limited) try self.banks[self.next_bank][self.index].publish()
+                else try self.banks[self.next_bank][self.index].publishGpuTarget();
+                if (self.index == 0) { self.index = 1; self.phase = .allocate; } else self.phase = if (self.implicit_limited) .pattern_close else .copy;
+            },
+            .pattern_close => {
+                if (!self.pattern.close()) return;
+                self.next_mode.mc_address = self.banks[self.next_bank][0].mc_address; self.phase = .plan;
             },
             .copy => {
-                try self.copy.begin(output.engine.?, self.banks[self.next_bank], self.job.?.reference, self.job.?.deadline_ns);
+                try self.copy.begin(output.engine.?, self.banks[self.next_bank], if (self.extension) |value| value.reference else self.job.?.reference, self.job.?.deadline_ns);
                 self.phase = .copy_wait;
             },
             .copy_wait => {
@@ -211,7 +255,7 @@ pub const Owner = struct {
                 const image = try frames[0].scanout();
                 self.hardware_armed = true;
                 try core.applyMode(.{ .mode = self.next_mode, .epoch = self.next_epoch, .image = image,
-                    .sequence = core.scanoutFor(output.epoch).sequence + 1, .deadline_ns = self.job.?.deadline_ns });
+                    .sequence = core.scanoutFor(output.epoch).sequence + 1, .deadline_ns = self.job.?.deadline_ns, .signal = self.next_signal });
                 self.phase = .apply_wait;
             },
             .apply_wait => {
@@ -222,6 +266,7 @@ pub const Owner = struct {
                 const frames = if (rollback) self.previous else self.banks[self.next_bank];
                 try output.present.?.rebind(frames, self.next_epoch, output.target, receipt);
                 output.frames = frames; output.mode = self.next_mode; output.shape = self.shape; output.epoch = self.next_epoch;
+                output.signal = if (rollback) self.previous_signal else self.next_signal;
                 self.active_bank = self.next_bank;
                 if (rollback) self.phase = .retire_previous else {
                     self.pending = self.job;
@@ -242,7 +287,7 @@ pub const Owner = struct {
                 self.phase = .reply;
             },
             .reject_cleanup => {
-                if (!self.copy.close()) return;
+                if (!self.copy.close() or !self.pattern.close()) return;
                 for (self.banks[1 - self.active_bank]) |frame| if (!frame.close(true)) return;
                 self.phase = .reply;
             },
@@ -260,7 +305,7 @@ pub const Owner = struct {
     /// common reset owner separately releases its borrowed source references.
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0) return true;
-        if (self.self_address != @intFromPtr(self) or !self.copy.close()) return false;
+        if (self.self_address != @intFromPtr(self) or !self.copy.close() or !self.pattern.close()) return false;
         for (self.banks) |bank| for (bank) |frame| if (!frame.close(true)) return false;
         return true;
     }

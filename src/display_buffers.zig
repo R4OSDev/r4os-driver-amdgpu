@@ -22,6 +22,10 @@ pub const Shape = struct {
         return .{ .width = width, .height = height, .pitch = @intCast(pitch), .bytes = bytes,
             .format = if (cursor) a.gfx_buffer_format_argb8888 else a.gfx_buffer_format_xrgb8888 };
     }
+    pub fn encoded(width: u32, height: u32, format: u32) !Shape {
+        if (format != a.gfx_buffer_format_xrgb8888 and format != a.gfx_buffer_format_xrgb2101010 and format != a.gfx_buffer_format_argb8888) return error.Invalid;
+        var shape = try make(width, height, format == a.gfx_buffer_format_argb8888); shape.format = format; return shape;
+    }
     pub fn descriptor(self: Shape, memory: *const mem.Owner) a.GfxBufferDescriptor {
         return .{ .width = self.width, .height = self.height, .byte_length = self.bytes, .format = self.format, .plane_count = 1,
             .plane_pitches = .{ self.pitch, 0, 0, 0 }, .usage = a.gfx_buffer_usage_scanout | a.gfx_buffer_usage_transfer_source | a.gfx_buffer_usage_transfer_target,
@@ -47,7 +51,7 @@ pub const Image = struct {
     pub fn allocate(self: *Image, memory: *mem.Owner, shape: Shape, slot: u8) !void {
         if (self.self_address != 0 or slot >= 16 or memory.self_address != @intFromPtr(memory) or !memory.prepared or
             memory.engine_users == std.math.maxInt(u32) or !memory.controller.enabled or memory.controller.epoch != memory.epoch) return error.State;
-        if (!std.meta.eql(shape, try Shape.make(shape.width, shape.height, shape.format == a.gfx_buffer_format_argb8888))) return error.Invalid;
+        if (!std.meta.eql(shape, try Shape.encoded(shape.width, shape.height, shape.format))) return error.Invalid;
         const map = memory.layout.?;
         const va: l.Span = .{ .offset = gpu_base + @as(u64, slot) * max_bytes, .bytes = shape.bytes };
         if (va.overlaps(map.mc) or va.overlaps(map.gart)) return error.Invalid;
@@ -84,13 +88,14 @@ pub const Image = struct {
     }
     /// Initial additional output is black until its first composed frame.
     /// Keep the same bounded row work and no uninitialized scanout padding.
-    pub fn clear(self: *Image) !bool {
+    pub fn clear(self: *Image) !bool { return self.clearColor(0); }
+    pub fn clearColor(self: *Image, pixel: u32) !bool {
         if (self.self_address != @intFromPtr(self) or self.initialized or self.reachable or self.ready or self.window.value.cpu_address == 0) return error.State;
         const target: [*]volatile u8 = @ptrFromInt(self.window.value.cpu_address);
         const begin = @as(usize, self.copied) * self.shape.pitch;
         const stop = @min(self.shape.height, self.copied + @max(@as(u32, 1), (256 * 1024) / self.shape.pitch));
         const end = if (stop == self.shape.height) self.shape.bytes else @as(u64, stop) * self.shape.pitch;
-        for (begin..@intCast(end)) |i| target[i] = 0;
+        for (begin..@intCast(end)) |i| target[i] = @truncate(pixel >> @as(u5, @intCast((i % 4) * 8)));
         self.copied = stop;
         if (stop != self.shape.height) return false;
         try self.memory.?.registers.barrier(); self.initialized = true; return true;

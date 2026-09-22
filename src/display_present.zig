@@ -14,7 +14,7 @@ pub const Plan = struct {
     source: u64, target: u64, row_bytes: u64, rows: u32, source_pitch: u64, target_pitch: u64, preserve: bool,
     pub fn make(input: a.GfxDriverJob, source: a.GfxBufferDescriptor, target: buffers.Shape) !Plan {
         if (!supports(input.operation) or source.version != 1 or source.size < @sizeOf(a.GfxBufferDescriptor) or
-            source.width != target.width or source.height != target.height or source.format != a.gfx_buffer_format_xrgb8888 or
+            source.width != target.width or source.height != target.height or source.format != target.format or (target.format != a.gfx_buffer_format_xrgb8888 and target.format != a.gfx_buffer_format_xrgb2101010) or
             source.modifier != 0 or source.plane_count != 1 or source.plane_offsets[0] != 0 or
             source.usage & a.gfx_buffer_usage_transfer_source == 0 or source.byte_length == 0 or source.byte_length > buffers.max_bytes or
             input.target_buffer.id != 0 or input.target_buffer.generation != 0 or input.target_offset != 0 or input.target_pitch != 0 or

@@ -72,7 +72,7 @@ enum bp_result r4dcn_hdmi_encoder(struct dc_bios *bios,struct bp_encoder_control
   ctl->enable_dp_audio || ctl->pixel_clock<10000 || ctl->pixel_clock>340000)return BP_RESULT_UNSUPPORTED;
  struct dig_encoder_stream_setup_parameters_v1_5 p={.digid=ctl->engine_id-ENGINE_ID_DIGA,
   .action=ATOM_ENCODER_CMD_STREAM_SETUP,.digmode=ATOM_ENCODER_MODE_HDMI,.lanenum=4,
-  .pclk_10khz=ctl->pixel_clock/10,.bitpercolor=PANEL_8BIT_PER_COLOR};
+  .pclk_10khz=ctl->pixel_clock/10,.bitpercolor=d->streams[l->hdmi_pipe].timing.display_color_depth==COLOR_DEPTH_101010?PANEL_10BIT_PER_COLOR:PANEL_8BIT_PER_COLOR};
  uint32_t words[sizeof(p)/4];memcpy(words,&p,sizeof(p));
  unsigned cmd=offsetof(struct atom_master_list_of_command_functions_v2_1,digxencodercontrol)/2;
  if(l->atom.execute(l->atom.context,cmd,words,ARRAY_SIZE(words))) {d->fault=R4DCN_IO;return BP_RESULT_FAILURE;}
@@ -117,12 +117,16 @@ int r4dcn_hdmi_edid(void *storage,uint32_t index,uint32_t block,uint8_t data[128
  r4dcn_leave(d);return result;
 }
 int r4dcn_hdmi_configure(void *storage,uint32_t index,uint32_t pipe,const uint8_t avi[17]){
+ return r4dcn_hdmi_color_configure(storage,index,pipe,avi,NULL);
+}
+int r4dcn_hdmi_color_configure(void *storage,uint32_t index,uint32_t pipe,const uint8_t avi[17],const uint8_t hdr[30]){
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  struct r4dcn_link *l=link(d,index);unsigned sum=0;
  if(avi)for(unsigned i=0;i<17;i++)sum+=avi[i];
+ unsigned hsum=0;if(hdr)for(unsigned i=0;i<30;i++)hsum+=hdr[i];
  if(!l || !l->i2c_ready || !l->initialized || !avi || pipe>=4 || !(d->mask&(1u<<pipe)) || !d->prepared || d->fault)result=R4DCN_STATE;
- else if(avi[0]!=0x82 || avi[1]!=2 || avi[2]!=13 || sum%256 || avi[4]&0xe0 ||
-  d->streams[pipe].signal!=SIGNAL_TYPE_HDMI_TYPE_A || d->streams[pipe].timing.pix_clk_100hz>3400000)result=R4DCN_INVALID;
+ else if((hdr && (hdr[0]!=0x87 || hdr[1]!=1 || hdr[2]!=26 || hsum%256 || hdr[4]>3 || hdr[5])) || avi[0]!=0x82 || avi[1]!=2 || avi[2]!=13 || sum%256 || avi[4]&0xe0 ||
+  d->streams[pipe].signal!=SIGNAL_TYPE_HDMI_TYPE_A || (uint64_t)d->streams[pipe].timing.pix_clk_100hz*(d->streams[pipe].timing.display_color_depth==COLOR_DEPTH_101010?10:8)>3400000ull*8)result=R4DCN_INVALID;
  else if(l->enabled || dcn10_is_dig_enabled(&l->encoder.base) ||
    rd(d,tg_regs[pipe].OTG_CONTROL)&(OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK|OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK))result=R4DCN_STATE;
  else {
@@ -130,7 +134,7 @@ int r4dcn_hdmi_configure(void *storage,uint32_t index,uint32_t pipe,const uint8_
   l->hdmi_configured=0;l->hdmi_pipe=pipe;
   dcn10_link_encoder_setup(&l->encoder.base,SIGNAL_TYPE_HDMI_TYPE_A);
   enc->funcs->dig_connect_to_otg(enc,pipe);
-  enc->funcs->hdmi_set_stream_attribute(enc,&d->streams[pipe].timing,d->streams[pipe].timing.pix_clk_100hz/10,false);
+  enc->funcs->hdmi_set_stream_attribute(enc,&d->streams[pipe].timing,d->streams[pipe].phy_pix_clk,false);
   if(!d->fault) {
    enc->funcs->set_avmute(enc,true);
    /* HDMI1.4 has no SCDC/scrambler, including the exact 340MHz boundary. */
@@ -142,6 +146,10 @@ int r4dcn_hdmi_configure(void *storage,uint32_t index,uint32_t pipe,const uint8_
    struct encoder_info_frame frames={0};frames.avi.valid=true;
    frames.avi.hb0=avi[0];frames.avi.hb1=avi[1];frames.avi.hb2=avi[2];
    memcpy(frames.avi.sb,&avi[3],14);
+   /* Explicit SDR packet clears a previous HDR state, including rollback. */
+   frames.hdrsmd.valid=true;frames.hdrsmd.hb0=0x87;frames.hdrsmd.hb1=1;frames.hdrsmd.hb2=26;
+   if(hdr)memcpy(frames.hdrsmd.sb,&hdr[3],27);
+   else frames.hdrsmd.sb[0]=(uint8_t)(0-0x87-1-26);
    enc->funcs->update_hdmi_info_packets(enc,&frames);
    if(!d->fault)l->hdmi_configured=1;
   }
@@ -153,7 +161,7 @@ int r4dcn_hdmi_enable(void *storage,uint32_t index){
  if(!l || !l->hdmi_configured || !d->programmed || l->enabled || d->fault)result=R4DCN_STATE;
  else {
   l->enabled=1;
-  dcn10_link_encoder_enable_tmds_output(&l->encoder.base,CLOCK_SOURCE_COMBO_PHY_PLL0+l->route.phy,COLOR_DEPTH_888,SIGNAL_TYPE_HDMI_TYPE_A,d->streams[l->hdmi_pipe].timing.pix_clk_100hz/10);
+  dcn10_link_encoder_enable_tmds_output(&l->encoder.base,CLOCK_SOURCE_COMBO_PHY_PLL0+l->route.phy,d->streams[l->hdmi_pipe].timing.display_color_depth,SIGNAL_TYPE_HDMI_TYPE_A,d->streams[l->hdmi_pipe].phy_pix_clk);
  }
  if(d->fault)result=d->fault;r4dcn_leave(d);return result;
 }

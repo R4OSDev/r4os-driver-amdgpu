@@ -261,6 +261,6 @@
       "owner_source": true
     }
   ],
-  "followup": "0.80.21 extended color; 0.80.22 HDMI audio; 0.80.34 dynamic power; physical evidence only 0.80.39",
+  "followup": "0.80.22 HDMI audio; 0.80.34 dynamic power; physical evidence only 0.80.39",
   "scope": "Original DCN1 frontend/DML, AUX/panel, clocks, SST, scanout/flip/cursor and HDMI/I2C/stream encoders. Native eDP takeover and complete boot reconstruction use the common display contract. Joint DML admits active eDP/HDMI heads with independent native presentation, mode and retirement owners. No Linux runtime."
 }

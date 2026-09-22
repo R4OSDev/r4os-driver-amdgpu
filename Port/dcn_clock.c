@@ -23,7 +23,7 @@
  *
  */
 /* Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0 */
-/* Internal-reference RGB8 subset of command_table2.c:set_pixel_clock_v7.
+/* Internal-reference RGB8/10 subset of command_table2.c:set_pixel_clock_v7.
  * PLL/DTO decisions and deep-color resync use the original clock source TU. */
 #include "dcn_internal.h"
 #include "dcn_clock_tables.h"
@@ -40,7 +40,9 @@ static enum bp_result pixel_clock(struct dc_bios *bios,struct bp_pixel_clock_par
  command.pixclk_100hz=p->target_pixel_clock_100hz;
  command.crtc_id=p->controller_id-CONTROLLER_ID_D0;
  command.encoder_mode=p->signal_type==SIGNAL_TYPE_HDMI_TYPE_A?ATOM_ENCODER_MODE_HDMI:ATOM_ENCODER_MODE_DP;
- command.deep_color_ratio=0; /* RGB8, no deep-color ratio. */
+ /* dce112 keeps the BIOS ratio disabled and programs the actual 5:4 DTO
+  * directly through PHYPLL*_PIXCLK_RESYNC_CNTL after this callback. */
+ command.deep_color_ratio=PIXEL_CLOCK_V7_DEEPCOLOR_RATIO_DIS;
  if(p->pll_id==CLOCK_SOURCE_ID_DP_DTO && p->signal_type==SIGNAL_TYPE_EDP)command.pll_id=ATOM_DP_DTO;
  else if(p->pll_id==CLOCK_SOURCE_COMBO_PHY_PLL0+l->route.phy && p->signal_type==SIGNAL_TYPE_HDMI_TYPE_A)
   command.pll_id=ATOM_COMBOPHY_PLL0+l->route.phy;
@@ -116,6 +118,9 @@ int r4dcn_pixel_clock_program(void *storage,uint32_t index,uint32_t pipe) {
    struct pixel_clk_params params={.requested_pix_clk_100hz=s->timing.pix_clk_100hz,.signal_type=s->signal,
     .controller_id=CONTROLLER_ID_D0+pipe,.color_depth=s->timing.display_color_depth,.encoder_object_id=l->encoder.base.id};
    struct pll_settings pll={.actual_pix_clk_100hz=s->timing.pix_clk_100hz,.use_external_clk=false};
+   /* ATOM consumes the physical clock, already adjusted by 5/4 for RGB10. */
+   if(s->signal==SIGNAL_TYPE_HDMI_TYPE_A && s->timing.display_color_depth==COLOR_DEPTH_101010)
+    pll.actual_pix_clk_100hz=(uint32_t)(((uint64_t)s->timing.pix_clk_100hz*5+3)/4);
    l->clock_attempted=1;l->clock_pipe=pipe;
    if(!l->clock.base.funcs->program_pix_clk(&l->clock.base,&params,DP_8b_10b_ENCODING,&pll))result=R4DCN_IO;
   }

@@ -19,6 +19,7 @@ pub const Runtime = struct {
     connection: hotplug.Connection = .{},
     initialized: bool = false,
     configured: bool = false,
+    signal: ?@import("display_color.zig").color.Signal = null,
     clock_bound: bool = false,
     dprefclk_khz: u32 = 0,
     activation_attempted: bool = false,
@@ -107,9 +108,14 @@ pub const Runtime = struct {
                     .clock_hz = @as(u64, mode.pixel_khz) * 1000, .flags = mode.flags & 6 };
                 var known: ?hdmi.edid.timing.Timing = null;
                 for (self.receiver.report.modes[0..self.receiver.report.mode_count]) |candidate| if (candidate.sameMode(timing)) { known = candidate; break; };
-                const avi = try self.receiver.avi(known orelse return error.Unsupported);
+                const colors = @import("display_color.zig");
+                const selected = known orelse return error.Unsupported;
+                const signal = self.signal orelse colors.defaultSignal(&self.receiver.report, selected);
+                if ((mode.flags & 16 != 0) != (signal.bpc == 10)) return error.Invalid;
+                const plan = colors.hdmiPlan(&self.receiver.report, selected, signal, self.receiver.max_tmds_hz) catch return error.Unsupported;
+                const avi = colors.avi(&self.receiver.report, selected, signal, self.receiver.max_tmds_hz) catch return error.Unsupported;
                 self.configured = false;
-                try checked(c.r4dcn_hdmi_configure(self.storage, index, mode.pipe, &avi));
+                try checked(c.r4dcn_hdmi_color_configure(self.storage, index, mode.pipe, &avi, if (plan.metadata_bytes == 30) plan.metadata[0..30].ptr else null));
                 self.configured = true;
             },
             .enable, .show => {

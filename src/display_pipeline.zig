@@ -142,6 +142,7 @@ pub const Owner = struct {
         if (primary) {
             try panel_runtime.run(.clock, 0); try panel_runtime.run(.stream_configure, 0); try panel_runtime.run(.train, 0);
         } else {
+            hdmi_runtime.?.signal = request.signal;
             try hdmi_runtime.?.run(.clock, selected); try hdmi_runtime.?.run(.configure, selected); try hdmi_runtime.?.run(.enable, selected);
         }
         life.* = .{};

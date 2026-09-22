@@ -101,9 +101,7 @@ pub const Receiver = struct {
             mode.clock_hz % 1000 != 0 or mode.clock_hz < 10_000_000 or mode.clock_hz > self.max_tmds_hz or
             mode.width > 4096 or mode.height > 4096 or mode.h_total > 8192 or mode.v_total > 8192 or mode.vic > 127 or
             mode.h_start == mode.width or mode.v_start == mode.height) return false;
-        // This stage programs full-range RGB8. CTA limited-range/color
-        // transformation belongs to /21; never advertise a contradictory AVI.
-        if (mode.vic > 1 and !self.report.rgb_quantization_selectable) return false;
+        // Range is selected jointly with pixel conversion and AVI in /21.
         for (self.report.modes[0..self.report.mode_count]) |known| {
             if (known.vic == mode.vic and known.sameMode(mode) and known.flags & (edid.timing.y420_only | edid.timing.incomplete | edid.timing.interlaced) == 0) return true;
         }
@@ -119,16 +117,10 @@ pub const Receiver = struct {
     }
     pub fn avi(self: *const Receiver, mode: edid.timing.Timing) Error![17]u8 {
         if (!self.admits(mode)) return error.Unsupported;
-        var packet: [17]u8 = @splat(0);
-        packet[0..3].* = .{ 0x82, 2, 13 };
-        // RGB, no active-format claim, no invented aspect/overscan metadata.
-        packet[6] = if (self.report.rgb_quantization_selectable) 2 << 2 else 0;
-        packet[7] = @intCast(mode.vic);
-        var sum: u8 = 0;
-        for (packet) |byte| sum +%= byte;
-        packet[3] = 0 -% sum;
-        return packet;
+        const colors = @import("display_color.zig");
+        return colors.avi(&self.report, mode, colors.defaultSignal(&self.report, mode), self.max_tmds_hz) catch return error.Unsupported;
     }
+
     /// Copied common metadata for DISPLAYD and the /18 output owner. IDs are
     /// stable within this capture; only admitted complete timings enter it.
     pub fn describe(self: *const Receiver, connector: u32, out: *@import("r4os").abi.GfxReceiverInfo) Error!void {

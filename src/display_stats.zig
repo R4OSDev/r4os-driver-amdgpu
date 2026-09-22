@@ -11,6 +11,7 @@ pub const Owner = struct {
     info_disabled: bool = false,
     pub fn publish(self: *Owner, output: anytype) void {
         if (!output.callback_confirmed or output.initial_receipt == null) return;
+        output.color.publish(output);
         const p = output.present.?;
         const receipt = p.receipt orelse output.initial_receipt.?;
         const failed = output.failure != null or p.failed_output;
@@ -37,9 +38,9 @@ pub const Owner = struct {
         var info: a.DisplayPresentationInfo = .{
             .backend = output.engine.?.binding, .head_id = output.mode.pipe, .display_generation = output.epoch.display,
             .sequence = if (self.info) |last| last.sequence else 0,
-            .flags = a.display_presentation_info_native | a.display_presentation_info_synchronized | a.display_presentation_info_visibility |
+            .flags = a.display_presentation_info_native | a.display_presentation_info_synchronized | a.display_presentation_info_visibility | a.display_presentation_info_system_source |
                 @as(u32, if (failed) a.display_presentation_info_lost else a.display_presentation_info_active),
-            .width = output.mode.width, .height = output.mode.height, .format = a.gfx_buffer_format_xrgb8888,
+            .width = output.mode.width, .height = output.mode.height, .format = output.shape.format,
             .policies = 3, .buffer_count = 2, .plane_count = 1, .path = 1,
             .interval_ns = @as(u64, output.mode.h_total) * output.mode.v_total * 1_000_000 / output.mode.pixel_khz,
             .observed_sequence = receipt.frame, .observed_ns = receipt.observed_ns,

@@ -21,7 +21,7 @@ struct r4dcn_io {
 };
 struct r4dcn_mode {
  uint32_t width,height,h_total,v_total,h_front,h_sync,v_front,v_sync;
- uint32_t pixel_khz,pitch_bytes,pipe,flags; /* bit0 HDMI, bit1/2 positive H/V, bit3 RGB6 eDP */
+ uint32_t pixel_khz,pitch_bytes,pipe,flags; /* bit0 HDMI, bit1/2 positive H/V, bit3 RGB6 eDP, bit4 XR30/RGB10 HDMI */
  uint64_t mc_address,buffer_bytes;
 };
 struct r4dcn_limits {
@@ -92,6 +92,7 @@ int r4dcn_dp_stream_stop(void *,uint32_t);
 int r4dcn_hdmi_bind(void *,uint32_t,uint32_t crystal_khz);
 int r4dcn_hdmi_edid(void *,uint32_t,uint32_t block,uint8_t data[128]);
 int r4dcn_hdmi_configure(void *,uint32_t,uint32_t pipe,const uint8_t avi[17]);
+int r4dcn_hdmi_color_configure(void *,uint32_t,uint32_t pipe,const uint8_t avi[17],const uint8_t hdr[30]);
 int r4dcn_hdmi_enable(void *,uint32_t);
 int r4dcn_hdmi_mute(void *,uint32_t,uint32_t mute);
 int r4dcn_hdmi_stopped(void *,uint32_t,uint32_t *stopped);
