@@ -26,21 +26,23 @@ const c = @import("start_common.zig");
 const r = @import("start_registers.zig");
 pub const Error = c.Error;
 pub const Mailbox = struct {
-    active: bool = false, message: u32 = 0, response: u32 = 0, argument: u32 = 0,
+    active: bool = false, sent: bool = false, message: u32 = 0, response: u32 = 0, argument: u32 = 0,
     deadline: c.Deadline = .{},
     pub fn begin(self: *Mailbox, io: anytype, message: u32, argument: ?u32) Error!void {
         if (self.active) return error.Busy;
         // A zero response still belongs to the previous request. Never erase it.
         if (try c.read(io, r.smu.MP1_SMN_C2PMSG_90) == 0) return error.Busy;
         try self.deadline.start(io.nowNs(), 500_000_000, 0);
+        self.message = message; self.response = 0; self.active = true; self.sent = false;
         try io.write(r.smu.MP1_SMN_C2PMSG_90, 0);
+        if (try c.read(io, r.smu.MP1_SMN_C2PMSG_90) != 0) return error.Unconfirmed;
         if (argument) |value| try io.write(r.smu.MP1_SMN_C2PMSG_82, value);
-        self.message = message; self.response = 0; self.active = true;
         try io.barrier(); try io.write(r.smu.MP1_SMN_C2PMSG_66, message);
+        self.sent = true;
         _ = try io.read(r.smu.MP1_SMN_C2PMSG_66);
     }
     pub fn poll(self: *Mailbox, io: anytype, cleanup: bool) Error!bool {
-        if (!self.active) return error.State;
+        if (!self.active or !self.sent) return error.State;
         // Cleanup may observe a late response but never resubmits the message.
         if (!cleanup) _ = try self.deadline.check(io.nowNs());
         const value = try c.read(io, r.smu.MP1_SMN_C2PMSG_90);

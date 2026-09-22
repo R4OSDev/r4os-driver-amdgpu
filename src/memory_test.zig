@@ -141,6 +141,7 @@ const F = struct {
     var table: [l.table_bytes / 8]u64 align(4096) = undefined;
     var contexts: [2 * 1024 * 1024 / 8]u64 align(4096) = undefined;
     var render_data: [65536]u8 align(4096) = undefined;
+    var frame_data: [65536]u8 align(4096) = undefined;
     var cpu: [8192]u8 align(4096) = undefined;
     var cpu_live = false;
     var shared = false;
@@ -204,7 +205,7 @@ const F = struct {
     }
     fn mapWindow(req: *const a.GfxMmioRequest, out: *a.GfxMmioWindow) callconv(.c) i32 {
         if (map_fail) return -6;
-        const address: usize = if (req.resource_base == 0xf0000000) @intFromPtr(&regs) else if (req.byte_offset == layout.tables.span.offset) @intFromPtr(&table) else if (req.byte_offset == layout.render.span.offset) @intFromPtr(&render_data) else @intFromPtr(&contexts);
+        const address: usize = if (req.resource_base == 0xf0000000) @intFromPtr(&regs) else if (req.byte_offset == layout.tables.span.offset) @intFromPtr(&table) else if (req.byte_offset == layout.render.span.offset) @intFromPtr(&render_data) else if (req.byte_offset == layout.contexts.span.offset) @intFromPtr(&contexts) else @intFromPtr(&frame_data);
         windows += 1;
         out.* = .{ .handle = .{ .id = @intCast(windows), .generation = 19 }, .cpu_address = address, .physical_address = req.resource_base + req.byte_offset, .byte_length = req.byte_length, .cache_policy = req.cache_policy };
         return 1;
@@ -546,6 +547,7 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
 }
 
 test "AMD actual memory facades retain SG/UMA backing until fence and both TLB acknowledgements" {
+    try DisplayBuffers.check();
     F.reset();
     try F.prepare();
     try t.expectEqual(@as(usize, 3), F.windows);
@@ -632,3 +634,72 @@ test "AMD actual memory facades retain SG/UMA backing until fence and both TLB a
     memory.table = table;
     try t.expectEqual(a.err_no_fn, memory.reservedSpan(1, 1));
 }
+
+const DisplayBuffers = struct {
+    const buffers = @import("display_buffers.zig");
+    var image: buffers.Image = .{};
+    fn check() !void {
+        const gate: hubs.Gate = .{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true };
+        F.reset(); try F.prepare();
+        F.regs[r.gfx.VM_INVALIDATE_ENG17_ACK / 4] = 3; F.regs[r.mm.VM_INVALIDATE_ENG17_ACK / 4] = 3;
+        try F.owner.enable(gate);
+        const shape = try buffers.Shape.make(17, 17, false);
+        try t.expect(shape.pitch == 256 and shape.bytes == 8192);
+        const Present = @import("display_present.zig");
+        const source_desc: a.GfxBufferDescriptor = .{ .width = 17, .height = 17, .format = a.gfx_buffer_format_xrgb8888, .plane_count = 1,
+            .plane_pitches = .{68, 0, 0, 0}, .byte_length = 68 * 17, .usage = a.gfx_buffer_usage_transfer_source };
+        var upload: a.GfxDriverJob = .{ .operation = a.gfx_queue_operation_upload, .source_offset = 68 * 4 + 12, .byte_length = 68 * 2 + 20 };
+        const damage = try Present.Plan.make(upload, source_desc, shape);
+        try t.expect(damage.preserve and damage.row_bytes == 20 and damage.rows == 3 and damage.target == 256 * 4 + 12);
+        upload.source_offset = 64; upload.byte_length = 8;
+        try t.expectError(error.Invalid, Present.Plan.make(upload, source_desc, shape));
+        upload.source_offset = 0; upload.byte_length = 68 * 17;
+        try t.expect(!(try Present.Plan.make(upload, source_desc, shape)).preserve);
+        upload.operation = a.gfx_queue_operation_present; upload.row_count = 17; upload.source_pitch = 68; upload.byte_length = 68;
+        try t.expect(!(try Present.Plan.make(upload, source_desc, shape)).preserve);
+
+        try image.allocate(&F.owner, shape, 0);
+        try t.expect(F.owner.engine_users == 1 and F.native_refs == 1 and F.charged == 8192);
+        const snapshot: @import("boot_snapshot.zig").Snapshot = .{ .valid = true, .effects = true, .held_generation = 4,
+            .boot = .{ .width = 17, .height = 17, .pitch = 72, .format = a.gfx_buffer_format_xrgb8888 },
+            .read = .{ .lease = .{ .id = 20, .generation = 19 }, .cpu_address = @intFromPtr(&F.cpu), .byte_length = F.cpu.len } };
+        try t.expect(try image.copyBoot(&snapshot));
+        try t.expectEqual(@as(u8, 255), F.frame_data[16 * 256 + 67]);
+        try t.expectEqual(@as(u8, 0), F.frame_data[16 * 256 + 68]);
+        try t.expect(std.mem.allEqual(u8, F.frame_data[17 * 256 .. 8192], 0));
+        F.release_fail = true;
+        try t.expectError(error.Busy, image.publish());
+        try t.expect(image.window.value.handle.id != 0 and image.map.self_address == 0);
+        F.release_fail = false;
+        try image.publish();
+        try t.expect(F.native_refs == 2 and F.gpu and F.owner.mapping_users == 1);
+        const frame = try image.scanout();
+        try t.expectEqual(F.ticket.reference, frame.reference);
+        try t.expectEqual(F.layout.mc.offset + (try F.owner.backing(F.ticket.buffer)).offset - F.layout.physical.offset, frame.address);
+        try t.expect(!image.close(false));
+        const fence: a.GfxFence = .{ .adapter_id = 7, .timeline = 99, .point = 3, .device_generation = 11, .reset_generation = 5 };
+        try image.map.retain(fence);
+        try t.expect(!image.close(true)); // Stopped scanout cannot retire a live SDMA transfer.
+        try image.map.complete(fence);
+        F.regs[r.mm.VM_INVALIDATE_ENG17_ACK / 4] = 0;
+        try t.expect(!image.close(true));
+        try t.expect(F.native_refs == 2 and F.gpu and F.charged == 8192);
+        F.regs[r.mm.VM_INVALIDATE_ENG17_ACK / 4] = 3;
+        try t.expect(image.close(true));
+        try t.expect(F.owner.engine_users == 0 and F.owner.mapping_users == 0 and F.native_refs == 0 and F.charged == 0);
+        const cursor = try buffers.Shape.make(3, 2, true);
+        try image.allocate(&F.owner, cursor, 4);
+        try image.copyCursor(&.{0xff010203, 0x80010203, 0, 4, 5, 6});
+        try t.expectEqual(@as(u32, 0xff010203), std.mem.readInt(u32, F.frame_data[0..4], .little));
+        try t.expectEqual(@as(u32, 6), std.mem.readInt(u32, F.frame_data[264..268], .little));
+        try t.expect(std.mem.allEqual(u8, F.frame_data[268..4096], 0));
+        try image.publish(); _ = try image.scanout();
+        try t.expect(image.close(true));
+        var shadow: buffers.Shadow = .{};
+        try shadow.create(F.owner.memory.?, 32, 64);
+        try t.expect(shadow.ready and F.descriptor.location == a.gfx_buffer_location_system and F.descriptor.adapter_id == 0 and
+            F.descriptor.plane_pitches[0] == 128 and F.descriptor.usage & a.gfx_buffer_usage_transfer_source != 0);
+        F.release_fail = true; try t.expect(!shadow.close()); F.release_fail = false; try t.expect(shadow.close());
+        try t.expect(F.owner.close(gate));
+    }
+};

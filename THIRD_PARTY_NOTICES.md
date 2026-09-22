@@ -146,3 +146,20 @@ and permits release_engine. It does not swallow MMIO faults or emulate an ACK.
 The original source bytes remain unchanged and both patches are catalogued.
 The existing legal exporter includes all 301 source notices, the original
 MIT text and unchanged firmware licenses in the Distribution.
+
+
+## HDMI, clock and presentation integration (0.80.17 / 0.80.18)
+
+The current Linux 7.2.4 catalog contains 316 unchanged, SHA256-pinned files.
+The archive compiles 29 original translation units and eight private bridges.
+Original dce_i2c_hw.c, dcn10_stream_encoder.c and dce_clock_source.c supply
+I2C, HDMI/SST stream and pixel-clock operations. The added original clock,
+HWSS, BIOS-helper and SMU10 headers retain their MIT notices and layouts.
+DCN register tables, scanout/cursor calls, clock tables and stream adaptation
+retain their AMD copyright and permissive notices. The two existing patches
+remain confined to the generated build copy; originals are never rewritten.
+
+The Zig presentation, transaction, BO, task and reset owners are original
+Apache-2.0 code. No Linux DRM, scheduler, memory manager or runtime is linked.
+The existing exporter verifies all 316 originals and exports their complete
+notices, MIT grant and unchanged firmware licensing to the Distribution.

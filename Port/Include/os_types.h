@@ -38,6 +38,8 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
 #define GFP_KERNEL 0
 #define GFP_ATOMIC 0
 #define kzalloc_obj(t,...) kzalloc(sizeof(t),GFP_KERNEL)
+#define kzalloc_objs(t,n,...) r4dcn_kzalloc_array((n),sizeof(t))
+void *r4dcn_kzalloc_array(size_t,size_t);
 #define cpu_to_le16(x) (x)
 #define cpu_to_le32(x) (x)
 #define le16_to_cpu(x) (x)

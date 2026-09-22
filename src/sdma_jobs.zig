@@ -15,6 +15,16 @@ pub const max_pages = copy.max_transfer_bytes / 4096;
 pub const resource_va: u64 = 0x4000000000;
 pub const arena_va: u64 = 0x8000000000;
 pub const Error = c.Error || copy.Error;
+/// An optional serialized display client uses the same SDMA ring and real
+/// timeline. It never owns a second queue consumer or an IRQ-side allocator.
+pub const Client = struct {
+    context: usize,
+    work: *const fn (usize) void,
+    available: *const fn (usize) bool,
+    accept: *const fn (usize, a.GfxDriverJob) bool,
+    drain: ?*const fn (usize) bool = null,
+    lost: ?*const fn (usize) void = null,
+};
 const Job = struct {
     owner: ?*Owner = null,
     fence: a.GfxFence = .{},
@@ -56,6 +66,7 @@ const Job = struct {
     }
 };
 pub const Owner = struct {
+    client: ?Client = null,
     graphics: ?*@import("gc_runtime.zig").Owner = null,
     self_address: usize = 0,
     memory: ?*mem.Owner = null,
@@ -186,12 +197,14 @@ pub const Owner = struct {
             self.gc_stop_started = true;
         }
         if (!self.gc_stop.confirmed and !(self.gc_stop.poll(&memory.registers) catch false)) return false;
+        if (self.client) |client| if (client.drain) |drain| if (!drain(client.context)) return false;
         for (&self.jobs) |*job| if (job.owner != null and job.ticket == null) {
             if (!Job.retire(@intFromPtr(job), job.fence) or runtime.queue.?.complete(&job.fence, a.gfx_queue_result_failed, 1) != 1) return false;
             job.clear();
         };
         const proof: ?q.Quiescence = if (runtime.timeline.self_address != 0) .{ .epoch = runtime.timeline.epoch, .engines = 7 } else null;
         if (!runtime.close(proof)) return false;
+        if (self.client) |client| if (client.drain) |drain| if (!drain(client.context)) return false;
         // prepare() owns the arena even before a common backend/timeline exists.
         if (!runtime.arena.close(true)) return false;
         self.engine.restoreRouting(&memory.registers) catch return false;
@@ -226,6 +239,7 @@ pub const Owner = struct {
     fn quiesce(raw: usize, epoch: q.Epoch, engines: u3) ?q.Quiescence {
         const self: *Owner = @ptrFromInt(raw);
         if (!std.meta.eql(epoch, self.runtime.?.timeline.epoch)) return null;
+        if (self.client) |client| if (client.lost) |lost| lost(client.context);
         var confirmed: u3 = 0;
         if (engines & 1 != 0 and (self.engine.stop(&self.memory.?.registers) catch false)) confirmed |= 1;
         if (engines & 6 != 0) if (self.graphics) |graphics| {
@@ -235,6 +249,7 @@ pub const Owner = struct {
     }
     fn work(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {
         const self: *Owner = @ptrFromInt(raw);
+        if (self.client) |client| client.work(client.context);
         if (self.graphics) |graphics| graphics.work();
         if (!self.registered or !self.verified or self.engine.stopping) return;
         self.engine.observe(&self.memory.?.registers) catch |err| {
@@ -256,9 +271,11 @@ pub const Owner = struct {
         // notifications coalesce; periodic polling guarantees further progress.
         if (self.engine.ring.available() < 32) return;
         if (self.graphics) |graphics| if (!graphics.renderer.available()) return;
+        if (self.client) |client| if (!client.available(client.context)) return;
         for (&self.jobs, 0..) |*job, index| if (job.owner == null) {
             var input: a.GfxDriverJob = .{};
             if (runtime.queue.?.take(&self.binding, &input) != 1) return;
+            if (self.client) |client| if (client.accept(client.context, input)) return;
             if (@import("render_jobs.zig").supports(input.operation)) if (self.graphics) |graphics| {
                 graphics.renderer.accept(input);
                 return;
@@ -277,6 +294,27 @@ pub const Owner = struct {
             };
             return;
         };
+    }
+    /// Submit an already reserved timeline/IB slot from this worker. The
+    /// caller must retain every mapping first. `armed` is latched before the
+    /// doorbell; failure after that point requires an actual stop/fence.
+    pub fn submitIndirect(self: *Owner, ticket: q.Ticket, words: []const u32, deadline: u64, armed: *bool) Error!void {
+        if (self.self_address != @intFromPtr(self) or !self.verified or !self.registered or self.engine.stopping or armed.* or
+            words.len == 0 or words.len > storage.ib_bytes / 4) return error.State;
+        const runtime = self.runtime.?;
+        const entry = try runtime.timeline.entry(ticket);
+        if (entry.phase != .reserved or entry.engine != .sdma or entry.deadline != deadline) return error.Stale;
+        const ib = try runtime.arena.ib(ticket.slot);
+        for (words, 0..) |word, i| ib[i] = word;
+        var commands: [32]u32 = undefined;
+        _ = try @import("sdma_ring.zig").frame(&commands, self.engine.ring.write,
+            arena_va + storage.ib_offset + @as(u64, ticket.slot) * storage.ib_bytes, @intCast(words.len),
+            try runtime.arena.address(storage.fence_offset + @as(usize, ticket.slot) * 8, 8), ticket.token, true);
+        if (self.memory.?.registers.nowNs() >= deadline) return error.Deadline;
+        const staged = try self.engine.ring.stage(&commands);
+        runtime.timeline.arm(ticket) catch |err| { try self.engine.ring.cancel(staged); return err; };
+        armed.* = true;
+        try self.engine.kick(&self.memory.?.registers, &runtime.arena, staged);
     }
     fn submit(self: *Owner, job: *Job, index: usize, input: a.GfxDriverJob) Error!void {
         const runtime = self.runtime.?;

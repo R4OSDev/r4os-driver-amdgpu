@@ -1,14 +1,14 @@
 ﻿# AMDGPU
 
-Version 0.1.13 adds direct HDMI1.4 DDC/TMDS/InfoFrames and generation-bound
-hotplug ownership for R4OS 0.80.17. The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.14 adds native eDP takeover, transactional modes, real scanout/flip
+and cursor receipts, and HDMI receiver service for R4OS 0.80.18. The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
 Normal `auto`/`passive` binding only captures PCI, UMA, board, firmware and
-boot-framebuffer evidence. `mode=native` remains gated until display
-integration; `IMAGE_SCOPE=none` excludes the unfinished native path from
-normal profiles. Physical laptop validation belongs exclusively to 0.80.39.
+boot-framebuffer evidence. `mode=native` starts an asynchronous owner with real firmware, engine and
+display prerequisites and bounded restoration. `IMAGE_SCOPE=none` keeps the
+in-progress driver out of normal profiles until package integration. Physical laptop validation belongs exclusively to 0.80.39.
 Host fixtures verify source formats and ownership, not execution on Picasso.
 
 The private resident native pump composes:
@@ -49,8 +49,9 @@ existing UMA budget owner. The native VA provider owns 32 bounded 64 MB
 slots, full-BO bindings, exact generation tokens and separate unmap/TLB ACKs.
 Stable YUV BO mappings survive frames. GPU command/parameter preparation
 never maps pixels to the CPU. The registered render operations become visible
-only after GC/SDMA prerequisites and shader preparation; Present stays with
-the later DCN integration. These software checks do not admit the laptop.
+only after GC/SDMA prerequisites and shader preparation. Present uses the
+common upload queue, actual SDMA copies and DCN visibility receipts after
+native takeover. These software checks do not admit the laptop.
 
 Before queue activation AMDGPU also publishes an IMAGE_V1 architecture
 record: GC/SDMA identity, verified external ASIC revision, actual post-golden
@@ -73,15 +74,16 @@ restarted after replacing their firmware.
 Build with `./Build.sh` on Linux or `Build.bat` on Windows, using PowerShell 7.
 The normal build verifies pinned originals/generated registers, runs the
 component tests and audits all sixteen unchanged firmware resources in the
-R4D container. The DCN1 archive links 28 original Linux 7.2.4 AMD DC/DML units
-and five private bridges into the R4D. The source closure contains frontend
+R4D container. The DCN1 archive links 29 original Linux 7.2.4 AMD DC/DML units
+and eight private bridges into the R4D. The source closure contains frontend
 resources, HUBP/HUBBUB/DPP/OPP/MPC/timing, request/deadline registers and
 watermarks. A heap-owned DC context runs only in a dedicated SIMD-capable
 driver Task. Planning performs no MMIO. Commit requires confirmed clocks
 and all four pipes blank/disabled; Abort retains memory until restoration ACK.
-The initial runtime retains the original boot plane. Native activation,
-pixel-clock handover, output enable and pageflip follow in 0.80.18. No activation hook is
-installed by a normal probe. The grouped host tests execute the real archive
+Native takeover holds the immutable boot pixels, plans real DML clocks,
+programs the original ATOM pixel-clock and SST paths, and waits for an actual
+frame-counter/address receipt before common commit. Abort reconstructs the
+boot mode before releasing that hold. A passive probe installs no activation hook. The grouped host tests execute the real archive
 against explicit register/Task/heap responses; they do not emulate a GPU.
 
 See workspace `Docs/Drivers/AMDGFXQueues08011.txt` and its JSON evidence,
@@ -105,7 +107,8 @@ backlight. Ordinary AUX timeouts release bus arbitration through a documented
 patch, while uncertain MMIO effects retain the owner and restoration duty.
 
 The common brightness API carries distinct intent and driver receipt serials.
-AMDGPU's private worker bridge is ready for /18 native output publication.
+AMDGPU services this bridge on the same serialized display task after
+native output publication.
 Desktop restores stable per-receiver BRIGHTNESS.R4S choices; Appearance saves
 levels and shows confirmed state. Current input/ACPI/EC paths provide no
 brightness-key event, explicitly reported by the page. Panel identity,
@@ -130,5 +133,32 @@ physical stop, completion settlement, common output withdrawal and resource
 release execute in order, with exact generation receipts and a 5s deadline.
 Busy or unsafe retirement retains resources; replacement cannot reuse old
 jobs or output identities. A disconnect during unpublished activation retains
-the restoration duty. Native run-loop activation/full restore belongs to /18.
+the restoration duty. The native run loop publishes actual common HDMI
+receiver identities, samples HPD every 100ms and rechecks EDID every 2s when
+no mode decision is pending. Active HDMI scanout and simultaneous heads
+follow in /20; the primary native output currently uses eDP.
 See Docs/Drivers/AMDHDMI08017.txt/.json for the software-only evidence.
+
+
+Transactional presentation (0.80.18)
+----------------------------------
+Only EDID timings admitted by link bandwidth and the actual DML planner enter
+the mode catalog. Apply retains both old and candidate private BO pairs until
+common confirm/rollback. Initial candidate pixels use actual SDMA jobs with
+independent internal tokens. Rollback requires a fresh mode epoch and a new
+observed scanout address/counter; a timer alone cannot complete a flip.
+
+Partial damage preserves the previous frame before updating its rectangle.
+The original DCN1 cursor is 64x64 premultiplied ARGB with bounded signed
+clipping; show follows the actual present barrier. Near-VUPDATE Busy retries
+before writes. Common completion Busy retains jobs, references and backing.
+Panel-link loss, stalled counters, uncertain writes or expired jobs trigger
+a bounded device reset and reconstruction, with all leases held until proven
+engine/scanout quiescence. HDMI, brightness and health work share one task.
+
+Presentation statistics use actual observed counter/address receipts and
+monotonic host time; refresh intervals are estimates. Host tests exercise real
+C/Zig owners against explicit software responses. They do not measure GPU
+pixels, electrical links, real VBlank, Windows execution or laptop behavior.
+See Docs/Drivers/AMDPresentation08018.txt and its JSON evidence. Desktop
+provider integration follows in /19, multihead in /20 and physical tests /39.

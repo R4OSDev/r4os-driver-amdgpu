@@ -7,7 +7,8 @@
  * task. No upstream DC structure, float or callback enters the platform ABI. */
 #define R4DCN_PIPES 4
 enum r4dcn_result { R4DCN_OK=0, R4DCN_INVALID=-1, R4DCN_BANDWIDTH=-2,
- R4DCN_IO=-3, R4DCN_TIMEOUT=-4, R4DCN_STATE=-5, R4DCN_UNSUPPORTED=-6 };
+ R4DCN_IO=-3, R4DCN_TIMEOUT=-4, R4DCN_STATE=-5, R4DCN_UNSUPPORTED=-6,
+ R4DCN_BUSY=-7 };
 struct r4dcn_io {
  void *context;
  int (*read)(void *, uint32_t byte_offset, uint32_t *value);
@@ -20,7 +21,7 @@ struct r4dcn_io {
 };
 struct r4dcn_mode {
  uint32_t width,height,h_total,v_total,h_front,h_sync,v_front,v_sync;
- uint32_t pixel_khz,pitch_bytes,pipe,flags; /* flags: bit0 HDMI, bit1/2 positive H/V sync */
+ uint32_t pixel_khz,pitch_bytes,pipe,flags; /* bit0 HDMI, bit1/2 positive H/V, bit3 RGB6 eDP */
  uint64_t mc_address,buffer_bytes;
 };
 struct r4dcn_limits {
@@ -74,6 +75,12 @@ int r4dcn_link_restore_pads(void *,uint32_t);
 int r4dcn_panel_read(void *,struct r4dcn_panel_state *);
 int r4dcn_panel_pwm(void *,uint32_t);
 int r4dcn_link_video(void *,uint32_t,uint32_t pipe,uint32_t *);
+/* SST eDP RGB6/8 stream. Enable is submission; link_video plus scanout
+ * counter/address progress supplies the surrounding visibility proof. */
+int r4dcn_dp_stream_bind(void *,uint32_t);
+int r4dcn_dp_stream_configure(void *,uint32_t,uint32_t pipe,uint32_t bpc);
+int r4dcn_dp_stream_start(void *,uint32_t);
+int r4dcn_dp_stream_stop(void *,uint32_t);
 /* Direct HDMI1.4 RGB8 path. Reference crystal is parsed from ATOM DCE info;
  * DDC block reads use the original DCN hardware I2C engine. */
 int r4dcn_hdmi_bind(void *,uint32_t,uint32_t crystal_khz);
@@ -82,4 +89,34 @@ int r4dcn_hdmi_configure(void *,uint32_t,uint32_t pipe,const uint8_t avi[17]);
 int r4dcn_hdmi_enable(void *,uint32_t);
 int r4dcn_hdmi_mute(void *,uint32_t,uint32_t mute);
 int r4dcn_hdmi_stopped(void *,uint32_t,uint32_t *stopped);
+/* Native scanout. Timestamps bound a coherent register observation; they are
+ * NOT an interrupt timestamp or the instant at which a pixel was displayed.
+ * The frame counter is the original 24-bit OTG counter, including rollover. */
+struct r4dcn_scanout_sample {
+ uint64_t begin_ns,end_ns,requested_address,inuse_address;
+ uint32_t frame,hpos,vpos,running,blank,pending,underflow,locked;
+ uint64_t cursor_address;
+ uint32_t cursor_x,cursor_y,cursor_hot_x,cursor_hot_y,cursor_width,cursor_height,cursor_enabled,cursor_dpp_enabled;
+};
+struct r4dcn_cursor {
+ uint64_t mc_address,buffer_bytes;
+ uint32_t width,height,pitch_pixels,hot_x,hot_y,enable;
+ int32_t x,y;
+};
+int r4dcn_scanout_enable(void *,uint32_t pipe);
+/* Stop retains clocks and the plan. Link/clock restoration is still owned by
+ * the surrounding transaction; only confirmed idle permits releasing BOs. */
+int r4dcn_scanout_stop(void *,uint32_t pipe_mask);
+/* Held boot ownership is required by the caller. Stops inherited frontends
+ * before the first native programming; all device allocations remain pinned. */
+int r4dcn_inherited_stop(void *);
+int r4dcn_inherited_admit(void *);
+int r4dcn_scanout_sample(void *,uint32_t pipe,struct r4dcn_scanout_sample *);
+int r4dcn_scanout_flip(void *,uint32_t pipe,uint64_t mc_address,uint64_t bytes);
+int r4dcn_scanout_cursor(void *,uint32_t pipe,const struct r4dcn_cursor *);
+/* Original DCN1 pixel-clock programming over the board's ATOM 1.7 command.
+ * Bind has no MMIO effects; program requires the selected TG and DIG stopped. */
+int r4dcn_pixel_clock_bind(void *,uint32_t link,uint32_t crystal_khz);
+int r4dcn_reference_clock_program(void *,uint32_t link,uint32_t *actual_khz);
+int r4dcn_pixel_clock_program(void *,uint32_t link,uint32_t pipe);
 #endif

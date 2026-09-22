@@ -131,6 +131,14 @@ pub const Board = struct {
         const index = @offsetOf(c.struct_atom_master_list_of_data_tables_v2_1, name) / 2;
         return if (self.tables[index].offset == 0) null else self.tables[index];
     }
+    pub fn displayReferenceClock(self: *const Board) Error!u32 {
+        const info = self.table("dce_info") orelse return error.Missing;
+        if (info.bytes.len < @sizeOf(c.struct_atom_display_controller_info_v4_1)) return error.Short;
+        if (info.bytes[2] != 4 or info.bytes[3] != 1) return error.Revision;
+        const khz = @as(u32, try field(c.struct_atom_display_controller_info_v4_1, "dce_refclk_10khz", info.bytes)) * 10;
+        if (khz < 24000 or khz > 100000) return error.Length;
+        return khz;
+    }
 };
 
 pub fn parse(bytes: []const u8, device: Device, board: *Board) Error!void {

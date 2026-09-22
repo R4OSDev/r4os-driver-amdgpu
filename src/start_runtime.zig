@@ -13,6 +13,7 @@ pub const Owner = struct {
     snapshot: identity.Snapshot = .{}, chip: ?identity.Chip = null, pci_changed: bool = false, old_command: u16 = 0,
     flow: @import("start_flow.zig").Flow = .{}, storage: @import("start_storage.zig").Owner = .{},
     hold: boot.Snapshot = .{}, guard: @import("start_guard.zig").Guard = .{},
+    restored_guard: ?@import("start_guard.zig").Guard = null,
     pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner,
         snapshot: *const identity.Snapshot, chip: identity.Chip, store: *const @import("firmware_store.zig").Store,
         expected: a.GfxNativeBootInfo, boot_offset: u64) Error!void {
@@ -54,13 +55,30 @@ pub const Owner = struct {
     pub fn firmwareReady(self: *const Owner) bool {
         return self.self_address == @intFromPtr(self) and self.hold.effects and self.hold.held_generation != 0 and self.flow.firmwareReady();
     }
+    /// The display owner reconstructs a working boot-compatible scanout at the
+    /// original reserved UMA address. Its actual counter/link receipt precedes
+    /// this readback snapshot; the original startup guard stays immutable.
+    pub fn adoptDisplayRestore(self: *Owner, generation: u64, captured: @import("start_guard.zig").Guard) Error!void {
+        if (!self.firmwareReady() or generation != self.hold.held_generation or !captured.valid or
+            captured.boot_mc != self.guard.boot_mc or self.memory.?.engine_users == 0 or
+            !try captured.matches(&self.memory.?.registers)) return error.Unconfirmed;
+        _ = try captured.singlePipe();
+        self.restored_guard = captured;
+    }
+    pub fn bootMatches(self: *const Owner) bool {
+        const captured = if (self.restored_guard) |*value| value else &self.guard;
+        return captured.matches(&self.memory.?.registers) catch false;
+    }
     /// Explicit retry observes late completions; it never assumes a GPU reset
     /// or discards an uncertain request. Each attempt has a fresh bounded drain.
     pub fn retryCleanup(self: *Owner) bool {
         if (self.self_address != @intFromPtr(self) or self.flow.phase != .retained) return false;
         self.flow.abort(&self.memory.?.registers); return true;
     }
-    pub fn close(self: *Owner) bool {
+    /// Retire firmware DMA and PCI changes while keeping the immutable boot
+    /// hold. Native display recovery acknowledges this boundary before the
+    /// common transition releases its callbacks and resumes boot writers.
+    pub fn quiesce(self: *Owner) bool {
         if (self.self_address == 0) return true;
         if (self.self_address != @intFromPtr(self)) return false;
         const memory = self.memory orelse return false;
@@ -80,15 +98,22 @@ pub const Owner = struct {
                 @as(u16, @truncate(ctx.pciReadConfig32(self.snapshot.pci, 4))) != self.old_command) return false;
             self.pci_changed = false;
         }
-        if (!self.storage.close(true) or !self.hold.close()) return false;
+        return self.storage.close(true);
+    }
+    pub fn close(self: *Owner) bool {
+        if (self.self_address == 0) return true;
+        if (!self.quiesce() or !self.hold.close()) return false;
+        const memory = self.memory orelse return false;
         memory.start_users -= 1; self.* = .{}; return true;
     }
-    fn restore(raw: u64, generation: u64, original: *const a.GfxNativeBootInfo) callconv(.c) i32 {
+    pub fn restore(raw: u64, generation: u64, original: *const a.GfxNativeBootInfo) callconv(.c) i32 {
         if (raw == 0) return 0;
         const self: *Owner = @ptrFromInt(raw);
-        if (self.self_address != raw or generation != self.hold.held_generation or self.pci_changed or
+        const expected = if (self.hold.native_adopted) self.hold.native_generation else self.hold.held_generation;
+        const state = if (self.hold.native_adopted) a.display_state_recovering else a.display_state_preparing;
+        if (self.self_address != raw or generation != expected or self.pci_changed or
             !self.flow.safeToRelease() or original.version != 1 or original.size < @sizeOf(a.GfxNativeBootInfo) or
-            original.generation != generation or original.state != a.display_state_preparing) return 0;
+            original.generation != generation or original.state != state) return 0;
         // bootDescription uses the pending hold generation and preparing state
         // during recovery. Compare the immutable geometry/mapping separately.
         var description = original.*;
@@ -96,8 +121,8 @@ pub const Owner = struct {
         description.size = self.hold.boot.size;
         if (!std.meta.eql(description, self.hold.boot)) return 0;
         const memory = self.memory orelse return 0;
-        if (memory.controller.touched or memory.engine_users != 0 or memory.mapping_users != 0) return 0;
-        return @intFromBool(self.guard.matches(&memory.registers) catch false);
+        if (memory.controller.touched or memory.controller.enabled or memory.engine_users != 0 or memory.mapping_users != 0) return 0;
+        return @intFromBool(self.bootMatches());
     }
 };
 

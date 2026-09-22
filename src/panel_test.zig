@@ -273,7 +273,7 @@ const Receiver = struct {
         try b.parse(&rom, fixture.device, &board);
         board.paths[0].encoder_caps = 0xa;
         board.paths[0].i2c_pin.?.shift = 0;
-        board.paths[0].hpd_pin.?.mask_shift = 4;
+        board.paths[0].hpd_pin.?.shift = 8; board.paths[0].hpd_pin.?.mask_shift = 8;
         ticks = 0;
         pointer = 0;
         rate = 0;

@@ -107,7 +107,7 @@ pub const Layout = struct {
             if (fw.bytes != 0) try pool.reserve(fw.offset, fw.bytes);
             // v2.1 used_by_driver_in_kb requests CPU scratch for an ATOM
             // interpreter; it does not describe VRAM preceding the FW range.
-            // R4OS does not execute ATOM commands and allocates no such scratch.
+            // Panel/HDMI ATOM runtimes own their separate CPU heap scratch.
         }
         // Explicit independent work arenas. IP start owns their contents and
         // may subdivide these bounds; resizing requires a new memory epoch.

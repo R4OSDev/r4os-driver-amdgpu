@@ -2159,6 +2159,62 @@
       "bytes": 27928,
       "license": "MIT (embedded notice)",
       "role": "DCN1 HDMI/I2C/stream encoder closure and board-clock reference"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/bios/dce112/command_table_helper2_dce112.c",
+      "sha256": "3b0b7c2c53b40bcf5356d216c6a1aae1ce0ea36b7fb2fc1d0ca3a3d3b70ac62a",
+      "bytes": 7479,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 scanout/cursor sequencing and pixel-clock closure"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_clock_source.c",
+      "sha256": "1eeca5df20ea9de45a57eaef0cc3408f90748ae825050b5023c39b7024143185",
+      "bytes": 62322,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 scanout/cursor sequencing and pixel-clock closure"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_clock_source.h",
+      "sha256": "6480f365f28272bfbbc73010d2da36b24f79ccd36452a06d936b2847d5eaf38e",
+      "bytes": 11338,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 scanout/cursor sequencing and pixel-clock closure"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/hwss/dcn10/dcn10_hwseq.c",
+      "sha256": "8279fd2368900f035902b841ebe8bf4e8affeb8eb02846bde6c9789d6a3505a5",
+      "bytes": 133997,
+      "license": "MIT (embedded notice)",
+      "role": "DCN1 scanout/cursor sequencing and pixel-clock closure"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/pm/powerplay/inc/smu10.h",
+      "sha256": "5748f01ab438e70884ed9adaab19d2339cff062f5d81cb170ed7c49def4daa2b",
+      "bytes": 8083,
+      "license": "MIT (embedded notice)",
+      "role": "SMU10 physical display clock tables and original RV1 clock protocol"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/clk_mgr/dcn10/rv1_clk_mgr_vbios_smu.c",
+      "sha256": "0c88f6536bd47fbc08ef186ab6cc9b206d8f46cd3018fc4e711b5176944de419",
+      "bytes": 4834,
+      "license": "MIT (embedded notice)",
+      "role": "SMU10 physical display clock tables and original RV1 clock protocol"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/clk_mgr/dcn10/rv1_clk_mgr.c",
+      "sha256": "200e6242424b178183d67087db6fb0934695b113dc066155b468d498e8e69e91",
+      "bytes": 12971,
+      "license": "MIT (embedded notice)",
+      "role": "SMU10 physical display clock tables and original RV1 clock protocol"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/clk_mgr/dce112/dce112_clk_mgr.c",
+      "sha256": "1652c967fb26dea2d5592713c12bb4eba17ff662faba5af138dee900cfedaa8c",
+      "bytes": 6855,
+      "license": "MIT (embedded notice)",
+      "role": "SMU10 physical display clock tables and original RV1 clock protocol"
     }
   ],
   "patches": [

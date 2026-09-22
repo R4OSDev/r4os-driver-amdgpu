@@ -10,6 +10,7 @@ const start = @import("start_runtime.zig");
 const panel = @import("panel_runtime.zig");
 const atom = @import("atom_vm.zig");
 const hdmi = @import("hdmi_runtime.zig");
+pub const scanout = @import("scanout_lifetime.zig");
 pub const c = panel.c;
 pub const Error = error{ Busy, Invalid, Unsupported, Stale, Capacity, State };
 pub const Phase = enum { empty, preparing, planned, programming, programmed, retained, aborted };
@@ -22,6 +23,20 @@ pub const Hooks = struct {
     // Restores all changed frontend/link/clock state, including HUBBUB. The
     // boot guard is an additional check, not a substitute for this proof.
     restore: *const fn (usize) bool,
+    // Stop encoder video before TG shutdown. Optional only for read-only or
+    // synthetic callers which never acquired a physical output stream.
+    stop: ?*const fn (usize) bool = null,
+    modeset: ?*const fn (usize, ModeRequest) bool = null,
+};
+pub const ModeRequest = struct { mode: c.struct_r4dcn_mode, epoch: scanout.Epoch, image: scanout.Image, sequence: u64, deadline_ns: u64 };
+pub const ScanoutOperation = enum { bind, enable, flip, sample, acknowledge, stop, cursor, cursor_sample, cursor_acknowledge, rekey };
+pub const ScanoutRequest = struct {
+    operation: ScanoutOperation,
+    epoch: scanout.Epoch,
+    image: ?scanout.Image = null,
+    cursor: ?scanout.Cursor = null,
+    sequence: u64 = 0,
+    deadline_ns: u64 = 0,
 };
 var active_owner: usize = 0;
 pub const Owner = struct {
@@ -35,8 +50,20 @@ pub const Owner = struct {
     allocation: a.DriverHeapAllocation = .{},
     panel_allocation: a.DriverHeapAllocation = .{},
     hdmi_allocation: a.DriverHeapAllocation = .{},
+    candidate_allocation: a.DriverHeapAllocation = .{},
+    candidate_mode: c.struct_r4dcn_mode = undefined,
+    candidate_plan: c.struct_r4dcn_plan = undefined,
+    candidate_valid: bool = false,
+    mode_request: ModeRequest = undefined,
+    mode_receipt: ?scanout.Receipt = null,
+    health_epoch: u64 = 0,
+    health_frame: u32 = 0,
+    health_progress: u64 = 0,
     hdmi_storage_valid: bool = false,
     hdmi_operation: hdmi.Operation = .probe,
+    hdmi_publish_token: u64 = 0,
+    hdmi_output: a.GfxOutputId = .{},
+    hdmi_retirement: ?hdmi.hotplug.Io = null,
     board: ?*const @import("bios.zig").Board = null,
     panel_operation: panel.Operation = .discover,
     panel_value: u16 = 0,
@@ -47,7 +74,7 @@ pub const Owner = struct {
     worker_result: i32 = 0,
     result: i32 = 0,
     phase: Phase = .empty,
-    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work } = .prepare,
+    action: enum { prepare, commit, abort, panel_bind, panel_work, brightness_work, hdmi_bind, hdmi_work, hdmi_publish, scanout_work, mode_plan, mode_apply, health_work } = .prepare,
     limits: c.struct_r4dcn_limits = std.mem.zeroes(c.struct_r4dcn_limits),
     mode: c.struct_r4dcn_mode = std.mem.zeroes(c.struct_r4dcn_mode),
     plan: c.struct_r4dcn_plan = std.mem.zeroes(c.struct_r4dcn_plan),
@@ -58,16 +85,40 @@ pub const Owner = struct {
     closing: bool = false,
     frequency: u64 = 0,
     diagnostic_count: u32 = 0,
+    scanout_owner: scanout.Owner = .{},
+    scanout_request: ScanoutRequest = undefined,
     pub fn prepareBoot(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
+        const held = &native.hold;
+        if (mode.mc_address != native.guard.boot_mc or mode.buffer_bytes != held.boot.byte_length or
+            mode.width != held.boot.width or mode.height != held.boot.height or mode.pitch_bytes != held.boot.pitch or
+            held.boot.format != a.gfx_buffer_format_xrgb8888 or mode.pipe >= 4) return error.Invalid;
+        try self.prepareImpl(ctx, memory, native, board, limits, mode);
+    }
+    pub fn prepareOwned(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner,
+        board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode, reference: a.GfxBufferReference) Error!void
+    {
+        if (!memory.prepared or memory.self_address != @intFromPtr(memory) or reference.reference.id == 0) return error.Stale;
+        var descriptor: a.GfxBufferDescriptor = .{};
+        if (memory.memory.?.bufferDescribe(&reference.reference, &descriptor) != a.gfx_buffer_result_ok or
+            descriptor.version != 1 or descriptor.size < @sizeOf(a.GfxBufferDescriptor) or descriptor.adapter_id != memory.adapter or
+            descriptor.device_generation != memory.epoch or descriptor.location != a.gfx_buffer_location_device_local or
+            descriptor.format != a.gfx_buffer_format_xrgb8888 or descriptor.modifier != 0 or descriptor.plane_count != 1 or
+            descriptor.width != mode.width or descriptor.height != mode.height or descriptor.plane_offsets[0] != 0 or
+            descriptor.plane_pitches[0] != mode.pitch_bytes or descriptor.byte_length != mode.buffer_bytes or
+            descriptor.usage & a.gfx_buffer_usage_scanout == 0) return error.Invalid;
+        const backing = memory.backing(reference.buffer) catch return error.Stale;
+        const map = memory.layout.?;
+        if (backing.offset < map.physical.offset or mode.mc_address != map.mc.offset + backing.offset - map.physical.offset or
+            backing.bytes != mode.buffer_bytes) return error.Invalid;
+        try self.prepareImpl(ctx, memory, native, board, limits, mode);
+    }
+    fn prepareImpl(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
         if (self.self_address != 0) return error.Busy;
         const integrated = board.integrated orelse return error.Unsupported;
         const held = &native.hold;
         if (!native.firmwareReady() or native.memory != memory or !memory.prepared or memory.engine_users == 0 or
             memory.engine_users == std.math.maxInt(u32) or !native.guard.valid or held.held_generation == 0 or !held.effects or
             limits.channels != integrated.uma_channels or memory.self_address != @intFromPtr(memory)) return error.Stale;
-        if (mode.mc_address != native.guard.boot_mc or mode.buffer_bytes != held.boot.byte_length or
-            mode.width != held.boot.width or mode.height != held.boot.height or mode.pitch_bytes != held.boot.pitch or
-            held.boot.format != a.gfx_buffer_format_xrgb8888 or mode.pipe >= 4) return error.Invalid;
         const threads = ctx.threads() orelse return error.Unsupported;
         if (!threads.canAbort() or !threads.hasCurrentRequest()) return error.Unsupported;
         const heap = ctx.heap() orelse return error.Unsupported;
@@ -94,10 +145,54 @@ pub const Owner = struct {
         self.hooks = hooks;
         try self.launch(.commit);
     }
+    /// Independent DML state validates a candidate without changing the live
+    /// frontend or the live C object's internal streams/plane pointers.
+    pub fn planMode(self: *Owner, mode: c.struct_r4dcn_mode) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            self.scanout_owner.phase != .active or self.scanout_owner.cursor_current.image != null or mode.pipe != self.mode.pipe) return error.State;
+        self.candidate_mode = mode; self.candidate_valid = false;
+        try self.launch(.mode_plan);
+    }
+    pub fn applyMode(self: *Owner, request: ModeRequest) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            !self.candidate_valid or !std.meta.eql(request.mode, self.candidate_mode) or self.hooks == null or self.hooks.?.modeset == null or
+            request.epoch.memory != self.memory.?.epoch or request.epoch.backend.adapter_id != self.memory.?.adapter or
+            !std.meta.eql(request.epoch.backend, self.scanout_owner.epoch.backend) or !std.meta.eql(request.epoch.output, self.scanout_owner.epoch.output) or
+            request.epoch.display != self.scanout_owner.epoch.display or request.deadline_ns <= self.clock.?.nowNs() or
+            request.epoch.mode <= self.scanout_owner.epoch.mode or request.sequence <= self.scanout_owner.sequence or request.sequence == std.math.maxInt(u64) or
+            request.image.address != request.mode.mc_address or request.image.bytes != request.mode.buffer_bytes) return error.State;
+        // Confirm the exact caller-retained private BO again after preparation.
+        var descriptor: a.GfxBufferDescriptor = .{};
+        if (self.memory.?.memory.?.bufferDescribe(&request.image.reference, &descriptor) != 1 or descriptor.driver_owner == 0 or
+            descriptor.adapter_id != self.memory.?.adapter or descriptor.device_generation != self.memory.?.epoch or
+            descriptor.location != a.gfx_buffer_location_device_local or descriptor.format != a.gfx_buffer_format_xrgb8888 or
+            descriptor.modifier != 0 or descriptor.plane_count != 1 or descriptor.width != request.mode.width or descriptor.height != request.mode.height or
+            descriptor.plane_offsets[0] != 0 or descriptor.plane_pitches[0] != request.mode.pitch_bytes or descriptor.byte_length != request.mode.buffer_bytes or
+            descriptor.usage & a.gfx_buffer_usage_scanout == 0) return error.Invalid;
+        self.mode_request = request; self.candidate_valid = false; try self.launch(.mode_apply);
+    }
+    /// Native presentation submits one operation at a time; only join/release
+    /// makes its result and receipt observable outside the owning DCN task.
+    pub fn scanoutCommand(self: *Owner, request: ScanoutRequest) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.hooks == null or
+            (self.phase != .programmed and !(request.operation == .stop and self.phase == .retained))) return error.State;
+        if (request.epoch.backend.adapter_id != self.memory.?.adapter or request.epoch.memory != self.memory.?.epoch)
+            return error.Stale;
+        if (request.operation != .bind and request.operation != .rekey and (self.scanout_owner.self_address == 0 or !std.meta.eql(request.epoch, self.scanout_owner.epoch))) return error.Stale;
+        if ((request.operation == .bind or request.operation == .flip) and request.image == null) return error.Invalid;
+        if (request.operation == .cursor and request.cursor == null) return error.Invalid;
+        self.scanout_request = request;
+        try self.launch(.scanout_work);
+    }
     pub fn bindPanel(self: *Owner) Error!void {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or
             self.phase != .planned or self.panel_allocation.handle != 0) return error.State;
         try self.launch(.panel_bind);
+    }
+    pub fn healthCommand(self: *Owner) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            self.scanout_owner.phase != .active or self.panel_allocation.cpu_address == 0) return error.State;
+        try self.launch(.health_work);
     }
     pub fn bindHdmi(self: *Owner) Error!void {
         if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or
@@ -109,6 +204,12 @@ pub const Owner = struct {
             (self.phase != .planned and self.phase != .programmed) or self.hdmi_allocation.handle == 0) return error.State;
         self.hdmi_operation = operation;
         try self.launch(.hdmi_work);
+    }
+    pub fn hdmiPublish(self: *Owner, token: u64, identity: a.GfxOutputId, retirement: hdmi.hotplug.Io) Error!void {
+        if (self.self_address != @intFromPtr(self) or self.closing or self.thread != 0 or self.phase != .programmed or
+            self.hdmi_allocation.handle == 0 or token == 0 or identity.connection_generation == 0) return error.State;
+        self.hdmi_publish_token = token; self.hdmi_output = identity; self.hdmi_retirement = retirement;
+        try self.launch(.hdmi_publish);
     }
     pub fn hdmiInWorker(self: *Owner, operation: hdmi.Operation) Error!void {
         if (workerCheck(self) != 1 or self.hooks == null or self.hdmi_allocation.handle == 0 or
@@ -137,7 +238,7 @@ pub const Owner = struct {
     /// installing complete boot restoration. No nested task or C entry occurs.
     pub fn panelInWorker(self: *Owner, operation: panel.Operation, value: u16) Error!void {
         if (workerCheck(self) != 1 or self.hooks == null or self.panel_allocation.handle == 0 or
-            (self.action != .commit and self.action != .panel_work)) return error.State;
+            (self.action != .commit and self.action != .panel_work and self.action != .abort)) return error.State;
         const runtime: *panel.Runtime = @ptrFromInt(self.panel_allocation.cpu_address);
         if (runtime.self_address != @intFromPtr(runtime)) return error.State;
         self.effects = true;
@@ -180,10 +281,14 @@ pub const Owner = struct {
             self.launch(.abort) catch return false;
             return false;
         }
+        if (self.candidate_allocation.handle != 0) {
+            if (self.heap.?.release(self.candidate_allocation.handle) != 0) return false;
+            self.candidate_allocation = .{};
+        }
         if (self.hdmi_allocation.handle != 0) {
             if (self.hdmi_storage_valid) {
                 const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
-                if (runtime.self_address == @intFromPtr(runtime) and runtime.output.adapter_id != 0) return false;
+                if (runtime.self_address == @intFromPtr(runtime) and runtime.output.adapter_id != 0 and !runtime.reset_detached) return false;
             }
             if (self.heap.?.release(self.hdmi_allocation.handle) != 0) return false;
             self.hdmi_allocation = .{};
@@ -204,6 +309,19 @@ pub const Owner = struct {
         self.* = .{};
         return true;
     }
+    pub fn workerStorage(self: *Owner) Error!*anyopaque {
+        if (workerCheck(self) != 1 or !self.initialized) return error.State;
+        return self.storage() orelse error.State;
+    }
+    pub fn workerPanel(self: *Owner) Error!*panel.Runtime {
+        if (workerCheck(self) != 1 or self.panel_allocation.cpu_address == 0) return error.State;
+        const runtime: *panel.Runtime = @ptrFromInt(self.panel_allocation.cpu_address);
+        if (runtime.self_address != @intFromPtr(runtime)) return error.State;
+        return runtime;
+    }
+    pub fn workerDelay(self: *Owner, us: u32) Error!void {
+        if (delay(self, us) != 0) return error.State;
+    }
     fn storage(self: *Owner) ?*anyopaque {
         return if (self.allocation.cpu_address == 0) null else @ptrFromInt(self.allocation.cpu_address);
     }
@@ -211,6 +329,43 @@ pub const Owner = struct {
         const self: *Owner = @ptrFromInt(raw);
         if (self.self_address != raw or workerCheck(self) != 1) return c.R4DCN_STATE;
         switch (self.action) {
+            .health_work => {
+                self.result = self.healthInWorker();
+                if (self.result != 0 and self.result != c.R4DCN_BUSY) self.phase = .retained;
+            },
+            .mode_plan => {
+                if (!self.initialized or self.phase != .programmed) return c.R4DCN_STATE;
+                const bytes = c.r4dcn_size();
+                if (self.candidate_allocation.handle == 0 and self.heap.?.allocate(bytes, 16, &self.candidate_allocation) != 0) return c.R4DCN_IO;
+                const allocation = self.candidate_allocation;
+                if (bytes == 0 or bytes > 8 * 1024 * 1024 or allocation.version != 1 or allocation.size < @sizeOf(a.DriverHeapAllocation) or
+                    allocation.handle == 0 or allocation.cpu_address == 0 or allocation.cpu_address % 16 != 0 or allocation.byte_length != bytes or
+                    allocation.cpu_address > std.math.maxInt(u64) - bytes or allocation.alignment < 16 or allocation.reserved != 0) return c.R4DCN_INVALID;
+                const io: c.struct_r4dcn_io = .{ .context = self, .read = read, .write = write, .now_ns = now, .delay_us = delay, .worker = workerCheck, .log = log, .fatal = fatal };
+                const storage_ptr: *anyopaque = @ptrFromInt(allocation.cpu_address);
+                self.result = c.r4dcn_init(storage_ptr, bytes, &io, &self.limits);
+                if (self.result == 0) {
+                    self.result = c.r4dcn_prepare(storage_ptr, &self.candidate_mode, 1, &self.candidate_plan);
+                    c.r4dcn_destroy(storage_ptr);
+                }
+                self.candidate_valid = self.result == 0;
+            },
+            .mode_apply => {
+                if (!self.initialized or self.phase != .programmed or self.hooks == null or self.hooks.?.modeset == null) return c.R4DCN_STATE;
+                self.result = if (self.hooks.?.modeset.?(self.hooks.?.context, self.mode_request)) 0 else c.R4DCN_IO;
+                if (self.result != 0) self.phase = .retained;
+            },
+            .scanout_work => {
+                self.result = 0;
+                self.scanoutInWorker() catch |err| {
+                    self.result = switch (err) {
+                        error.Busy => c.R4DCN_BUSY, error.Timeout => c.R4DCN_TIMEOUT,
+                        error.Invalid => c.R4DCN_INVALID, error.State, error.Stale => c.R4DCN_STATE,
+                        else => c.R4DCN_IO,
+                    };
+                };
+                if (self.scanout_owner.phase == .retained or c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
+            },
             .panel_bind => {
                 if (!self.initialized or self.phase != .planned or self.board == null or self.panel_allocation.handle != 0) return c.R4DCN_STATE;
                 const bytes = @sizeOf(panel.Runtime);
@@ -238,7 +393,8 @@ pub const Owner = struct {
                 const runtime: *hdmi.Runtime = @ptrFromInt(allocation.cpu_address);
                 runtime.* = .{};
                 self.hdmi_storage_valid = true;
-                runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }) catch {
+                runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }) catch |err| {
+                    runtime.last_bind_error = err;
                     self.result = c.R4DCN_UNSUPPORTED;
                     return 0;
                 };
@@ -249,6 +405,13 @@ pub const Owner = struct {
                 self.hdmiInWorker(self.hdmi_operation) catch { self.result = c.R4DCN_IO; };
                 // NACK, missing receiver and unplug are ordinary link events.
                 // A sticky native MMIO fault still retains the entire owner.
+                if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
+            },
+            .hdmi_publish => {
+                const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
+                self.result = 0;
+                runtime.published(self.hdmi_publish_token, self.hdmi_output, self.ctx.?.graphicsOutputs() orelse return c.R4DCN_UNSUPPORTED,
+                    self.hdmi_retirement.?) catch { self.result = c.R4DCN_IO; };
                 if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
             .panel_work => {
@@ -304,12 +467,17 @@ pub const Owner = struct {
             },
             .abort => {
                 if (!self.effects or self.hooks == null or !self.initialized) return c.R4DCN_STATE;
+                if (self.hooks.?.stop) |stop| if (!stop(self.hooks.?.context)) {
+                    self.result = c.R4DCN_IO; self.phase = .retained; return 0;
+                };
+                if (self.scanout_owner.self_address != 0) self.scanout_owner.stop(self.scanout_owner.epoch) catch {
+                    self.result = c.R4DCN_IO; self.phase = .retained; return 0;
+                };
                 self.result = if (self.quiet or !self.frontend_attempted) 0 else c.r4dcn_quiesce(self.storage());
                 if (self.result == 0) {
                     self.quiet = true;
                     const hooks = self.hooks.?;
-                    self.result = if (hooks.restore(hooks.context) and
-                        (self.native.?.guard.matches(&self.memory.?.registers) catch false)) 0 else c.R4DCN_IO;
+                    self.result = if (hooks.restore(hooks.context) and self.native.?.bootMatches()) 0 else c.R4DCN_IO;
                     if (self.result == 0) {
                         self.effects = false;
                         self.phase = .aborted;
@@ -317,6 +485,43 @@ pub const Owner = struct {
                 }
                 if (self.result != 0) self.phase = .retained;
             },
+        }
+        return 0;
+    }
+    fn scanoutInWorker(self: *Owner) scanout.Error!void {
+        if (workerCheck(self) != 1 or self.action != .scanout_work) return error.State;
+        const request = self.scanout_request;
+        switch (request.operation) {
+            .bind => try self.scanout_owner.bind(self.storage().?, request.epoch, self.mode, request.image.?),
+            .rekey => try self.scanout_owner.rekey(request.epoch),
+            .enable => try self.scanout_owner.enable(request.epoch, request.sequence, request.deadline_ns),
+            .flip => try self.scanout_owner.flip(request.epoch, request.sequence, request.image.?, request.deadline_ns),
+            .sample => if (try self.scanout_owner.poll(request.epoch, self.clock.?.nowNs()) == null) { self.result = c.R4DCN_BUSY; },
+            .acknowledge => try self.scanout_owner.acknowledge(request.epoch, request.sequence),
+            .stop => try self.scanout_owner.stop(request.epoch),
+            .cursor => try self.scanout_owner.cursor(request.epoch, request.sequence, request.cursor.?, request.deadline_ns),
+            .cursor_sample => if (try self.scanout_owner.pollCursor(request.epoch, self.clock.?.nowNs()) == null) { self.result = c.R4DCN_BUSY; },
+            .cursor_acknowledge => try self.scanout_owner.acknowledgeCursor(request.epoch, request.sequence),
+        }
+    }
+    fn healthInWorker(self: *Owner) c_int {
+        if (workerCheck(self) != 1 or self.action != .health_work or self.scanout_owner.current == null) return c.R4DCN_STATE;
+        const runtime = self.workerPanel() catch return c.R4DCN_STATE;
+        runtime.protocol.?.verifyLink() catch return c.R4DCN_IO;
+        var sample: c.struct_r4dcn_scanout_sample = undefined;
+        const result = c.r4dcn_scanout_sample(self.storage(), self.mode.pipe, &sample);
+        if (result != 0) return result;
+        if (sample.underflow != 0 or sample.running != 1 or sample.blank != 0 or sample.requested_address != self.scanout_owner.current.?.address or
+            sample.inuse_address != self.scanout_owner.current.?.address) return c.R4DCN_IO;
+        if (sample.pending != 0 or sample.locked != 0) return c.R4DCN_BUSY;
+        if (self.health_epoch != self.scanout_owner.epoch.mode) {
+            self.health_epoch = self.scanout_owner.epoch.mode; self.health_frame = sample.frame; self.health_progress = sample.end_ns;
+        } else {
+            if (sample.end_ns < self.health_progress) return c.R4DCN_IO;
+            const delta = (sample.frame -% self.health_frame) & 0xffffff;
+            if (delta >= 0x800000) return c.R4DCN_IO;
+            if (delta != 0) { self.health_frame = sample.frame; self.health_progress = sample.end_ns; }
+            if (sample.end_ns - self.health_progress >= 2 * std.time.ns_per_s) return c.R4DCN_TIMEOUT;
         }
         return 0;
     }
@@ -339,7 +544,7 @@ pub const Owner = struct {
     }
     fn write(raw: ?*anyopaque, offset: u32, value: u32) callconv(.c) c_int {
         const self = from(raw);
-        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .hdmi_work and self.action != .abort)) return -1;
+        if (workerCheck(raw) != 1 or !self.effects or (self.action != .commit and self.action != .panel_work and self.action != .brightness_work and self.action != .hdmi_work and self.action != .scanout_work and self.action != .mode_apply and self.action != .health_work and self.action != .abort)) return -1;
         self.memory.?.registers.write(offset, value) catch return -1;
         self.memory.?.registers.barrier() catch return -1;
         return 0;

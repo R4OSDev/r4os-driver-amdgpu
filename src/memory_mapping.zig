@@ -100,8 +100,20 @@ pub const Mapping = struct {
     pub fn adopt(self: *Mapping, owner: *@import("memory_owner.zig").Owner, reference: *a.GfxBufferReference,
         address: u64, physical: []u64) Error!void
     {
+        return self.adoptImpl(owner, reference, address, physical, a.gfx_buffer_reference_mapping_only);
+    }
+    /// Caller imports the ordinary mode/source reference through the common
+    /// facade first. Ownership transfers exactly as with queue-backed sources.
+    pub fn adoptReference(self: *Mapping, owner: *@import("memory_owner.zig").Owner, reference: *a.GfxBufferReference,
+        address: u64, physical: []u64) Error!void
+    {
+        return self.adoptImpl(owner, reference, address, physical, 0);
+    }
+    fn adoptImpl(self: *Mapping, owner: *@import("memory_owner.zig").Owner, reference: *a.GfxBufferReference,
+        address: u64, physical: []u64, flags: u32) Error!void
+    {
         if (self.self_address != 0 or !owner.prepared or owner.self_address != @intFromPtr(owner) or owner.mapping_users >= 128) return error.Busy;
-        if (reference.version != 1 or reference.size < @sizeOf(a.GfxBufferReference) or reference.flags != a.gfx_buffer_reference_mapping_only or reference.reserved0 != 0 or
+        if (reference.version != 1 or reference.size < @sizeOf(a.GfxBufferReference) or reference.flags != flags or reference.reserved0 != 0 or
             !valid(reference.reference) or !valid(reference.buffer) or address == 0 or address & 4095 != 0) return error.Invalid;
         var desc: a.GfxBufferDescriptor = .{};
         const memory = owner.memory.?;

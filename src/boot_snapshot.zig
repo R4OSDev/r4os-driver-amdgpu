@@ -8,6 +8,7 @@ pub const Error = error{ Busy, Unsupported, BootChanged, Buffer, Hold, Map, Rele
 pub const Snapshot = struct {
     memory: ?r4os.driver_memory.Context = null, display: ?r4os.driver_display.Context = null,
     reference: a.GfxBufferReference = .{}, read: a.GfxBufferMap = .{}, held_generation: u64 = 0,
+    native_adopted: bool = false, native_generation: u64 = 0,
     boot: a.GfxNativeBootInfo = .{}, sha256: [32]u8 = @splat(0), valid: bool = false, effects: bool = false,
 
     pub fn capture(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext, adapter: u32, expected: a.GfxNativeBootInfo) Error!void {
@@ -59,6 +60,30 @@ pub const Snapshot = struct {
         return self.display.?.bootFinish(self.held_generation, 1, &state) == a.gfx_output_ok and validState(state) and
             state.retained == 1 and state.generation == self.held_generation and state.outcome == a.gfx_output_outcome_validated;
     }
+    /// PrepareHeld moves the existing hold into the common native transition.
+    /// Its original snapshot and token stay retained through commit/recovery.
+    pub fn adoptNative(self: *Snapshot, state: a.GfxNativeState) Error!void {
+        if (self.native_adopted or !self.valid or !self.effects or self.held_generation == 0 or !validState(state) or
+            state.generation != self.held_generation or state.state != a.display_state_preparing or
+            state.outcome != a.gfx_output_outcome_validated or state.retained != 1) return error.Hold;
+        self.native_adopted = true; self.native_generation = state.generation;
+    }
+    /// A failed PrepareHeld can still return a retained common native owner.
+    /// Route cleanup through that owner; an API error is no release proof.
+    pub fn adoptRetainedNative(self: *Snapshot, state: a.GfxNativeState) Error!void {
+        if (self.native_adopted or !self.valid or !self.effects or self.held_generation == 0 or !validState(state) or
+            state.generation < self.held_generation or state.retained != 1 or state.outcome != a.gfx_output_outcome_lost or
+            (state.state != a.display_state_preparing and state.state != a.display_state_unavailable and state.state != a.display_state_recovering)) return error.Hold;
+        self.native_adopted = true; self.native_generation = state.generation;
+    }
+    pub fn adoptReset(self: *Snapshot, state: a.GfxNativeState) Error!void {
+        if (!self.valid or !self.effects or self.held_generation == 0 or !validState(state) or
+            state.retained != 1 or state.outcome != a.gfx_output_outcome_lost or state.state != a.display_state_recovering or
+            state.generation <= self.held_generation or state.generation <= self.native_generation) return error.Hold;
+        // Reset invalidates native consumers; the immutable boot hold keeps
+        // its original generation and still requires physical restoration.
+        self.native_adopted = true; self.native_generation = state.generation;
+    }
     fn releaseHold(self: *Snapshot) bool {
         if (self.held_generation == 0) return true;
         const display = self.display orelse return false;
@@ -68,6 +93,17 @@ pub const Snapshot = struct {
         self.held_generation = 0; return true;
     }
     pub fn close(self: *Snapshot) bool {
+        if (self.native_adopted) {
+            const display = self.display orelse return false;
+            var state: a.GfxNativeState = .{};
+            const status = display.transition(self.native_generation, 2, &state);
+            if (status == a.gfx_output_ok and validState(state) and state.retained == 1 and state.generation > self.native_generation and
+                state.outcome == a.gfx_output_outcome_lost and (state.state == a.display_state_unavailable or state.state == a.display_state_recovering))
+                self.native_generation = state.generation;
+            if (status != a.gfx_output_ok or !validState(state) or state.state != a.display_state_bootfb or state.retained != 0 or
+                state.outcome != a.gfx_output_outcome_applied) return false;
+            self.native_adopted = false; self.native_generation = 0; self.held_generation = 0;
+        }
         if (self.read.lease.id != 0) {
             const memory = self.memory orelse return false;
             if (memory.bufferUnmap(&self.read.lease) != a.gfx_buffer_result_ok) return false;

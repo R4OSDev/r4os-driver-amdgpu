@@ -38,6 +38,24 @@ pub const Guard = struct {
         };
         return true;
     }
+    /// Initial display takeover admits one directly timed linear boot plane.
+    /// Other live pipes need the later multihead transaction, never guesswork.
+    pub fn singlePipe(self: *const Guard) Error!u32 {
+        if (!self.valid) return error.Unconfirmed;
+        var selected: ?u32 = null;
+        for (0..4) |pipe| {
+            const v = &self.values[pipe];
+            if (v[0] & (d.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK | d.HUBP0_DCHUBP_CNTL__HUBP_DISABLE_MASK) != 0) continue;
+            const address = @as(u64, v[5]) << 32 | v[4];
+            if (address != self.boot_mc) continue;
+            if (selected != null or (v[0] & d.HUBP0_DCHUBP_CNTL__HUBP_VTG_SEL_MASK) >> d.HUBP0_DCHUBP_CNTL__HUBP_VTG_SEL__SHIFT != pipe) return error.Unsupported;
+            selected = @intCast(pipe);
+        }
+        const pipe = selected orelse return error.Unconfirmed;
+        for (0..4) |other| if (other != pipe and self.values[other][14] &
+            (d.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK | d.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK) != 0) return error.Unsupported;
+        return pipe;
+    }
 };
 fn sample(io: anytype, comptime name: []const u8, pipe: usize) Error!u32 {
     const value = try c.read(io, @field(d, name)[pipe]);

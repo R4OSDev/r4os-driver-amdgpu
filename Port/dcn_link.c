@@ -203,6 +203,7 @@ int r4dcn_link_video(void *storage,uint32_t index,uint32_t pipe,uint32_t *active
   uint32_t tg=rd(d,tg_regs[pipe].OTG_CONTROL),video=rd(d,video_regs[l->route.phy]);
   *active=!!(tg&OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK) &&
    !!(video&DP0_DP_VID_STREAM_CNTL__DP_VID_STREAM_ENABLE_MASK) && !!(video&DP0_DP_VID_STREAM_CNTL__DP_VID_STREAM_STATUS_MASK);
+  if(l->dp_stream_bound)*active&=l->stream.base.funcs->dig_source_otg(&l->stream.base)==pipe;
   if(d->fault)result=d->fault;
  }
  r4dcn_leave(d);return result;

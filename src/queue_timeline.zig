@@ -37,6 +37,7 @@ pub const Entry = struct {
     phase: Phase = .free, fence: a.GfxFence = .{}, engine: Engine = .sdma,
     token: u64 = 0, deadline: u64 = 0, result: u32 = a.gfx_queue_result_pending,
     resources: ?Resources = null, resources_retired: bool = false,
+    internal: bool = false,
 };
 /// Only the dedicated worker mutates this pool. IRQs never call it, complete
 /// canonical jobs, unmap BOs or wake a set of application waiters.
@@ -53,15 +54,23 @@ pub const Timeline = struct {
         asm volatile ("mfence" ::: .{ .memory = true });
     }
     pub fn reserve(self: *Timeline, fence: a.GfxFence, engine: Engine, deadline: u64, resources: Resources) Error!Ticket {
+        return self.reserveImpl(fence, false, engine, deadline, resources);
+    }
+    /// Driver-local work shares the real IB/fence pool without fabricating a
+    /// platform GfxFence or publishing a completion to an application queue.
+    pub fn reserveInternal(self: *Timeline, engine: Engine, deadline: u64, resources: Resources) Error!Ticket {
+        return self.reserveImpl(.{}, true, engine, deadline, resources);
+    }
+    fn reserveImpl(self: *Timeline, fence: a.GfxFence, internal: bool, engine: Engine, deadline: u64, resources: Resources) Error!Ticket {
         if (self.self_address != @intFromPtr(self) or self.stopping or self.failed_engines != 0) return error.Busy;
-        if (!self.epoch.matches(fence) or deadline <= self.last_time or deadline == std.math.maxInt(u64)) return error.Invalid;
+        if ((!internal and !self.epoch.matches(fence)) or deadline <= self.last_time or deadline == std.math.maxInt(u64)) return error.Invalid;
         if (self.token >= std.math.maxInt(u64) - 1) return error.Overflow;
-        for (&self.entries) |*job| if (job.phase != .free and std.meta.eql(job.fence, fence)) return error.Busy;
+        if (!internal) for (&self.entries) |*job| { if (job.phase != .free and !job.internal and std.meta.eql(job.fence, fence)) return error.Busy; };
         for (&self.entries, 0..) |*job, i| if (job.phase == .free) {
             self.token += 1;
             self.writeback[i] = std.math.maxInt(u64);
             asm volatile ("mfence" ::: .{ .memory = true });
-            job.* = .{ .phase = .reserved, .fence = fence, .engine = engine, .token = self.token, .deadline = deadline, .resources = resources };
+            job.* = .{ .phase = .reserved, .fence = fence, .engine = engine, .token = self.token, .deadline = deadline, .resources = resources, .internal = internal };
             return .{ .slot = @intCast(i), .token = self.token, .epoch = self.epoch };
         };
         return error.Capacity;
@@ -127,7 +136,7 @@ pub const Timeline = struct {
                 if (!resources.retire(resources.context, job.fence)) { all = false; continue; }
                 job.resources_retired = true;
             }
-            if (queue.complete(&job.fence, job.result, 1) != 1) { all = false; continue; }
+            if (!job.internal and queue.complete(&job.fence, job.result, 1) != 1) { all = false; continue; }
             self.writeback[i] = std.math.maxInt(u64); job.* = .{}; self.completed +|= 1;
         }
         return all;

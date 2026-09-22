@@ -21,7 +21,8 @@ pub fn route(board: *const bios.Board) Error!Route {
     const line = p.aux_ddc_line orelse return error.Unsupported;
     const ddc = p.i2c_pin orelse return error.Unsupported;
     const hpd = p.hpd_pin orelse return error.Unsupported;
-    if (line >= 4 or ddc.shift != 0 or ddc.mask_shift != 0 or hpd.shift % 4 != 0 or hpd.shift / 4 >= 4 or
+    // Match the pinned DCN1 GPIO masks: one byte per physical HPD pin.
+    if (line >= 4 or ddc.shift != 0 or ddc.mask_shift != 0 or hpd.shift % 8 != 0 or hpd.shift / 8 >= 4 or
         hpd.mask_shift != hpd.shift or p.hpd_active != 1) return error.Unsupported;
     const integrated = board.integrated orelse return error.Unsupported;
     if (integrated.external) |external| for (external.paths) |path| {
@@ -36,12 +37,12 @@ pub fn route(board: *const bios.Board) Error!Route {
             if (lut[index] != p.hpd_id.?) return error.Invalid;
         }
     };
-    const table = board.table("dce_info") orelse return error.Unsupported;
-    if (table.bytes.len < @sizeOf(bios.c.struct_atom_display_controller_info_v4_1) or table.bytes[2] != 4 or table.bytes[3] != 1) return error.Unsupported;
-    const crystal = @as(u32, bios.field(bios.c.struct_atom_display_controller_info_v4_1, "dce_refclk_10khz", table.bytes) catch return error.Invalid) * 10;
-    if (crystal < 24000 or crystal > 100000) return error.Invalid;
+    const crystal = board.displayReferenceClock() catch |err| switch (err) {
+        error.Missing, error.Revision, error.Short => return error.Unsupported,
+        else => return error.Invalid,
+    };
     return .{ .native = .{ .connector = p.connector, .encoder = p.encoder, .phy = phy + ((p.encoder >> 8) & 15) - 1,
-        .aux = line, .hpd = hpd.shift / 4, .caps = p.encoder_caps orelse 0, .ddc_a = ddc.register,
+        .aux = line, .hpd = hpd.shift / 8, .caps = p.encoder_caps orelse 0, .ddc_a = ddc.register,
         .hpd_a = hpd.register, .hpd_shift = hpd.shift, .hpd_active = p.hpd_active }, .crystal_khz = crystal };
 }
 pub const Io = struct {

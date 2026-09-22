@@ -115,6 +115,7 @@ const Fixture = struct {
         api.get_option = option; api.pci_device_count = deviceCount; api.pci_device_at = deviceAt;
         api.pci_read_config32 = readConfig; api.gfx_display_query = displayQuery; api.gfx_memory_query = memoryQuery;
         api.resource_query = resourceQuery; api.heap_query = heapQuery;
+        api.thread_query = null;
         // PCI writes, bus-mastering, DMA, command execution and queues remain
         // undefined: only the bounded read/capture contracts are admitted.
     }
@@ -313,6 +314,7 @@ const Fixture = struct {
 };
 
 test "AMD actual init and unbind preserve software boot and bound source-backed identity/UMA probes" {
+    try @import("native_worker.zig").check();
     const f = Fixture;
     defer { f.fail_unmap = false; f.fail_collect = false; _ = driver.amdgpu_shutdown(); }
     // PCI revision C8 is not ASIC revision 8: the two identities are separate.

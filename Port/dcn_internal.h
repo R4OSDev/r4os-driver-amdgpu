@@ -18,6 +18,7 @@
 #include "dce/dce_i2c_hw.h"
 #include "dio/dcn10/dcn10_stream_encoder.h"
 #include "ddc_service_types.h"
+#include "dce/dce_clock_source.h"
 struct r4dcn_link {
  struct r4dcn_route route;
  struct r4dcn_atom atom;
@@ -29,7 +30,12 @@ struct r4dcn_link {
  struct ddc gpio_ddc;
  struct dce_i2c_hw i2c;
  struct dcn10_stream_encoder stream;
+ struct dce110_clk_src clock;
+ struct dc_bios clock_bios;
+ unsigned clock_bound,clock_attempted,clock_pipe;
  unsigned i2c_ready,ddc_open,hdmi_configured,hdmi_pipe;
+ unsigned dp_stream_bound,dp_configured,dp_pipe,dp_started;
+ uint32_t dp_trace;
  uint32_t ddc_saved_mask;
  unsigned bound,pads_held,initialized,enabled;
  uint32_t pad_mask,hpd_mask;
@@ -40,6 +46,8 @@ struct r4dcn {
  uint64_t self;
  int fault;
  unsigned count,mask,prepared,programmed;
+ unsigned running,tg_locked,cursor_locked;
+ uint32_t dprefclk_khz;
  struct dc_context ctx;
  struct dc dc;
  struct resource_pool pool;

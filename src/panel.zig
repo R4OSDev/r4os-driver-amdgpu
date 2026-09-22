@@ -7,7 +7,7 @@ pub const edid = @import("r4gfx_edid");
 pub const c = @cImport({
     @cInclude("dcn_api.h");
 });
-pub const Error = error{ Invalid, Unsupported, Ambiguous, Io, Nack, Timeout, Training, State, Capacity };
+pub const Error = error{ Invalid, Unsupported, Ambiguous, Io, Nack, Timeout, Training, State, Capacity, Disconnected };
 pub const Action = enum { init, power_on, power_off, backlight_on, backlight_off, disable };
 pub const Path = enum { unavailable, pwm, aux8, aux16 };
 pub const Reason = enum { none, no_receiver_control, invalid_pwm, firmware_owner };
@@ -50,9 +50,10 @@ pub fn route(board: *const bios.Board) Error!Route {
     const aux = p.aux_ddc_line orelse return error.Unsupported;
     const ddc = p.i2c_pin orelse return error.Unsupported;
     const hpd = p.hpd_pin orelse return error.Unsupported;
+    // DCN1 DC_GPIO_HPD{A,Y}: HPD1..4 occupy bits 0, 8, 16 and 24.
     // DCN1 HPD1..4 use 4-bit spaced fields. The native boundary also verifies
     // each register against the original DCN1 tables, including the DDC line.
-    if (aux >= 4 or ddc.shift != 0 or ddc.mask_shift != 0 or hpd.shift % 4 != 0 or hpd.shift / 4 >= 4 or
+    if (aux >= 4 or ddc.shift != 0 or ddc.mask_shift != 0 or hpd.shift % 8 != 0 or hpd.shift / 8 >= 4 or
         hpd.mask_shift != hpd.shift or p.hpd_active != 1) return error.Unsupported;
     if (integrated.external) |external| for (external.paths) |path| {
         if (path.connector != p.connector) continue;
@@ -73,7 +74,7 @@ pub fn route(board: *const bios.Board) Error!Route {
     const minimum: u16 = @as(u16, @max(panel.min_bl, integrated.min_backlight)) * 257;
     const maximum: u16 = if (panel.max_bl == 0) 65535 else @as(u16, panel.max_bl) * 257;
     if (minimum > maximum) return error.Invalid;
-    return .{ .native = .{ .connector = p.connector, .encoder = p.encoder, .phy = phy + ((p.encoder >> 8) & 15) - 1, .aux = aux, .hpd = hpd.shift / 4, .caps = p.encoder_caps orelse 0, .ddc_a = ddc.register, .hpd_a = hpd.register, .hpd_shift = hpd.shift, .hpd_active = p.hpd_active }, .panel = panel, .delays_ms = delays, .minimum = minimum, .maximum = maximum };
+    return .{ .native = .{ .connector = p.connector, .encoder = p.encoder, .phy = phy + ((p.encoder >> 8) & 15) - 1, .aux = aux, .hpd = hpd.shift / 8, .caps = p.encoder_caps orelse 0, .ddc_a = ddc.register, .hpd_a = hpd.register, .hpd_shift = hpd.shift, .hpd_active = p.hpd_active }, .panel = panel, .delays_ms = delays, .minimum = minimum, .maximum = maximum };
 }
 pub const Link = struct { rate: u8 = 0, lanes: u8 = 0, enhanced: bool = false, table_index: ?u8 = null };
 pub const Phase = enum { empty, bound, discovering, discovered, training, trained, visible, off, retained };
@@ -306,11 +307,28 @@ pub const Panel = struct {
         self.brightness_known = true;
     }
     fn eligible(self: *const Panel, rate: u8, lanes: u8) ?Link {
+        return self.eligibleFor(self.mode.clock_hz, rate, lanes);
+    }
+    pub fn supportsTiming(self: *const Panel, value: edid.timing.Timing) bool {
+        if (!value.valid() or value.flags & (edid.timing.interlaced | edid.timing.incomplete | edid.timing.y420_only) != 0) return false;
+        for ([_]u8{ 4, 2, 1 }) |lanes| for ([_]u8{ 30, 20, 10, 6 }) |rate| {
+            if (self.eligibleFor(value.clock_hz, rate, lanes) != null) return true;
+        };
+        return false;
+    }
+    pub fn verifyLink(self: *Panel) Error!void {
+        if ((self.phase != .visible and self.phase != .trained) or self.link.lanes == 0 or !self.powered or
+            !try self.io.hpd(self.io.context) or !try self.io.video(self.io.context)) return error.Disconnected;
+        var status: [6]u8 = undefined;
+        try self.read(0x202, &status);
+        if (!self.lanesOk(status, 7) or status[2] & 1 == 0) return error.Training;
+    }
+    fn eligibleFor(self: *const Panel, pixel_hz: u64, rate: u8, lanes: u8) ?Link {
         if (lanes > self.receiver[2] & 31 or (rate >= 20 and self.route.native.caps & 2 == 0) or
             (rate == 30 and (self.route.native.caps & 8 == 0 or self.receiver[3] & 0x80 == 0))) return null;
         // 8b/10b payload; reserve 0.5% for transport overhead.
         const payload = @as(u64, rate) * 27_000_000 * lanes * 8;
-        if (self.mode.clock_hz * self.bpc * 3 * 1000 > payload * 995) return null;
+        if (pixel_hz * self.bpc * 3 * 1000 > payload * 995) return null;
         var link: Link = .{ .rate = rate, .lanes = lanes, .enhanced = self.receiver[2] & 0x80 != 0 };
         if (self.receiver[1] == 0) {
             for (0..8) |i| {

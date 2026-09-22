@@ -236,8 +236,31 @@
       "source": "Port/dcn_hdmi.c",
       "language": "c",
       "owner_source": true
+    },
+    {
+      "name": "dcn_scanout",
+      "source": "Port/dcn_scanout.c",
+      "language": "c",
+      "owner_source": true
+    },
+    {
+      "name": "dce_clock_source",
+      "source": "drivers/gpu/drm/amd/display/dc/dce/dce_clock_source.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_clock",
+      "source": "Port/dcn_clock.c",
+      "language": "c",
+      "owner_source": true
+    },
+    {
+      "name": "dcn_dp_stream",
+      "source": "Port/dcn_dp_stream.c",
+      "language": "c",
+      "owner_source": true
     }
   ],
-  "followup": "0.80.18 native activation, pixel clocks, pageflip and complete boot restoration; 0.80.21 extended color",
-  "scope": "Original DCN1 frontend/DML, AUX/panel and HDMI/I2C/stream encoders; bounded R4OS ATOM1.6/1.5. Direct HDMI1.4 RGB8 and generation-bound retirement. No Linux runtime; visible activation/restoration belongs to /18."
+  "followup": "0.80.19 desktop provider integration; 0.80.20 active HDMI/multihead; 0.80.21 extended color; physical evidence only 0.80.39",
+  "scope": "Original DCN1 frontend/DML, AUX/panel, clocks, SST, scanout/flip/cursor and HDMI/I2C/stream encoders. Native eDP takeover and complete boot reconstruction use the common display contract. HDMI receiver discovery is live; simultaneous active outputs follow in /20. No Linux runtime."
 }

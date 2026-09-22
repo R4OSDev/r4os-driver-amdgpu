@@ -5,11 +5,14 @@ const bios = @import("bios.zig");
 const atom = @import("atom_vm.zig");
 pub const panel = @import("panel.zig");
 pub const c = panel.c;
-pub const Operation = enum(u32) { discover = 1, train = 2, show = 3, brightness = 4, hide = 5 };
+pub const Operation = enum(u32) { discover = 1, train = 2, show = 3, brightness = 4, hide = 5, clock = 6, stream_configure = 7, stream_on = 8, stream_off = 9 };
 pub const Runtime = struct {
     self_address: usize = 0,
     storage: ?*anyopaque = null,
     pipe: u32 = 0,
+    crystal_khz: u32 = 0,
+    clock_bound: bool = false,
+    dprefclk_khz: u32 = 0,
     vm: atom.Vm = .{},
     scratch: [16384]u32 = @splat(0),
     protocol: ?panel.Panel = null,
@@ -28,10 +31,12 @@ pub const Runtime = struct {
         if (!std.mem.eql(u8, &revision, &.{ 1, 6 })) return error.Unsupported;
         self.storage = storage;
         self.pipe = pipe;
+        self.crystal_khz = board.displayReferenceClock() catch 0;
         self.self_address = @intFromPtr(self);
         self.protocol = .{ .route = route, .io = .{ .context = self.self_address, .transfer = transfer, .action = action, .enable = enable, .train = train, .status = status, .pwm = pwm, .hpd = hpd, .video = video, .now = now, .delay = delay } };
         const callback: c.struct_r4dcn_atom = .{ .context = self, .execute = execute };
         try checked(c.r4dcn_link_bind(storage, 0, &route.native, &callback));
+        try checked(c.r4dcn_dp_stream_bind(storage, 0));
     }
     pub fn run(self: *Runtime, operation: Operation, value: u16) panel.Error!void {
         if (self.self_address != @intFromPtr(self) or self.protocol == null or !self.vm.io.?.worker(self.vm.io.?.context)) return error.State;
@@ -43,11 +48,31 @@ pub const Runtime = struct {
             .show => p.show(value),
             .brightness => p.setBrightness(value),
             .hide => p.hide(),
+            .clock => self.pixelClock(),
+            .stream_configure => self.configureStream(),
+            .stream_on => if (p.phase == .trained) checked(c.r4dcn_dp_stream_start(self.storage, 0)) else error.State,
+            .stream_off => checked(c.r4dcn_dp_stream_stop(self.storage, 0)),
         };
         result catch |err| {
             self.last_panel_error = err;
             return err;
         };
+    }
+    fn configureStream(self: *Runtime) panel.Error!void {
+        if (self.protocol.?.phase != .discovered) return error.State;
+        try checked(c.r4dcn_dp_stream_configure(self.storage, 0, self.pipe, self.protocol.?.bpc));
+    }
+    fn pixelClock(self: *Runtime) panel.Error!void {
+        const reference_revision = self.vm.revision(@offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2) catch return error.Unsupported;
+        if (!std.mem.eql(u8, &reference_revision, &.{ 2, 1 })) return error.Unsupported;
+        if (!self.clock_bound) {
+            const revision = self.vm.revision(@offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setpixelclock") / 2) catch return error.Unsupported;
+            if (!std.mem.eql(u8, &revision, &.{ 1, 7 }) or self.crystal_khz == 0) return error.Unsupported;
+            try checked(c.r4dcn_pixel_clock_bind(self.storage, 0, self.crystal_khz));
+            self.clock_bound = true;
+        }
+        try checked(c.r4dcn_reference_clock_program(self.storage, 0, &self.dprefclk_khz));
+        try checked(c.r4dcn_pixel_clock_program(self.storage, 0, self.pipe));
     }
     fn checked(result: c_int) panel.Error!void {
         switch (result) {

@@ -118,9 +118,14 @@ const Native = struct {
     }
     fn atom(_: ?*anyopaque, command: u32, parameters: [*c]u32, n: u32) callconv(.c) c_int {
         std.debug.assert(count < commands.len);
+        if (command == @offsetOf(b.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2 and n == 4) {
+            std.debug.assert(parameters[0] == 0 and parameters[1] == 0x0801 and parameters[2] == 0 and parameters[3] == 0);
+            parameters[0] = 60000; return 0;
+        }
         const tx = @offsetOf(b.c.struct_atom_master_list_of_command_functions_v2_1, "dig1transmittercontrol") / 2;
         const enc = @offsetOf(b.c.struct_atom_master_list_of_command_functions_v2_1, "digxencodercontrol") / 2;
-        std.debug.assert((command == tx and n == 8) or (command == enc and n == 3));
+        const pixel = @offsetOf(b.c.struct_atom_master_list_of_command_functions_v2_1, "setpixelclock") / 2;
+        std.debug.assert((command == tx and n == 8) or (command == enc and n == 3) or (command == pixel and n == 4));
         commands[count] = @splat(0);
         @memcpy(commands[count][0..n], parameters[0..n]);
         count += 1;
@@ -147,6 +152,20 @@ const Native = struct {
     const route: c.struct_r4dcn_route = .{ .connector = 0x310c, .encoder = 0x211e, .phy = 0, .aux = 0, .hpd = 0, .caps = 0xa, .ddc_a = reg("DC_GPIO_DDC1_A"), .hpd_a = reg("DC_GPIO_HPD_A"), .hpd_shift = 0, .hpd_active = 1 };
 };
 const mode: c.struct_r4dcn_mode = .{ .width = 1920, .height = 1080, .h_total = 2200, .v_total = 1125, .h_front = 88, .h_sync = 44, .v_front = 4, .v_sync = 5, .pixel_khz = 148500, .pitch_bytes = 7680, .pipe = 0, .flags = 7, .mc_address = 0x200000000, .buffer_bytes = 7680 * 1080 };
+/// Share the real I2C register/FIFO model with the composite driver test.
+pub const SharedI2c = struct {
+    pub fn reset() void {
+        @memset(&Native.words, 0); Sink.init();
+        Native.i2c_at = 0; Native.i2c_go = 0; Native.i2c_sent_count = 0;
+        Native.i2c_deny = false; Native.i2c_nack = false; Native.i2c_timeout = false;
+        Native.i2c_auto_sink = true; Native.fail_write = 0; Native.writes = 0;
+    }
+    pub fn handles(offset: u32) bool { return offset >= reg("DC_I2C_CONTROL") * 4 and offset <= reg("DC_I2C_READ_REQUEST_INTERRUPT") * 4; }
+    pub fn read(raw: ?*anyopaque, offset: u32, out: [*c]u32) c_int { return Native.read(raw, offset, out); }
+    pub fn write(raw: ?*anyopaque, offset: u32, value: u32) c_int { return Native.write(raw, offset, value); }
+    pub fn changed() void { Sink.bytes[12] +%= 1; Sink.checksum(); }
+    pub fn requests() usize { return Native.i2c_go; }
+};
 test "HDMI original I2C arbitration FIFO E-DDC release and stream infoframes" {
     const n = Native;
     try n.init();
@@ -180,6 +199,24 @@ test "HDMI original I2C arbitration FIFO E-DDC release and stream infoframes" {
     try t.expectEqual(@as(c_int, 0), c.r4dcn_hdmi_edid(&n.bytes, 1, 0, &bytes));
     var plan: c.struct_r4dcn_plan = undefined;
     try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&n.bytes, &mode, 1, &plan));
+    const pixel_calls = n.count;
+    const pixel_writes = n.writes;
+    try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_pixel_clock_bind(&n.bytes, 1, 0));
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_pixel_clock_bind(&n.bytes, 1, 48000));
+    try t.expectEqual(pixel_writes, n.writes);
+    n.words[reg("OTG0_OTG_CONTROL")] = hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK;
+    try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_pixel_clock_program(&n.bytes, 1, 0));
+    try t.expectEqual(pixel_calls, n.count);
+    n.words[reg("OTG0_OTG_CONTROL")] = 0;
+    var reference_khz: u32 = 0;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_reference_clock_program(&n.bytes, 1, &reference_khz));
+    try t.expectEqual(@as(u32, 600000), reference_khz);
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_pixel_clock_program(&n.bytes, 1, 0));
+    try t.expectEqual(pixel_calls + 1, n.count);
+    try t.expectEqual(@as(u32, 1485000), n.commands[pixel_calls][0]);
+    try t.expectEqual(@as(u32, 0x00031e14), n.commands[pixel_calls][1]); // HDMI3 / UNIPHY0x1e / PLL20
+    try t.expectEqual(@as(u32, 0), n.commands[pixel_calls][2]); // CRTC0 / RGB8
+    try t.expectEqual(@as(u32, 0), n.commands[pixel_calls][3]);
     var avi: [17]u8 = @splat(0); avi[0..4].* = .{0x82, 2, 13, 0x6f};
     const calls = n.count;
     try t.expectEqual(@as(c_int, 0), c.r4dcn_hdmi_configure(&n.bytes, 1, 0, &avi));
@@ -276,11 +313,16 @@ test "HDMI admits only complete receiver timings and the direct HDMI1.4 board ro
     try t.expectError(error.Capacity, receiver.read(s.io, 340_000_000));
     var rom: [fixture.image_bytes]u8 = undefined; fixture.rom(&rom);
     var board: b.Board = undefined; try b.parse(&rom, fixture.device, &board);
-    board.paths[0].connector = 0x310c; board.paths[0].i2c_pin.?.shift = 0; board.paths[0].hpd_pin.?.mask_shift = 4;
+    board.paths[0].connector = 0x310c; board.paths[0].i2c_pin.?.shift = 0;
+    board.paths[0].hpd_pin.?.shift = 8; board.paths[0].hpd_pin.?.mask_shift = 8;
     var info: [@sizeOf(b.c.struct_atom_display_controller_info_v4_1)]u8 = @splat(0);
     fixture.header(&info, info.len, 4, 1); fixture.set(b.c.struct_atom_display_controller_info_v4_1, "dce_refclk_10khz", &info, 4800);
     board.tables[@offsetOf(b.c.struct_atom_master_list_of_data_tables_v2_1, "dce_info") / 2] = .{ .offset = 0xb00, .bytes = &info };
     try t.expectEqual(@as(u32, 48000), (try p.route(&board)).crystal_khz);
+    try t.expectEqual(@as(u32, 1), (try p.route(&board)).native.hpd);
+    board.paths[0].hpd_pin.?.shift = 4; board.paths[0].hpd_pin.?.mask_shift = 4;
+    try t.expectError(error.Unsupported, p.route(&board));
+    board.paths[0].hpd_pin.?.shift = 8; board.paths[0].hpd_pin.?.mask_shift = 8;
     board.paths[1] = board.paths[0]; board.path_count = 2;
     try t.expectError(error.Ambiguous, p.route(&board)); board.path_count = 1;
     board.paths[0].connector = 0x3113; // A DP/USB-C path is never inferred as HDMI.

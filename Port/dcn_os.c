@@ -51,4 +51,5 @@ void dm_perf_trace_timestamp(const char *function,unsigned line,struct dc_contex
  * errors; construction/planning never delegates ownership to these calls. */
 void *r4dcn_kzalloc(size_t size,unsigned flags) { (void)size;(void)flags; r4amd_dcn_assert("unplanned DC allocation",__FILE__,__LINE__); }
 void *r4dcn_kmalloc(size_t size,unsigned flags) { return r4dcn_kzalloc(size,flags); }
+void *r4dcn_kzalloc_array(size_t count,size_t size) { (void)count;(void)size;r4amd_dcn_assert("unplanned DC array allocation",__FILE__,__LINE__); }
 void r4dcn_kfree(const void *p) { if(p) r4amd_dcn_assert("embedded DC object free",__FILE__,__LINE__); }

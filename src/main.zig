@@ -14,6 +14,12 @@ pub var sdma_runtime: @import("sdma_jobs.zig").Owner = .{};
 pub var gc_runtime: @import("gc_runtime.zig").Owner = .{};
 pub var queue_runtime: @import("queue_runtime.zig").Owner = .{};
 pub var display_runtime: @import("display_core.zig").Owner = .{};
+pub var display_present: @import("display_present.zig").Owner = .{};
+pub var display_images: [2]@import("display_buffers.zig").Image = .{ .{}, .{} };
+pub var display_pipeline: @import("display_pipeline.zig").Owner = .{};
+pub var display_clock_runtime: @import("display_clock_owner.zig").Owner = .{};
+pub var display_output: @import("display_output.zig").Owner = .{};
+pub var native_worker: @import("native_worker.zig").Owner = .{};
 pub var memory_layout: ?@import("memory_layout.zig").Layout = null;
 pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
 // Resident bounded snapshots never copy a large pool onto the init stack.
@@ -42,9 +48,10 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
         return 0;
     }
     const mode = std.mem.span(ctx.getOption("AMDGPU", "mode"));
-    if (std.ascii.eqlIgnoreCase(mode, "native")) return reject("native-runtime-not-implemented", -8);
-    if (mode.len != 0 and !std.ascii.eqlIgnoreCase(mode, "auto") and !std.ascii.eqlIgnoreCase(mode, "passive"))
+    const native_requested = std.ascii.eqlIgnoreCase(mode, "native");
+    if (mode.len != 0 and !native_requested and !std.ascii.eqlIgnoreCase(mode, "auto") and !std.ascii.eqlIgnoreCase(mode, "passive"))
         return reject("unsupported-mode", -2);
+    if (native_requested and !@import("native_worker.zig").supported(&ctx)) return reject("native-worker-unavailable", -8);
     boot.validate(initial) catch return reject("boot-framebuffer-unavailable", -3);
     const inventory = ctx.pciDeviceCount();
     if (inventory > 4096) return reject("inventory-limit", -4);
@@ -118,6 +125,10 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     log("AMDGPU board: source={s} bytes={d} paths={d} panel={s} integrated={s} checksum={x}", .{ @tagName(firmware.source), firmware.board.image.len, firmware.board.path_count, if (firmware.board.panel != null) @as([]const u8, "present") else "absent", if (firmware.board.integrated != null) @as([]const u8, "present") else "absent", firmware.sha256 });
     log("AMDGPU boot capture: generation={d} bytes={d} hash={x} writers=resumed snapshot=retained effects=0", .{ boot_snapshot.boot.generation, boot_snapshot.read.byte_length, boot_snapshot.sha256 });
     ctx.logInfo("AMDGPU bind: board-and-firmware-admission mappings=0 queues=0 firmware=unsubmitted native-writes=0 fallback=preserved");
+    if (native_requested) {
+        native_worker.start(&ctx, &display_output, .{ .advance = advanceNative, .recover = recoverNative }) catch return reject("native-worker-unavailable", -8);
+        ctx.logInfo("AMDGPU native start: asynchronous worker admitted; output ownership awaits confirmed scanout");
+    }
     return 0;
 }
 /// Start worker entry used by the subsequent SDMA/GFX/display integration.
@@ -133,11 +144,16 @@ pub fn beginNative(memory_epoch: u64) !void {
 /// Preemptible native-start pump. Physical activation stays behind the normal
 /// bind policy until the display milestones integrate the full transition.
 pub fn advanceNative() !bool {
-    if (native_start.self_address == 0) return error.State;
+    if (native_start.self_address == 0) {
+        if (boot_snapshot.boot.generation == std.math.maxInt(u64)) return error.State;
+        try beginNative(boot_snapshot.boot.generation + 1);
+    }
     if (!native_start.flow.firmwareReady()) {
         try native_start.advance();
         return false;
     }
+    if (display_clock_runtime.self_address == 0) try display_clock_runtime.prepare(&memory_runtime, &native_start);
+    if (!try display_clock_runtime.poll()) return false;
     if (sdma_runtime.self_address == 0) {
         try memory_runtime.enable(.{ .memory_epoch = memory_runtime.epoch, .boot_held = true, .engines_quiesced = true });
         try sdma_runtime.prepare(&memory_runtime, &queue_runtime, &native_start);
@@ -145,23 +161,53 @@ pub fn advanceNative() !bool {
     if (!try sdma_runtime.pollSelftest()) return false;
     if (gc_runtime.self_address == 0) try gc_runtime.prepare(&memory_runtime, &queue_runtime, &native_start, &sdma_runtime);
     if (gc_runtime.engine.phase != .ready and !try gc_runtime.advance()) return false;
-    if (!sdma_runtime.active) try sdma_runtime.activate(&native_start);
+    if (!sdma_runtime.active) {
+        const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+        if (display_output.self_address == 0) try display_output.request(&ctx, &native_start, &sdma_runtime, &display_runtime, &display_pipeline,
+            &display_present, .{ &display_images[0], &display_images[1] }, &firmware.board, display_clock_runtime.table.?, gc_runtime.engine.gb_addr_config);
+        try sdma_runtime.activate(&native_start);
+    }
     return sdma_runtime.active;
 }
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
-    if (!display_runtime.close()) return -1;
-    if (!sdma_runtime.close()) return -1;
-    if (memory_runtime.controller.touched) memory_runtime.controller.disable(&memory_runtime.registers, .{ .memory_epoch = memory_runtime.epoch, .boot_held = native_start.hold.held_generation != 0, .engines_quiesced = sdma_runtime.closed or (sdma_runtime.self_address == 0 and native_start.firmwareReady()) }) catch return -1;
-    if (!queue_runtime.close(null) or !native_start.close() or !memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false }) or !boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
+    native_worker.requestStop();
+    if (!native_worker.join() or !recoverNative()) return -1;
+    if (!boot_snapshot.close() or !firmware_package.close() or !firmware.close() or !probe.close(&ctx)) {
         ctx.logError("AMDGPU unbind: cleanup=retained module-release=blocked");
         return -1;
     }
     device_count = 0;
     boot_association = null;
     memory_layout = null;
+    native_worker = .{};
     driver_api = null;
     return 0;
+}
+fn recoverNative() bool {
+    // Stop and join the sole BO/queue owner before starting independent DCN
+    // restoration tasks or mutating any of its retained maps and pools.
+    if (!queue_runtime.stopWorker()) return false;
+    if (display_output.self_address != 0) display_output.phase = .closing;
+    if (!display_output.beginReset()) return false;
+    if (!display_runtime.close() or !sdma_runtime.close()) return false;
+    if (!display_output.modes.close()) return false;
+    if (!display_output.cursor.close(&memory_runtime, true)) return false;
+    for (&display_images) |*frame| if (!frame.close(true)) return false;
+    if (!display_clock_runtime.close()) return false;
+    if (memory_runtime.controller.touched) memory_runtime.controller.disable(&memory_runtime.registers,
+        .{ .memory_epoch = memory_runtime.epoch, .boot_held = native_start.hold.held_generation != 0,
+            .engines_quiesced = sdma_runtime.closed or (sdma_runtime.self_address == 0 and native_start.firmwareReady()) }) catch return false;
+    if (!queue_runtime.close(null) or !native_start.quiesce()) return false;
+    if (native_start.self_address != 0) display_output.confirmRestore() catch return false;
+    if (!display_output.retireReset()) return false;
+    if (!native_start.close() or !display_output.closeMetadata()) return false;
+    if (!memory_runtime.close(.{ .memory_epoch = memory_runtime.epoch, .boot_held = false, .engines_quiesced = false })) return false;
+    // All worker handles, notifications, backend bindings, BOs and callbacks
+    // have retired. A later initialization starts with fresh runtime owners.
+    sdma_runtime = .{}; gc_runtime = .{}; queue_runtime = .{};
+    display_present = .{}; display_pipeline = .{};
+    return true;
 }
 const Reader = struct {
     ctx: r4os.r4dev.DriverContext,
@@ -184,15 +230,18 @@ fn reject(reason: []const u8, status: i32) i32 {
 // Private native-stage entrypoints retained in the driver artifact. They are
 // not published as an application API or invoked by passive initialization.
 pub export fn amdgpu_native_begin(epoch: u64) callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     beginNative(epoch) catch return -1;
     return 0;
 }
 pub export fn amdgpu_native_advance() callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     return @intFromBool(advanceNative() catch return -1);
 }
 /// Private staged display boundary. Native policy remains gated until the
 /// connector/modeset owner supplies and confirms the physical clock point.
 pub export fn amdgpu_display_prepare(limits: *const @import("display_core.zig").c.struct_r4dcn_limits, mode: *const @import("display_core.zig").c.struct_r4dcn_mode) callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return -1);
     if (gc_runtime.engine.phase != .ready or !sdma_runtime.active) return -1;
     const architecture = gc_runtime.architecture orelse return -1;
@@ -201,15 +250,18 @@ pub export fn amdgpu_display_prepare(limits: *const @import("display_core.zig").
     return 0;
 }
 pub export fn amdgpu_display_poll() callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     if (!display_runtime.poll()) return 1;
     return display_runtime.result;
 }
 pub export fn amdgpu_panel_bind() callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     display_runtime.bindPanel() catch return -1;
     return 0;
 }
 pub export fn amdgpu_panel_operation(operation: u32, value: u32) callconv(.c) i32 {
-    if (operation < 1 or operation > 5) return -1;
+    if (native_worker.self_address != 0) return -1;
+    if (operation < 1 or operation > 9) return -1;
     const tag: @import("panel_runtime.zig").Operation = @enumFromInt(operation);
     if (value > 65535) return -1;
     display_runtime.panelCommand(tag, @intCast(value)) catch return -1;
@@ -217,17 +269,20 @@ pub export fn amdgpu_panel_operation(operation: u32, value: u32) callconv(.c) i3
 }
 
 pub export fn amdgpu_panel_brightness(output_id: *const a.GfxOutputId) callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     if (@intFromPtr(output_id) == 0 or @intFromPtr(output_id) % @alignOf(a.GfxOutputId) != 0) return -1;
     display_runtime.brightnessCommand(output_id.*) catch return -1;
     return 0;
 }
 
 pub export fn amdgpu_hdmi_bind() callconv(.c) i32 {
+    if (native_worker.self_address != 0) return -1;
     display_runtime.bindHdmi() catch return -1;
     return 0;
 }
 pub export fn amdgpu_hdmi_operation(operation: u32) callconv(.c) i32 {
-    if (operation < 1 or operation > 6) return -1;
+    if (native_worker.self_address != 0) return -1;
+    if (operation < 1 or operation > 7) return -1;
     display_runtime.hdmiCommand(@enumFromInt(operation)) catch return -1;
     return 0;
 }
