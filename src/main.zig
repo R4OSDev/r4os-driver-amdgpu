@@ -25,6 +25,7 @@ pub var boot_snapshot: @import("boot_snapshot.zig").Snapshot = .{};
 // Resident bounded snapshots never copy a large pool onto the init stack.
 var devices: [8]boot.Device = undefined;
 var device_count: usize = 0;
+var audio_peer: ?@import("display_audio.zig").Peer = null;
 pub var boot_association: ?boot.Association = null;
 
 comptime {
@@ -36,6 +37,7 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     driver_api = api;
     device_count = 0;
     boot_association = null;
+    audio_peer = null;
     memory_layout = null;
     // This is the effective kernel policy, including the one-shot software
     // boot-menu override. Never reconstruct it from a configuration string.
@@ -126,6 +128,8 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     log("AMDGPU boot capture: generation={d} bytes={d} hash={x} writers=resumed snapshot=retained effects=0", .{ boot_snapshot.boot.generation, boot_snapshot.read.byte_length, boot_snapshot.sha256 });
     ctx.logInfo("AMDGPU bind: board-and-firmware-admission mappings=0 queues=0 firmware=unsubmitted native-writes=0 fallback=preserved");
     if (native_requested) {
+        audio_peer = @import("display_audio.zig").capture(&ctx, device.snapshot.pci);
+        log("AMDGPU display audio: HDA companion={s} format=48000-stereo-S16 physical-verified=no", .{if (audio_peer != null) @as([]const u8, "1002:15de") else "unavailable"});
         native_worker.start(&ctx, &display_output, .{ .advance = advanceNative, .recover = recoverNative }) catch return reject("native-worker-unavailable", -8);
         ctx.logInfo("AMDGPU native start: asynchronous worker admitted; output ownership awaits confirmed scanout");
     }
@@ -163,6 +167,7 @@ pub fn advanceNative() !bool {
     if (gc_runtime.engine.phase != .ready and !try gc_runtime.advance()) return false;
     if (!sdma_runtime.active) {
         const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+        if (display_runtime.self_address == 0) display_runtime.audio_peer = audio_peer;
         if (display_output.self_address == 0) try display_output.request(&ctx, &native_start, &sdma_runtime, &display_runtime, &display_pipeline,
             &display_present, .{ &display_images[0], &display_images[1] }, &firmware.board, display_clock_runtime.table.?, gc_runtime.engine.gb_addr_config);
         try sdma_runtime.activate(&native_start);

@@ -19,6 +19,7 @@
 #include "dio/dcn10/dcn10_stream_encoder.h"
 #include "ddc_service_types.h"
 #include "dce/dce_clock_source.h"
+#include "dce/dce_audio.h"
 struct r4dcn_link {
  struct r4dcn_route route;
  struct r4dcn_atom atom;
@@ -33,6 +34,7 @@ struct r4dcn_link {
  struct dce110_clk_src clock;
  struct dc_bios clock_bios;
  unsigned clock_bound,clock_attempted,clock_pipe;
+ unsigned audio_bound,audio_inst,audio_configured,audio_enabled;
  unsigned i2c_ready,ddc_open,hdmi_configured,hdmi_pipe;
  unsigned dp_stream_bound,dp_configured,dp_pipe,dp_started;
  uint32_t dp_trace;
@@ -67,6 +69,7 @@ struct r4dcn {
  struct dcn10_mpc mpc;
  struct dc_bios bios;
  struct r4dcn_link links[R4DCN_PIPES];
+ struct dce_audio audio[4];
  struct dce_panel_cntl panel;
  unsigned panel_constructed;
 };

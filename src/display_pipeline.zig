@@ -158,7 +158,7 @@ pub const Owner = struct {
                 if (video != 1) return error.Unconfirmed;
                 core.mode_receipt = receipt;
                 try life.acknowledge(request.epoch, request.sequence);
-                if (primary) try panel_runtime.run(.show, brightness);
+                if (primary) try panel_runtime.run(.show, brightness) else try hdmi_runtime.?.audio.activate(storage);
                 return;
             }
             try core.workerDelay(1000);

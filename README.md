@@ -1,7 +1,7 @@
 ﻿# AMDGPU
 
-Version 0.1.16 adds confirmed per-output color facts, RGB10 HDMI, static
-PQ/HLG metadata and correct full/limited pixel encoding for R4OS 0.80.21.
+Version 0.1.17 adds original DCN1 HDMI audio programming and generation-bound
+HDA route publication for R4OS 0.80.22, including 8/10-bit mode transitions.
 The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
@@ -192,3 +192,25 @@ The common Desktop retains layout, scale, clone, primary selection and input
 policy; additional heads use software cursors. Logical disable is black/idle,
 while physical screen-power and laptop sleep policy belong to /35.
 See Docs/Desktop/AMDMehrschirm08020.txt/.json for the model and SMP4 evidence.
+
+
+HDMI audio (0.80.22)
+--------------------
+Init captures only the actual class-04/03 1002:15DE companion PCI function.
+Legacy and ECAM access identities are preserved; the shared copied-audio
+validator requires Kernel 0.1.204 for ECAM routes. The serialized DCN owner selects a connected AZALIA endpoint independently
+of the display pipe. Original AMD dce_audio.c and stream-encoder functions
+program sink identity, PCM descriptor, speakers, lip sync, DTO, ACR and audio
+InfoFrames. The admitted wire profile is stereo 48 kHz S16 LPCM; unsupported
+receivers retain video without a fabricated audio route. RGB10 uses the
+physical 5:4 TMDS clock for audio regeneration.
+
+A copied receiver source binds the exact companion, physical PortID and
+connector to a monotonically revised ELD. Ready follows confirmed video
+address/frame evidence. Mode changes and unplug withdraw availability before
+transport changes; reset closes copied metadata even if hardware must stay
+owned. HDA verifies the revision-3 AMD vendor registers and programs channel
+mapping; AUDSVC retains output selection, gain and mute. No service/Kernel ABI
+or alternate mixer is introduced. Physical display sleep uses the same stop
+boundary and is integrated in /35. Audible and electrical qualification is
+reserved for /39. See Docs/Drivers/AMDHDMIAudio08022.txt/.json.

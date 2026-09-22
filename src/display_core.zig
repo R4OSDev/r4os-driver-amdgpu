@@ -66,6 +66,7 @@ pub const Owner = struct {
     health_frame: u32 = 0,
     health_progress: u64 = 0,
     hdmi_storage_valid: bool = false,
+    audio_peer: ?@import("display_audio.zig").Peer = null,
     hdmi_operation: hdmi.Operation = .probe,
     hdmi_publish_token: u64 = 0,
     hdmi_output: a.GfxOutputId = .{},
@@ -314,6 +315,10 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self)) return false;
         self.closing = true;
         if (!self.poll()) return false;
+        if (self.hdmi_storage_valid and self.hdmi_allocation.handle != 0) {
+            const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
+            if (!runtime.audio.closeMetadata()) return false;
+        }
         if (self.effects) {
             self.launch(.abort) catch return false;
             return false;
@@ -444,6 +449,7 @@ pub const Owner = struct {
                 const runtime: *hdmi.Runtime = @ptrFromInt(allocation.cpu_address);
                 runtime.* = .{};
                 self.hdmi_storage_valid = true;
+                runtime.audio.peer = self.audio_peer;
                 runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }) catch |err| {
                     runtime.last_bind_error = err;
                     self.result = c.R4DCN_UNSUPPORTED;

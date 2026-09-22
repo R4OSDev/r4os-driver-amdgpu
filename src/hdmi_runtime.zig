@@ -20,6 +20,7 @@ pub const Runtime = struct {
     initialized: bool = false,
     configured: bool = false,
     signal: ?@import("display_color.zig").color.Signal = null,
+    audio: @import("display_audio.zig").Owner = .{},
     clock_bound: bool = false,
     dprefclk_khz: u32 = 0,
     activation_attempted: bool = false,
@@ -53,9 +54,18 @@ pub const Runtime = struct {
     pub fn run(self: *Runtime, operation: Operation, mode: c.struct_r4dcn_mode) hdmi.Error!void {
         if (!self.worker() or self.route == null) return error.State;
         self.last_error = null;
-        self.work(operation, mode) catch |err| { self.last_error = err; return err; };
+        self.work(operation, mode) catch |err| {
+            const narrowed: hdmi.Error = switch (err) {
+                error.Invalid => error.Invalid, error.Unsupported => error.Unsupported,
+                error.Disconnected => error.Disconnected, error.Changed => error.Changed,
+                error.Timeout => error.Timeout, error.Capacity => error.Capacity,
+                error.Ambiguous => error.Ambiguous, error.Io, error.Unconfirmed => error.Io,
+                else => error.State,
+            };
+            self.last_error = narrowed; return narrowed;
+        };
     }
-    fn work(self: *Runtime, operation: Operation, mode: c.struct_r4dcn_mode) hdmi.Error!void {
+    fn work(self: *Runtime, operation: Operation, mode: c.struct_r4dcn_mode) !void {
         switch (operation) {
             .clock => {
                 const reference_revision = self.vm.revision(@offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2) catch return error.Unsupported;
@@ -78,6 +88,7 @@ pub const Runtime = struct {
                 if (!self.initialized) { try checked(c.r4dcn_link_action(self.storage, index, c.R4DCN_LINK_INIT)); self.initialized = true; }
                 const present = try hpd(self.self_address);
                 self.connection.sample(present, now(self.self_address)) catch return error.State;
+                if (!present and (self.audio.enabled or self.audio.configured)) try self.audio.quiesce(self.storage.?, true);
                 if (!present and self.activation_attempted and self.output.adapter_id == 0) {
                     // Unplug during first activation still owns hardware even
                     // before common publication. /18 must restore that attempt.
@@ -93,9 +104,12 @@ pub const Runtime = struct {
                 if (operation == .service and self.connection.phase == .connected) return;
                 const token = self.connection.generation;
                 self.receiver.read(.{ .context = self.self_address, .hpd = hpd, .block = block, .now = now, .delay = delay }, self.route.?.max_tmds_hz) catch |err| {
-                    self.connection.invalidate(); return err;
+                    try self.audio.quiesce(self.storage.?, true); self.connection.invalidate(); return err;
                 };
-                if (self.connection.phase == .connected) self.connection.changed(token, self.receiver.fingerprint) catch return error.State;
+                if (self.connection.phase == .connected) {
+                    self.connection.changed(token, self.receiver.fingerprint) catch return error.State;
+                    if (self.connection.phase != .connected) try self.audio.quiesce(self.storage.?, true);
+                }
             },
             .configure => {
                 if ((self.connection.phase != .probing and self.connection.phase != .connected) or !self.receiver.valid or !try hpd(self.self_address)) return error.State;
@@ -117,6 +131,7 @@ pub const Runtime = struct {
                 self.configured = false;
                 try checked(c.r4dcn_hdmi_color_configure(self.storage, index, mode.pipe, &avi, if (plan.metadata_bytes == 30) plan.metadata[0..30].ptr else null));
                 self.configured = true;
+                try self.audio.configure(self.storage.?, &self.receiver.report, mode.pipe);
             },
             .enable, .show => {
                 if (!self.configured or !self.receiver.valid or !try hpd(self.self_address) or
@@ -127,6 +142,7 @@ pub const Runtime = struct {
                 } else try checked(c.r4dcn_hdmi_mute(self.storage, index, 0));
             },
             .stop => {
+                try self.audio.quiesce(self.storage.?, false);
                 if (self.configured) try checked(c.r4dcn_hdmi_mute(self.storage, index, 1));
                 try checked(c.r4dcn_link_action(self.storage, index, c.R4DCN_LINK_DISABLE));
                 var stopped: u32 = 0;
@@ -143,6 +159,7 @@ pub const Runtime = struct {
         if (!try hpd(self.self_address)) return error.Disconnected;
         try self.connection.publish(token, self.receiver.fingerprint);
         self.output = output; self.outputs = outputs; self.retirement = retirement;
+        try self.audio.attach(outputs, output, token);
     }
     /// Receiver-only HDMI has no scanout BOs or common mode jobs. During a
     /// whole-device reset, retain its common ID in the outer connector owner
@@ -153,6 +170,7 @@ pub const Runtime = struct {
         var stopped: u32 = 0;
         try checked(c.r4dcn_hdmi_stopped(self.storage, index, &stopped));
         if (stopped != 1) return error.State;
+        try self.audio.quiesce(self.storage.?, true);
         try checked(c.r4dcn_link_restore_pads(self.storage, index));
         self.reset_detached = true; self.initialized = false;
     }

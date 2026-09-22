@@ -18,7 +18,7 @@ $artifacts = [IO.Path]::GetFullPath($settings.ARTIFACTS_ROOT.Replace('\','/'), $
 $hostName = if ($IsWindows) { 'Windows-x64' } else { 'Linux-x64' }
 $native = Join-Path $artifacts "Native/AMDGPU/$hostName/DCN1-7.2.4"
 $record = Get-Content -Raw (Join-Path $native 'portability.json') | ConvertFrom-Json
-if ($record.objects.Count -ne 37) { throw 'Incomplete DCN1 source closure.' }
+if ($record.objects.Count -ne 39) { throw 'Incomplete DCN1 source closure.' }
 $output = if ($OutputRoot) { [IO.Path]::GetFullPath($OutputRoot, $workspace) } else { Join-Path $native 'Archives' }
 [IO.Directory]::CreateDirectory($output) | Out-Null
 $ar = (Get-Command $(if ($IsWindows) { 'llvm-ar.exe' } else { 'llvm-ar-19' }) -CommandType Application | Select-Object -First 1).Source
@@ -51,8 +51,8 @@ if ($IsWindows) {
 } else { Copy-Item (Join-Path $output 'AMDGPU-DCN1.a') (Join-Path $output 'AMDGPU-DCN1-Host.a') -Force }
 $symbols = @(& $nm --defined-only (Join-Path $output 'AMDGPU-DCN1.a'))
 if ($LASTEXITCODE) { throw 'Cannot inspect DCN1 archive.' }
-foreach ($symbol in @('r4dcn_inherited_admit','r4dcn_inherited_stop','r4dcn_reference_clock_program','r4dcn_dp_stream_configure','r4dcn_dp_stream_start','r4dcn_dp_stream_stop','dce112_clk_src_construct','r4dcn_pixel_clock_bind','r4dcn_pixel_clock_program','r4dcn_scanout_enable','r4dcn_scanout_flip','r4dcn_scanout_sample','r4dcn_scanout_cursor','r4dcn_scanout_stop','r4dcn_hdmi_edid','r4dcn_hdmi_configure','dce_i2c_submit_command_hw','dcn10_stream_encoder_construct','r4dcn_link_bind','r4dcn_link_aux','r4dcn_panel_pwm','dce_aux_transfer_raw','dcn10_link_encoder_enable_dp_output','r4dcn_prepare','r4dcn_program','r4dcn_quiesce','dcn_validate_bandwidth','dml1_rq_dlg_get_dlg_params','optc1_program_timing','hubp1_program_surface_flip_and_addr','hubbub1_program_watermarks')) {
+foreach ($symbol in @('r4dcn_audio_bind','r4dcn_audio_configure','r4dcn_audio_enable','r4dcn_audio_stop','dce_aud_az_configure','dce_aud_wall_dto_setup','r4dcn_inherited_admit','r4dcn_inherited_stop','r4dcn_reference_clock_program','r4dcn_dp_stream_configure','r4dcn_dp_stream_start','r4dcn_dp_stream_stop','dce112_clk_src_construct','r4dcn_pixel_clock_bind','r4dcn_pixel_clock_program','r4dcn_scanout_enable','r4dcn_scanout_flip','r4dcn_scanout_sample','r4dcn_scanout_cursor','r4dcn_scanout_stop','r4dcn_hdmi_edid','r4dcn_hdmi_configure','dce_i2c_submit_command_hw','dcn10_stream_encoder_construct','r4dcn_link_bind','r4dcn_link_aux','r4dcn_panel_pwm','dce_aux_transfer_raw','dcn10_link_encoder_enable_dp_output','r4dcn_prepare','r4dcn_program','r4dcn_quiesce','dcn_validate_bandwidth','dml1_rq_dlg_get_dlg_params','optc1_program_timing','hubp1_program_surface_flip_and_addr','hubbub1_program_watermarks')) {
     if (!($symbols | Where-Object { $_ -match ('\b' + [regex]::Escape($symbol) + '$') })) { throw "Missing DCN1 function: $symbol" }
 }
-[ordered]@{schema=1; module='AMDGPU'; upstream='7.2.4'; originals=29; bridge_units=8; native_record_sha256=(Get-FileHash (Join-Path $native 'portability.json')).Hash.ToLowerInvariant(); archives=@(foreach ($name in @('AMDGPU-DCN1.a','AMDGPU-DCN1-Host.a')) { [ordered]@{name=$name;sha256=(Get-FileHash (Join-Path $output $name)).Hash.ToLowerInvariant()} })} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $output 'archives.json') -Encoding utf8NoBOM
-Write-Host 'AMDGPU: 29 original DCN1/DC/DML/AUX/PWM/HDMI/clock units and 8 private bridges archived for R4D and host.'
+[ordered]@{schema=1; module='AMDGPU'; upstream='7.2.4'; originals=30; bridge_units=9; native_record_sha256=(Get-FileHash (Join-Path $native 'portability.json')).Hash.ToLowerInvariant(); archives=@(foreach ($name in @('AMDGPU-DCN1.a','AMDGPU-DCN1-Host.a')) { [ordered]@{name=$name;sha256=(Get-FileHash (Join-Path $output $name)).Hash.ToLowerInvariant()} })} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $output 'archives.json') -Encoding utf8NoBOM
+Write-Host 'AMDGPU: 30 original DCN1/DC/DML/AUX/PWM/HDMI/clock/audio units and 9 private bridges archived for R4D and host.'

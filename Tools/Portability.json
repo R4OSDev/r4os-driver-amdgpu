@@ -259,8 +259,19 @@
       "source": "Port/dcn_dp_stream.c",
       "language": "c",
       "owner_source": true
+    },
+    {
+      "name": "dce_audio",
+      "source": "drivers/gpu/drm/amd/display/dc/dce/dce_audio.c",
+      "language": "c"
+    },
+    {
+      "name": "dcn_audio",
+      "source": "Port/dcn_audio.c",
+      "language": "c",
+      "owner_source": true
     }
   ],
-  "followup": "0.80.22 HDMI audio; 0.80.34 dynamic power; physical evidence only 0.80.39",
-  "scope": "Original DCN1 frontend/DML, AUX/panel, clocks, SST, scanout/flip/cursor and HDMI/I2C/stream encoders. Native eDP takeover and complete boot reconstruction use the common display contract. Joint DML admits active eDP/HDMI heads with independent native presentation, mode and retirement owners. No Linux runtime."
+  "followup": "0.80.34 dynamic power; physical HDMI/audio evidence only 0.80.39",
+  "scope": "Original DCN1 frontend/DML, AUX/panel, clocks, SST, scanout/flip/cursor and HDMI/I2C/stream encoders. Native eDP takeover and complete boot reconstruction use the common display contract. Joint DML admits active eDP/HDMI heads with independent native presentation, mode and retirement owners. No Linux runtime. Original DCE audio and DCN1 audio/stream calls bind the actual AZ endpoint, narrow stereo ELD and confirmed video receipt to the HDA receiver-source contract."
 }

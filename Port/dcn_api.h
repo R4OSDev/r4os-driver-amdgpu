@@ -128,4 +128,9 @@ int r4dcn_pixel_clock_bind(void *,uint32_t link,uint32_t crystal_khz);
 int r4dcn_reference_clock_program(void *,uint32_t link,uint32_t *actual_khz);
 int r4dcn_reference_clock_get(void *,uint32_t *actual_khz);
 int r4dcn_pixel_clock_program(void *,uint32_t link,uint32_t pipe);
+/* Private DCN/HDA bridge. ELD admits exactly stereo PCM 48 kHz / S16. */
+int r4dcn_audio_bind(void *,uint32_t link,uint32_t *endpoint);
+int r4dcn_audio_configure(void *,uint32_t link,const uint8_t *eld,uint32_t bytes);
+int r4dcn_audio_enable(void *,uint32_t link);
+int r4dcn_audio_stop(void *,uint32_t link);
 #endif

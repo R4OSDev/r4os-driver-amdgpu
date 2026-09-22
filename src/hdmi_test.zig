@@ -171,6 +171,7 @@ pub const SharedI2c = struct {
         Sink.bytes[146..154].* = .{ 0xe3, 5, 0x80, 0, 0xe3, 6, 13, 1 };
         Sink.checksum();
     }
+    pub fn audioCapabilities() void { Sink.bytes[131] |= 0x40; Sink.checksum(); }
     pub fn changed() void { Sink.bytes[12] +%= 1; Sink.checksum(); }
     pub fn requests() usize { return Native.i2c_go; }
 };

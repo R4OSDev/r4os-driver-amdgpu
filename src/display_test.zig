@@ -947,12 +947,14 @@ const Pipeline = struct {
     var hold_hdmi_frames = false;
     fn nativeRead(raw: ?*anyopaque, address: u32, out: [*c]u32) callconv(.c) c_int {
         if (Integration.hdmi_model and @import("hdmi_test.zig").SharedI2c.handles(address)) return @import("hdmi_test.zig").SharedI2c.read(raw, address, out);
+        if (Integration.audio_model and AudioWire.read(address, out)) return 0;
         return F.read(raw, address, out);
     }
     fn nativeWrite(raw: ?*anyopaque, address: u32, value: u32) callconv(.c) c_int {
         const result = F.write(raw, address, value);
         if (result != 0) return result;
         if (Integration.hdmi_model and @import("hdmi_test.zig").SharedI2c.handles(address)) return @import("hdmi_test.zig").SharedI2c.write(raw, address, value);
+        if (Integration.audio_model) AudioWire.write(address, value);
         if (address / 4 == reg("DP0_DP_VID_STREAM_CNTL")) {
             F.words[address / 4] &= ~@as(u32, hw.DP0_DP_VID_STREAM_CNTL__DP_VID_STREAM_STATUS_MASK);
             if (hold_video or value & hw.DP0_DP_VID_STREAM_CNTL__DP_VID_STREAM_ENABLE_MASK != 0)
@@ -1117,6 +1119,32 @@ const Pipeline = struct {
     }
 };
 
+// Explicit AZALIA endpoint bus, independent of display-head numbering.
+const AudioWire = struct {
+    var selected: [4]u8 = @splat(0);
+    var registers: [4][256]u32 = @splat(@splat(0));
+    var hold_stop = false;
+    fn reset() void {
+        selected = @splat(0); registers = @splat(@splat(0)); hold_stop = false;
+        for (&registers, 0..) |*pin, i| pin[0x56] = if (i == 2) 0 else 1 << 30;
+    }
+    fn read(address: u32, out: [*c]u32) bool {
+        inline for (0..4) |i| if (address / 4 == reg(std.fmt.comptimePrint("AZF0ENDPOINT{d}_AZALIA_F0_CODEC_ENDPOINT_DATA", .{i}))) {
+            out.* = registers[i][selected[i]]; return true;
+        };
+        return false;
+    }
+    fn write(address: u32, value: u32) void {
+        inline for (0..4) |i| {
+            if (address / 4 == reg(std.fmt.comptimePrint("AZF0ENDPOINT{d}_AZALIA_F0_CODEC_ENDPOINT_INDEX", .{i}))) selected[i] = @truncate(value);
+            if (address / 4 == reg(std.fmt.comptimePrint("AZF0ENDPOINT{d}_AZALIA_F0_CODEC_ENDPOINT_DATA", .{i}))) {
+                const previous = registers[i][selected[i]];
+                registers[i][selected[i]] = value;
+                if (hold_stop and selected[i] == 0x54) registers[i][selected[i]] |= previous & 0x80000000;
+            }
+        }
+    }
+};
 // Integrated common facade model. It supplies distinct references, leases,
 // UMA blocks and explicit GPU stimuli to the production output/SDMA owners.
 const Integration = struct {
@@ -1172,6 +1200,15 @@ const Integration = struct {
     var mode_extension: ?a.GfxDriverModeColor = null;
     var next_color_ticket: u64 = 300;
     var requested_color: ?@import("display_color.zig").color.Signal = null;
+    var audio_model = false;
+    var audio_sink = true;
+    var audio_source: a.GfxReceiverSource = .{};
+    var audio_sequence: u64 = 0;
+    var audio_route: ?a.GfxAudioRoute = null;
+    var audio_ready_count: u32 = 0;
+    var audio_pending_count: u32 = 0;
+    var audio_closed = false;
+    var audio_publish_fail = false;
     var color_model = false;
     var limited_model = false;
     var published_colors: [2]?a.GfxOutputColorState = .{null, null};
@@ -1353,7 +1390,40 @@ const Integration = struct {
             .mode_restore = @intFromPtr(&restoreMode), .mode_status = @intFromPtr(&modeStatus), .mode_enable = @intFromPtr(&modeEnable),
             .mode_take = @intFromPtr(&modeTake), .mode_complete = @intFromPtr(&modeComplete),
             .mode_read_color = @intFromPtr(&readColor), .color_publish = @intFromPtr(&publishColor),
-            .refresh_publish = @intFromPtr(&publishRefresh), .refresh_read = @intFromPtr(&readRefresh) }; return 1;
+            .refresh_publish = @intFromPtr(&publishRefresh), .refresh_read = @intFromPtr(&readRefresh),
+            .register_source = @intFromPtr(&registerAudio), .replace_receivers = @intFromPtr(&replaceAudio), .close_source = @intFromPtr(&closeAudio),
+            .audio_publish = @intFromPtr(&publishAudio), .audio_query = @intFromPtr(&queryAudio) }; return 1;
+    }
+    fn registerAudio(adapter: u32, out: *a.GfxReceiverSource) callconv(.c) i32 {
+        std.debug.assert(audio_model and adapter == 1 and audio_source.generation == 0);
+        audio_source = .{ .adapter_id = adapter, .generation = 37 }; out.* = audio_source; return 1;
+    }
+    fn replaceAudio(update: *const a.GfxReceiverUpdate) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(update.source, audio_source) and update.sequence > audio_sequence and update.count == 0);
+        audio_sequence = update.sequence; audio_route = null; return 1;
+    }
+    fn closeAudio(source_id: *const a.GfxReceiverSource) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(source_id.*, audio_source) and R.owner.thread == 0);
+        audio_closed = true; audio_source = .{}; audio_route = null; return 1;
+    }
+    fn queryAudio(_: u32, _: u32, _: u32, _: *a.GfxAudioRoute) callconv(.c) i32 { return 0; }
+    fn publishAudio(value: *const a.GfxAudioRoute) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(value.source, audio_source) and value.receiver_sequence == audio_sequence and
+            value.hda_location == 0x02000601 and value.hda_device == 0x15de1002 and value.connector_id == 0x310c and value.device_entry == 0);
+        if (audio_route) |previous| std.debug.assert(value.revision > previous.revision);
+        if (audio_publish_fail) return a.gfx_output_error_busy;
+        if (value.state == a.gfx_audio_route_ready) {
+            std.debug.assert(value.head_id == 1 and value.eld_bytes >= 24 and value.eld_bytes <= 40 and
+                R.owner.mode_receipt != null and R.owner.extra_scanout.phase == .active and AudioWire.registers[2][0x54] & 0x80000000 != 0);
+            std.debug.assert(std.mem.eql(u8, value.eld[8..16], &value.port_id));
+            std.debug.assert(AudioWire.registers[2][0x28] == 0x04010401 and AudioWire.registers[2][0x25] & 0x3007f == 0x10001);
+            std.debug.assert(AudioWire.registers[2][0x3c] == std.mem.readInt(u32, value.port_id[0..4], .little) and
+                AudioWire.registers[2][0x3d] == std.mem.readInt(u32, value.port_id[4..8], .little));
+            audio_ready_count += 1;
+        } else {
+            std.debug.assert(value.eld_bytes == 0 and std.mem.allEqual(u8, &value.eld, 0)); audio_pending_count += 1;
+        }
+        audio_route = value.*; return 1;
     }
     fn readColor(ticket: u64, sequence: u64, out: *a.GfxDriverModeColor) callconv(.c) i32 {
         out.* = mode_extension orelse return 0;
@@ -1492,11 +1562,15 @@ const Integration = struct {
         reset_begin_calls = 0; reset_retire_calls = 0; common_reset_retired = false;
         mode_job = null; mode_extension = null; next_color_ticket = 300; published_colors = .{null,null}; published_refresh = .{null,null}; mode_reply = .{}; mode_complete_busy = false; mode_enable_calls = 0; publication_calls = 0;
         extra_active = false; extra_retired = false;
+        audio_source = .{}; audio_sequence = 0; audio_route = null; audio_ready_count = 0; audio_pending_count = 0; audio_closed = false; audio_publish_fail = false;
+        AudioWire.reset();
+        if (audio_model) R.owner.audio_peer = .{ .location = 0x02000601 };
         hdmi_publications = 0; hdmi_withdrawals = 0; hdmi_identity = .{}; hdmi_withdraw_busy = false;
         common_mode_retained = false; reset_mode_source = .{};
         if (hdmi_model) {
             @import("hdmi_test.zig").SharedI2c.reset();
             if (color_model) @import("hdmi_test.zig").SharedI2c.colorCapabilities(limited_model);
+            if (audio_model and audio_sink) @import("hdmi_test.zig").SharedI2c.audioCapabilities();
             R.board.path_count = 2; R.board.paths[1] = R.board.paths[0];
             R.board.paths[1].connector = 0x310c; R.board.paths[1].encoder = 0x221e; R.board.paths[1].aux_ddc_line = 1;
             R.board.paths[1].i2c_pin.?.register = @intCast(reg("DC_GPIO_DDC2_A"));
@@ -1650,6 +1724,7 @@ const Integration = struct {
         stage = "cleanup"; try cleanup();
         stage = "multihead"; try multihead();
         stage = "color"; try colorModes();
+        stage = "audio"; try audioModes();
         stage = "connections"; try connections();
         stage = "failedModeReset"; try failedModeReset();
         stage = "nativePresent"; try nativePresent();
@@ -1701,6 +1776,10 @@ const Integration = struct {
         for (0..20) |_| {
             if (R.owner.close()) break;
             if (R.live and !R.ran) R.run();
+            if (audio_model and AudioWire.hold_stop) {
+                try t.expect(audio_closed and audio_route == null and R.owner.self_address != 0 and R.owner.allocation.handle != 0);
+                AudioWire.hold_stop = false;
+            }
         }
         try t.expect(R.owner.self_address == 0 and pipe.restored);
         try t.expect(output.cursor.close(&R.memory, true));
@@ -1924,6 +2003,72 @@ const Integration = struct {
         try hdmiModeRoundtrip(false); try hdmiModeRoundtrip(true);
         try cleanup();
         std.debug.print("[amd-color] actual XR30 BO/SDMA/DCN/CNVC/HDMI apply, PQ rollback, HLG confirm, SDR restore, per-head source facts and default-limited pixel conversion; explicit model stimuli only\n", .{});
+    }
+    fn audioPeerCapture() !void {
+        const P = struct {
+            var companion: a.PciDeviceInfo = .{};
+            var count: u32 = 1;
+            var stale = false;
+            fn deviceCount() callconv(.c) u32 { return count; }
+            fn deviceAt(_: u32, out: *a.PciDeviceInfo) callconv(.c) i32 { out.* = companion; return 0; }
+            fn readConfig(_: u8, _: u8, _: u8, _: u8, offset: u16) callconv(.c) u32 {
+                return if (stale) 0xffffffff else switch (offset) { 0 => 0x15de1002, 8 => 0x04030000, else => unreachable };
+            }
+        };
+        var api: a.DriverApi = undefined;
+        api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+        api.pci_device_count = P.deviceCount; api.pci_device_at = P.deviceAt; api.pci_read_config32 = P.readConfig;
+        const ctx = r4os.r4dev.DriverContext.init(&api);
+        const capture = @import("display_audio.zig").capture;
+        for ([_]u8{1, 2}) |kind| {
+            const gpu: a.PciDeviceInfo = .{ .bus_kind = kind, .bus = 6, .device = 0, .function = 0, .vendor_id = 0x1002, .device_id = 0x15d8 };
+            P.companion = gpu; P.companion.function = 1; P.companion.device_id = 0x15de; P.companion.class_code = 4; P.companion.subclass = 3;
+            P.stale = false; P.count = 1;
+            try t.expectEqual((@as(u32, kind) << 24) | 0x601, capture(&ctx, gpu).?.location);
+            P.count = 2; try t.expect(capture(&ctx, gpu) == null); P.count = 1;
+            P.stale = true; try t.expect(capture(&ctx, gpu) == null); P.stale = false;
+            P.companion.bus += 1; try t.expect(capture(&ctx, gpu) == null); P.companion.bus -= 1;
+            P.companion.bus_kind = 3 - kind; try t.expect(capture(&ctx, gpu) == null);
+        }
+    }
+    fn audioModes() !void {
+        try audioPeerCapture();
+        hdmi_model = true; color_model = true; audio_model = true;
+        defer { hdmi_model = false; color_model = false; audio_model = false; audio_sink = true; requested_color = null; }
+        try init(); try bothActive();
+        const runtime: *@import("hdmi_runtime.zig").Runtime = @ptrFromInt(R.owner.hdmi_allocation.cpu_address);
+        try t.expect(audio_ready_count == 1 and audio_pending_count >= 1 and runtime.audio.endpoint == 2 and runtime.audio.enabled);
+        try t.expectEqual(@as(u32, 148500), (F.words[reg("DIG1_HDMI_ACR_48_0")] >> hw.DIG0_HDMI_ACR_48_0__HDMI_ACR_CTS_48__SHIFT) & 0xfffff);
+        try t.expectEqual(@as(u32, 6144), F.words[reg("DIG1_HDMI_ACR_48_1")] & 0xfffff);
+        const previous = audio_route.?;
+        requested_color = .{ .format = .xr30, .bpc = 10, .transfer = .pq, .primaries = .bt2020,
+            .range = .limited, .reference_white = 2_030_000, .peak = 10_000_000, .metadata = .{ .max_cll = 1000, .max_fall = 400 } };
+        try hdmiModeRoundtrip(true);
+        try t.expect(audio_ready_count == 2 and audio_route.?.revision > previous.revision and audio_route.?.receiver_sequence == previous.receiver_sequence);
+        try t.expectEqual(@as(u32, 185625), (F.words[reg("DIG1_HDMI_ACR_48_0")] >> hw.DIG0_HDMI_ACR_48_0__HDMI_ACR_CTS_48__SHIFT) & 0xfffff);
+        requested_color = @import("display_color.zig").sdr;
+        try hdmiModeRoundtrip(false);
+        try t.expect(audio_ready_count == 4 and runtime.audio.enabled);
+        F.words[reg("DC_GPIO_HPD_Y")] &= ~@as(u32, 256);
+        for (0..1800) |_| { step(); if (runtime.output.adapter_id == 0) break; }
+        try t.expect(runtime.output.adapter_id == 0 and !runtime.audio.enabled and AudioWire.registers[2][0x54] & 0x80000000 == 0 and audio_route.?.state != a.gfx_audio_route_ready);
+        F.words[reg("DC_GPIO_HPD_Y")] |= 256; requested_color = null;
+        try bothActive();
+        try t.expect(audio_ready_count == 5 and audio_route.?.receiver_sequence > previous.receiver_sequence and audio_route.?.revision > previous.revision);
+        audio_publish_fail = true;
+        try t.expectError(error.Publication, runtime.audio.quiesce(runtime.storage.?, false));
+        try t.expect(runtime.audio.enabled and AudioWire.registers[2][0x54] & 0x80000000 != 0);
+        audio_publish_fail = false;
+        // Even an unconfirmed physical stop must remove copied availability.
+        AudioWire.hold_stop = true;
+        try t.expectError(error.Unconfirmed, runtime.audio.quiesce(runtime.storage.?, false));
+        try t.expect(audio_route.?.state == a.gfx_audio_route_pending and runtime.audio.enabled);
+        try cleanup(); try t.expect(audio_closed and audio_route == null and audio_source.generation == 0);
+        audio_sink = false;
+        try init(); try bothActive();
+        try t.expect(audio_ready_count == 0 and audio_route.?.state == a.gfx_audio_route_unsupported);
+        try cleanup();
+        std.debug.print("[amd-audio] endpoint2/head1, original AZ/ACR and 8/10-bit clocks, video receipt before ready, mode rollback, unplug/replug and retained-stop metadata withdrawal; model only\n", .{});
     }
     fn connections() !void {
         hdmi_model = true; defer hdmi_model = false;

@@ -2215,6 +2215,20 @@
       "bytes": 6855,
       "license": "MIT (embedded notice)",
       "role": "SMU10 physical display clock tables and original RV1 clock protocol"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_audio.c",
+      "sha256": "0a8dc21adddfa77ddbc07748d6a40cd384531ec43aeae9210a1b4fbaddf93938",
+      "bytes": 36884,
+      "license": "MIT (embedded notice)",
+      "role": "Original DCN1 Azalia audio programming and register definitions"
+    },
+    {
+      "path": "drivers/gpu/drm/amd/display/dc/dce/dce_audio.h",
+      "sha256": "6e765253026a6bdbe8c300fc294dd72770f8d5ac8a4886e0ef9275ee3e6ed4db",
+      "bytes": 6358,
+      "license": "MIT (embedded notice)",
+      "role": "Original DCN1 Azalia audio programming and register definitions"
     }
   ],
   "patches": [

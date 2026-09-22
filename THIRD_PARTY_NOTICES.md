@@ -163,3 +163,14 @@ The Zig presentation, transaction, BO, task and reset owners are original
 Apache-2.0 code. No Linux DRM, scheduler, memory manager or runtime is linked.
 The existing exporter verifies all 316 originals and exports their complete
 notices, MIT grant and unchanged firmware licensing to the Distribution.
+
+
+## HDMI audio (0.80.22)
+
+The final catalog contains 318 unchanged original files. dce_audio.c and
+its header retain AMD's full MIT grant and are SHA256-pinned. The archive now
+contains 30 original C translation units and nine private bridges. The
+embedded audio object/register-table adaptation in Port/dcn_audio.c retains
+the applicable AMD notice plus the R4OS notice for original additions.
+All source notices and the complete MIT grant are exported by the existing
+ExportLegal.ps1. No Linux HDA implementation is copied or linked into AMDGPU.
