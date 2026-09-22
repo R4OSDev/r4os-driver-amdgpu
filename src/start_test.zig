@@ -281,6 +281,27 @@ test "Picasso native owner uses real SDK MMIO, canonical boot hold/recovery and 
     try t.expect(N.command == 6 and N.held and N.effects and N.mapped and N.memory.start_users == 1 and N.memory.firmware_users == 1);
     try t.expect(!N.memory.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
     try N.ready(); try t.expect(N.run.firmwareReady() and N.run.flow.plan.confirmed());
+    const amd = @import("r4amd");
+    const facts = @import("device_facts.zig");
+    var engine: @import("gc_engine.zig").Owner = .{ .phase = .ready, .cu_mask = 0xff, .rb_mask = 3, .gb_addr_config = 0x24000042 };
+    const arch: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture), .vendor_id = 0x1002,
+        .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0, .gb_addr_config = engine.gb_addr_config,
+        .chip_revision = N.run.chip.?.external_revision, .bind_alignment = 4096, .memory_generation = N.memory.epoch,
+        .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
+    const copied = try facts.capture(&N.run, &engine, arch);
+    try t.expectEqual(arch, copied.architecture);
+    try t.expectEqual(@as(u32, 0xc1), copied.pci_revision);
+    try t.expectEqual(@as(u32, 0x42), copied.architecture.chip_revision);
+    try t.expectEqual(@as(u32, 0xff), copied.cu_mask);
+    try t.expectEqual(N.map.native_budget, copied.native_budget);
+    try t.expect(copied.uma_bytes == N.map.physical.bytes and copied.flags == 3 and copied.me_feature != 0 and copied.mec_feature != 0);
+    engine.cu_mask = 0;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, arch));
+    engine.cu_mask = 0xff; engine.stop_started = true;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, arch));
+    engine.stop_started = false; N.memory.epoch += 1;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, arch));
+    N.memory.epoch -= 1;
     N.fail_unmap = true; try t.expect(!N.close());
     try t.expect(N.held and N.mapped and N.memory.firmware_users == 1 and N.command == 2);
     N.fail_unmap = false; N.fail_release = true; try t.expect(!N.close());

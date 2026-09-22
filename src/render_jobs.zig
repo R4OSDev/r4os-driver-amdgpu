@@ -12,6 +12,7 @@ const Mapping = @import("memory_mapping.zig").Mapping;
 const q = @import("queue_timeline.zig");
 const Contexts = @import("gc_contexts.zig");
 const Virtual = @import("render_virtual.zig");
+const pm4 = @import("native_pm4.zig");
 const Error = @import("start_common.zig").Error;
 pub const capacity = 8;
 pub const max_pages = 64 * 1024 * 1024 / 4096;
@@ -32,9 +33,9 @@ const Job = struct {
     maps: [2]Mapping = .{ .{}, .{} },
     references: [2]a.GfxBufferReference = .{ .{}, .{} },
     held: [2]bool = .{ false, false },
-    native: [4]?*Virtual.Binding = @splat(null),
-    native_serial: [4]u64 = @splat(0),
-    native_held: [4]bool = @splat(false),
+    native: [pm4.max_resources]?*Virtual.Binding = @splat(null),
+    native_serial: [pm4.max_resources]u64 = @splat(0),
+    native_held: [pm4.max_resources]bool = @splat(false),
     pages: [2][max_pages]u64 = undefined,
     fn retire(raw: usize, fence: a.GfxFence) bool {
         const self: *Job = @ptrFromInt(raw);
@@ -80,6 +81,7 @@ pub const Owner = struct {
     rt: ?*@import("queue_runtime.zig").Owner = null,
     contexts: ?*Contexts.Owner = null,
     context: ?Contexts.Handle = null,
+    compute_context: ?Contexts.Handle = null,
     architecture: c.R4AmdArchitecture = undefined,
     virtual: Virtual.Owner = .{},
     allocations: @import("render_allocation.zig").Owner = .{},
@@ -119,6 +121,7 @@ pub const Owner = struct {
         self.flush_pending = false;
         try @import("start_common.zig").hdpFlush(&memory.registers);
         self.context = try contexts.create(.gfx, .normal, .{});
+        self.compute_context = try contexts.create(.compute, .normal, .{});
         try self.virtual.prepare(memory, rt);
         try self.allocations.prepare(memory, rt, arch);
         self.ready = true;
@@ -214,8 +217,12 @@ pub const Owner = struct {
             !std.meta.eql(input.source_buffer, a.GfxBufferHandle{}) or !std.meta.eql(input.target_buffer, a.GfxBufferHandle{})) return error.Invalid;
         var info: a.GfxNativeJobInfo = .{};
         if (queue.nativeInfo(&input.fence, &info) != 1 or info.version != 1 or info.size != @sizeOf(a.GfxNativeJobInfo) or info.reserved0 != 0 or
-            info.interface_id_lo != c.backend_v1_header.interface_id_lo or info.interface_id_hi != c.backend_v1_header.interface_id_hi or info.revision != 1 or
-            info.command_bytes != @sizeOf(api.yuv.Packet) or info.resource_count < 2 or info.resource_count > 4) return error.Unsupported;
+            info.interface_id_lo != c.backend_v1_header.interface_id_lo or info.interface_id_hi != c.backend_v1_header.interface_id_hi) return error.Unsupported;
+        if (info.revision != 1) return error.Unsupported;
+        // Backend protocol revision stays compatible with the YUV command.
+        // Its 504-byte packet cannot collide with a 32+16*N PM4 packet.
+        if (info.command_bytes != @sizeOf(api.yuv.Packet)) return self.submitPm4(job, input, info);
+        if (info.resource_count < 2 or info.resource_count > 4) return error.Unsupported;
         var packet: api.yuv.Packet = undefined;
         if (queue.nativeData(&input.fence, 0, std.mem.asBytes(&packet)) != 1 or packet.header.target_binding >= info.resource_count) return error.Stale;
         var views: [4]api.yuv.Bound = undefined;
@@ -236,6 +243,36 @@ pub const Owner = struct {
         const offset = parameter_offset + index * 4096;
         const count = api.yuv.encode(self.architecture, memory.adapter, packet, views[0..info.resource_count], program_va, program_va + offset, &self.scratch, &self.payload, &self.commands) catch return error.Invalid;
         return self.publish(job, input, offset, count);
+    }
+    fn submitPm4(self: *Owner, job: *Job, input: a.GfxDriverJob, info: a.GfxNativeJobInfo) Error!void {
+        const queue = self.rt.?.queue.?;
+        if (info.resource_count == 0 or info.resource_count > pm4.max_resources or
+            info.command_bytes < @sizeOf(c.R4AmdNativeSubmit) or info.command_bytes > @sizeOf(c.R4AmdNativeSubmit) + pm4.max_ibs * @sizeOf(c.R4AmdNativeIb)) return error.Invalid;
+        var header: c.R4AmdNativeSubmit = undefined;
+        if (queue.nativeData(&input.fence, 0, std.mem.asBytes(&header)) != 1 or header.ib_count == 0 or header.ib_count > pm4.max_ibs or
+            info.command_bytes != @sizeOf(c.R4AmdNativeSubmit) + header.ib_count * @sizeOf(c.R4AmdNativeIb)) return error.Invalid;
+        var ibs: [pm4.max_ibs]c.R4AmdNativeIb = undefined;
+        if (queue.nativeData(&input.fence, @sizeOf(c.R4AmdNativeSubmit), std.mem.sliceAsBytes(ibs[0..header.ib_count])) != 1) return error.Stale;
+        var bindings: [pm4.max_resources]a.GfxNativeBinding = undefined;
+        for (bindings[0..info.resource_count], 0..) |*value, i| {
+            if (queue.nativeBinding(&input.fence, @intCast(i), value) != 1) return error.Stale;
+            const binding = try self.virtual.execution(value.*);
+            for (job.native[0..i]) |prior| if (prior == binding) return error.Invalid;
+            job.native[i] = binding;
+            job.native_serial[i] = binding.serial;
+        }
+        const count = try pm4.encode(header, ibs[0..header.ib_count], bindings[0..info.resource_count], &self.commands);
+        for (job.native[0..info.resource_count], job.native_held[0..info.resource_count]) |part, *held| {
+            try part.?.map.retain(input.fence);
+            held.* = true;
+        }
+        const memory = self.memory.?;
+        try @import("start_common.zig").hdpFlush(&memory.registers);
+        const now = memory.registers.nowNs();
+        const deadline = @min(input.deadline_ns, std.math.add(u64, now, 2_000_000_000) catch return error.Deadline);
+        const handle = if (header.engine == 0) self.context.? else self.compute_context.?;
+        try self.contexts.?.enqueue(handle, input.fence, now, deadline, self.commands[0..count], .{ .context = @intFromPtr(job), .retire = Job.retire });
+        job.enqueued = true;
     }
     fn publish(self: *Owner, job: *Job, input: a.GfxDriverJob, offset: usize, count: usize) Error!void {
         const memory = self.memory.?;
@@ -269,6 +306,10 @@ pub const Owner = struct {
         if (self.context) |handle| {
             self.contexts.?.destroy(handle) catch return false;
             self.context = null;
+        }
+        if (self.compute_context) |handle| {
+            self.contexts.?.destroy(handle) catch return false;
+            self.compute_context = null;
         }
         if (self.translated) {
             memory.virtual.unmap(program_va, self.pages.len) catch return false;

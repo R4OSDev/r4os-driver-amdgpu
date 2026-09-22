@@ -100,7 +100,7 @@ pub const Owner = struct {
             range.children += 1;
             const pages = entry.pages[0..@intCast(r.byte_length / 4096)];
             if (desc.location == a.gfx_buffer_location_device_local) try entry.map.prepareNative(memory, job.reference.reference, range.address, pages) else if (desc.location == a.gfx_buffer_location_system) try entry.map.prepare(memory, job.reference.reference, range.address, r.byte_length, 1, pages) else return error.Unsupported;
-            try entry.map.publish(&memory.virtual, &memory.registers, entry.map.write_allowed, false);
+            try entry.map.publish(&memory.virtual, &memory.registers, entry.map.write_allowed, true);
             return;
         };
         return error.Capacity;

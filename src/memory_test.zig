@@ -358,6 +358,11 @@ const Render = struct {
     var complete_fail = false;
     var completed: u32 = 0;
     var allocation_ack: u32 = 0;
+    var raw_mode = false;
+    var native_binding: a.GfxNativeBinding = .{};
+    var native_packet: extern struct { header: amd.R4AmdNativeSubmit, ib: amd.R4AmdNativeIb } = undefined;
+    var native_fail = false;
+    var native_result: u32 = a.gfx_queue_result_complete;
     var native_registered = false;
     var virtual_registered = false;
     const binding: a.GfxBackendBinding = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 };
@@ -415,10 +420,86 @@ const Render = struct {
         return 1;
     }
     fn complete(exact: *const a.GfxFence, result: u32, quiet: u32) callconv(.c) i32 {
-        std.debug.assert(std.meta.eql(exact.*, fence) and result == a.gfx_queue_result_complete and quiet == 1 and !F.gpu and F.native_refs == 1);
+        std.debug.assert(std.meta.eql(exact.*, fence) and result == native_result and quiet == 1 and
+            (if (raw_mode) F.gpu and F.native_refs == 2 else !F.gpu and F.native_refs == 1));
         if (complete_fail) return a.gfx_queue_error_busy;
         completed += 1;
         return 1;
+    }
+    fn nativeInfo(exact: *const a.GfxFence, out: *a.GfxNativeJobInfo) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(exact.*, fence) and raw_mode);
+        out.* = .{ .interface_id_lo = amd.backend_v1_header.interface_id_lo, .interface_id_hi = amd.backend_v1_header.interface_id_hi,
+            .revision = 1, .command_bytes = @sizeOf(@TypeOf(native_packet)), .resource_count = 1 };
+        return 1;
+    }
+    fn nativeData(exact: *const a.GfxFence, offset: u32, output: [*]u8, length: u32) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(exact.*, fence) and raw_mode);
+        const bytes = std.mem.asBytes(&native_packet);
+        if (native_fail or offset > bytes.len or length > bytes.len - offset) return -1;
+        @memcpy(output[0..length], bytes[offset..][0..length]);
+        return 1;
+    }
+    fn nativeBinding(exact: *const a.GfxFence, index: u32, output: *a.GfxNativeBinding) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(exact.*, fence) and raw_mode and index == 0);
+        output.* = native_binding;
+        return 1;
+    }
+    fn checkPm4() !void {
+        for (0..2) |kind| {
+            try reset();
+            raw_mode = true;
+            rt.queue.?.table.size = @sizeOf(a.GfxDriverQueueApi);
+            rt.queue.?.table.read_native_info = @intFromPtr(&nativeInfo);
+            rt.queue.?.table.read_native_data = @intFromPtr(&nativeData);
+            rt.queue.?.table.read_native_binding = @intFromPtr(&nativeBinding);
+            engine.rings[1] = try @import("queue_ring.zig").Ring.init(try rt.arena.words32(storage.ringOffset(.compute), storage.ring_bytes), 8, 0);
+            allocation_pending = true;
+            try t.expect(owner.allocations.step());
+            virtual_job = .{ .resource = .{ .id = 300, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7,
+                .memory_generation = 23, .byte_length = 131072, .alignment = 4096, .deadline_ns = 1_000_000, .location = 1 } };
+            virtual_pending = true; try t.expect(owner.virtual.step());
+            const range = virtual_done;
+            virtual_job = .{ .resource = .{ .id = 301, .generation = 31 }, .request = .{ .kind = 2, .adapter_id = 7,
+                .memory_generation = 23, .parent = range.resource, .reference = .{ .id = 101, .generation = 19 }, .byte_length = 131072,
+                .deadline_ns = 1_000_000 }, .parent_token = range.token,
+                .reference = .{ .buffer = F.ticket.buffer, .reference = .{ .id = 101, .generation = 19 } } };
+            virtual_pending = true; try t.expect(owner.virtual.step());
+            const bound = virtual_done;
+            native_binding = .{ .binding = bound.resource, .token = bound.token, .address = bound.address, .byte_length = 131072, .access = 1 };
+            try t.expect((try F.owner.virtual.lookup(bound.address)) & 16 != 0); // Executable PTE for actual IB/shader fetch.
+            native_packet = std.mem.zeroes(@TypeOf(native_packet));
+            native_packet.header = .{ .version = 1, .size = @sizeOf(amd.R4AmdNativeSubmit), .engine = @intCast(kind), .ib_count = 1, .flags = 0, .reserved0 = 0, .reserved1 = 0 };
+            native_packet.ib = .{ .address = bound.address, .dwords = 8, .binding_index = 0 };
+            const job: a.GfxDriverJob = .{ .operation = a.gfx_queue_operation_native, .fence = fence, .deadline_ns = 1_000_000 };
+            native_fail = true; native_result = a.gfx_queue_result_failed;
+            owner.accept(job); try t.expect(owner.collect());
+            try t.expect(!contexts.contains(fence) and completed == 1);
+            native_fail = false; native_binding.token.opaque0 += 1;
+            owner.accept(job); try t.expect(owner.collect());
+            try t.expect(!contexts.contains(fence) and completed == 2);
+            native_binding.token.opaque0 -= 1; native_result = a.gfx_queue_result_complete;
+            owner.accept(job);
+            try t.expect(contexts.contains(fence));
+            contexts.step(&rt, &engine);
+            try t.expectEqual(@import("queue_timeline.zig").Phase.submitted, rt.timeline.entries[0].phase);
+            const token = rt.timeline.entries[0].token;
+            virtual_job.operation = 1; virtual_job.token = bound.token; virtual_pending = true;
+            try t.expect(!owner.virtual.step());
+            (try rt.arena.fences())[0] = token + 1;
+            rt.timeline.poll(1000); _ = rt.timeline.publish(rt.queue.?);
+            try t.expect(!owner.virtual.step() and completed == 2);
+            (try rt.arena.fences())[0] = token;
+            rt.timeline.poll(1000); try t.expect(rt.timeline.publish(rt.queue.?));
+            try t.expect(contexts.collect(&rt)); try t.expect(owner.collect());
+            try t.expect(completed == 3 and F.gpu);
+            try t.expect(owner.virtual.step());
+            virtual_job = .{ .resource = range.resource, .operation = 1, .request = .{ .kind = 1 }, .token = range.token };
+            virtual_pending = true; try t.expect(owner.virtual.step());
+            try t.expect(owner.close());
+            try t.expectEqual(@as(i32, 1), F.release(&.{ .id = 101, .generation = 19 }));
+            try t.expect(F.owner.collect());
+            try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+        }
     }
     fn reset() !void {
         owner = .{};
@@ -435,6 +516,7 @@ const Render = struct {
         virtual_done = .{};
         virtual_ack_fail = false;
         complete_fail = false;
+        raw_mode = false; native_binding = .{}; native_fail = false; native_result = a.gfx_queue_result_complete;
         native_registered = false;
         virtual_registered = false;
         F.reset();
@@ -464,6 +546,7 @@ const Render = struct {
 
 test "AMD renderer crosses real allocation mapping PM4 timeline and canonical retirement facades" {
     const R = Render;
+    try R.checkPm4();
     try R.reset();
     try t.expect(R.owner.ready and F.windows == 4 and F.owner.mapping_users == 1);
     try t.expect(F.layout.pool.owns(F.layout.render) and !F.layout.render.span.overlaps(F.layout.contexts.span));

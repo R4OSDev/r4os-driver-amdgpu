@@ -1,7 +1,8 @@
 ﻿# AMDGPU
 
-Version 0.1.17 adds original DCN1 HDMI audio programming and generation-bound
-HDA route publication for R4OS 0.80.22, including 8/10-bit mode transitions.
+Version 0.1.18 adds generation-bound RADV device facts and validated native
+graphics/compute IB submissions for R4OS 0.80.23. DCN1 HDMI audio and display
+behavior from 0.80.22 are retained.
 The target is PCI 1002:15D8; Raven2 revisions are rejected.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
@@ -214,3 +215,14 @@ mapping; AUDSVC retains output selection, gain and mute. No service/Kernel ABI
 or alternate mixer is introduced. Physical display sleep uses the same stop
 boundary and is integrated in /35. Audible and electrical qualification is
 reserved for /39. See Docs/Drivers/AMDHDMIAudio08022.txt/.json.
+
+RADV admission (0.80.23)
+-----------------------
+IMAGE_V1 backend properties revision 2 preserve the exact 64-byte architecture
+prefix and add measured PCI/CU/RB/firmware/topology, UMA and VA facts in a
+240-byte payload. The driver publishes them only after GC readiness. Native
+command/profile revision 1 also accepts the distinct 32+16*N-byte PM4 header
+and up to 32 IBs/resources. Every IB must fit a canonical execution binding;
+preflight finishes before command output, and fences retain those bindings.
+Legacy 504-byte YUV commands keep their existing path. See the software
+evidence in Docs/Drivers/AMDRADV08023.txt/.json; physical admission is /39.
