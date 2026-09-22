@@ -243,3 +243,18 @@ The codec-specific session/picture/feedback messages follow in /29-/31;
 JPEG application IBs follow in /30. A working ring is not a codec capability.
 Docs/Drivers/AMDVCN08028.txt/.json record software and source-oracle evidence.
 Physical firmware execution, pixels, power and laptop qualification are /39.
+
+JPEG submission (0.80.30)
+------------------------
+AMDGPU 0.1.21 accepts native media engine 4 with one bounded system IB.
+The worker CPU maps/copies that IB into its retained 8 KB VMID0 slot after
+the producer releases its CPU write lease. The caller's BOs and the copied
+IB stay alive through the exact hardware fence and resource retirement ACK.
+The VCN1 workaround excludes JPEG from decode/encode work until opposing
+entries are fully retired; decode and encode may run together. Pending jobs
+retain their admission order and original bounded deadline without holding
+extra native bindings. A timeout never releases hardware-owned IB storage.
+DeviceFacts bit 3 advertises this path separately from VCN ring readiness.
+Existing VCN tests cover copy independence, cross-engine exclusion, delayed
+retirement and timeout retention. Docs/Drivers/AMDCodecs08030 records the
+software evidence; actual VCN/JPEG execution and image quality remain /39.

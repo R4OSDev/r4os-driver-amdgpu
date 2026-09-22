@@ -28,6 +28,11 @@ const Job = struct {
     owner: ?*Owner = null,
     fence: a.GfxFence = .{},
     enqueued: bool = false,
+    pending: ?a.GfxDriverJob = null,
+    order: u64 = 0,
+    until: u64 = 0,
+    jpeg_cpu: a.GfxBufferMap = .{},
+    jpeg_commands: [2048]u32 = undefined,
     retired: bool = false,
     result: u32 = a.gfx_queue_result_failed,
     maps: [2]Mapping = .{ .{}, .{} },
@@ -42,6 +47,10 @@ const Job = struct {
         const owner = self.owner orelse return false;
         if (!std.meta.eql(self.fence, fence)) return false;
         const memory = owner.memory.?;
+        if (self.jpeg_cpu.lease.id != 0) {
+            if (memory.memory.?.bufferUnmap(&self.jpeg_cpu.lease) != 1) return false;
+            self.jpeg_cpu = .{};
+        }
         for (&self.native, &self.native_serial, &self.native_held) |*part, *serial, *held| {
             if (part.*) |binding| {
                 if (binding.serial != serial.*) return false;
@@ -71,6 +80,9 @@ const Job = struct {
         self.owner = null;
         self.fence = .{};
         self.enqueued = false;
+        self.pending = null;
+        self.order = 0;
+        self.until = 0;
         self.retired = false;
         self.result = a.gfx_queue_result_failed;
     }
@@ -91,6 +103,7 @@ pub const Owner = struct {
     translated: bool = false,
     flush_pending: bool = false,
     ready: bool = false,
+    admission: u64 = 0,
     jobs: [capacity]Job = @splat(.{}),
     scratch: [65536]u8 align(16) = undefined,
     payload: [4096]u8 = undefined,
@@ -136,6 +149,7 @@ pub const Owner = struct {
         var idle = true;
         for (&self.jobs) |*job| {
             if (job.owner == null) continue;
+            if (job.pending != null) { idle = false; continue; }
             if (job.enqueued) {
                 if (job.retired and !self.contexts.?.contains(job.fence)) job.clear() else idle = false;
             } else if (Job.retire(@intFromPtr(job), job.fence) and self.rt.?.queue.?.complete(&job.fence, job.result, 1) == 1) job.clear() else idle = false;
@@ -146,6 +160,10 @@ pub const Owner = struct {
         if (!self.ready) return;
         _ = self.allocations.step();
         _ = self.virtual.step();
+        for (&self.jobs, 0..) |*job, index| if (job.pending) |input| {
+            job.pending = null;
+            self.submit(job, index, input) catch {};
+        };
     }
     /// Caller checks available before consuming a canonical job. Even partial
     /// validation failure transfers ownership here until cleanup is confirmed.
@@ -154,6 +172,9 @@ pub const Owner = struct {
         for (&self.jobs, 0..) |*job, index| if (job.owner == null) {
             job.owner = self;
             job.fence = input.fence;
+            if (self.admission == std.math.maxInt(u64)) return;
+            self.admission += 1;
+            job.order = self.admission;
             self.submit(job, index, input) catch {};
             return;
         };
@@ -254,6 +275,17 @@ pub const Owner = struct {
             info.command_bytes != @sizeOf(c.R4AmdNativeSubmit) + header.ib_count * @sizeOf(c.R4AmdNativeIb)) return error.Invalid;
         var ibs: [pm4.max_ibs]c.R4AmdNativeIb = undefined;
         if (queue.nativeData(&input.fence, @sizeOf(c.R4AmdNativeSubmit), std.mem.sliceAsBytes(ibs[0..header.ib_count])) != 1) return error.Stale;
+        const media = header.engine >= 2 and header.engine <= 4;
+        const engine: @import("queue_ring.zig").Engine = if (header.engine == 4) .jpeg else if (header.engine == 2) .decode else .encode;
+        if (media) {
+            if (self.media == null or !self.media.?.verified or header.ib_count != 1 or ibs[0].dwords > 2048 or ibs[0].dwords & 15 != 0) return error.Unsupported;
+            const now = self.memory.?.registers.nowNs();
+            if (job.until == 0) job.until = @min(input.deadline_ns, std.math.add(u64, now, 2_000_000_000) catch return error.Deadline);
+            if (now >= job.until) return error.Deadline;
+            var available_now = try self.media.?.canSubmit(engine);
+            for (&self.jobs) |*prior| if (prior.pending != null and prior.order < job.order) { available_now = false; break; };
+            if (!available_now) { job.pending = input; return; }
+        }
         var bindings: [pm4.max_resources]a.GfxNativeBinding = undefined;
         for (bindings[0..info.resource_count], 0..) |*value, i| {
             if (queue.nativeBinding(&input.fence, @intCast(i), value) != 1) return error.Stale;
@@ -262,11 +294,24 @@ pub const Owner = struct {
             job.native[i] = binding;
             job.native_serial[i] = binding.serial;
         }
-        const media = header.engine == 2 or header.engine == 3;
         var validation = header;
         if (media) validation.engine = 0;
         const count = try pm4.encode(validation, ibs[0..header.ib_count], bindings[0..info.resource_count], &self.commands);
-        if (media and (self.media == null or !self.media.?.verified or header.ib_count != 1 or ibs[0].dwords > 2048 or ibs[0].dwords & 15 != 0)) return error.Unsupported;
+        if (media and engine == .jpeg) {
+            const source = job.native[ibs[0].binding_index].?;
+            if (source.descriptor.location != a.gfx_buffer_location_system) return error.Unsupported;
+            const bytes = @as(u64, ibs[0].dwords) * 4;
+            if (self.memory.?.memory.?.bufferMap(&source.map.reference.reference, a.gfx_buffer_map_read,
+                ibs[0].address - source.map.address, bytes, &job.jpeg_cpu) != 1) return error.Busy;
+            const cpu = job.jpeg_cpu;
+            if (cpu.version != 1 or cpu.size < @sizeOf(a.GfxBufferMap) or cpu.lease.id == 0 or cpu.lease.generation == 0 or cpu.lease.reserved0 != 0 or
+                cpu.cpu_address == 0 or cpu.cpu_address & 3 != 0 or cpu.byte_length != bytes or cpu.reserved0 != 0 or
+                cpu.cpu_address > std.math.maxInt(u64) - bytes or cpu.cache_policy != a.gfx_buffer_cache_write_back) return error.Invalid;
+            const src: [*]const volatile u32 = @ptrFromInt(cpu.cpu_address);
+            for (job.jpeg_commands[0..ibs[0].dwords], 0..) |*word, i| word.* = src[i];
+            if (self.memory.?.memory.?.bufferUnmap(&job.jpeg_cpu.lease) != 1) return error.Busy;
+            job.jpeg_cpu = .{};
+        }
         for (job.native[0..info.resource_count], job.native_held[0..info.resource_count]) |part, *held| {
             try part.?.map.retain(input.fence);
             held.* = true;
@@ -278,8 +323,9 @@ pub const Owner = struct {
         if (media) {
             // Timeline now owns the exact retained bindings, including on an
             // uncertain kick. Preflight failures are handled by normal reaping.
-            self.media.?.submit(if (header.engine == 2) .decode else .encode, input.fence,
-                .{ .address = ibs[0].address, .dwords = ibs[0].dwords }, deadline,
+            self.media.?.submit(engine, input.fence,
+                .{ .address = ibs[0].address, .dwords = ibs[0].dwords },
+                if (engine == .jpeg) job.jpeg_commands[0..ibs[0].dwords] else &.{}, @min(deadline, job.until),
                 .{ .context = @intFromPtr(job), .retire = Job.retire }) catch |err| {
                     for (&self.rt.?.timeline.entries) |*entry| if (entry.phase != .free and !entry.internal and std.meta.eql(entry.fence, input.fence)) { job.enqueued = true; break; };
                     return err;
@@ -316,8 +362,10 @@ pub const Owner = struct {
     /// GC has already stopped, aborted its timeline and retired its contexts.
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0) return true;
-        if (self.self_address != @intFromPtr(self) or !self.collect()) return false;
+        if (self.self_address != @intFromPtr(self)) return false;
         self.ready = false;
+        for (&self.jobs) |*job| job.pending = null;
+        if (!self.collect()) return false;
         const memory = self.memory.?;
         if (!self.allocations.close() or !self.virtual.close()) return false;
         if (self.context) |handle| {

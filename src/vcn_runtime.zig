@@ -75,14 +75,39 @@ pub const Owner = struct {
         if (!self.verified or self.closed or self.engine.stopping or self.engine.faulted) return;
         self.engine.observe(&self.memory.?.registers) catch { self.engine.faulted = true; self.runtime.?.timeline.fault(qr.media_engines); };
     }
-    pub fn submit(self: *Owner, engine: qr.Engine, fence: @import("r4os").abi.GfxFence, ib: packets.Ib, deadline: u64, resources: q.Resources) c.Error!void {
-        if (!self.verified or self.closed or self.memory.?.epoch != self.epoch or engine == .jpeg) return error.Unsupported;
+    pub fn canSubmit(self: *const Owner, engine: qr.Engine) c.Error!bool {
+        if (!self.verified or self.closed or self.engine.stopping or self.engine.faulted or
+            self.memory.?.epoch != self.epoch or !qr.isMedia(engine)) return error.Unsupported;
+        const timeline = &self.runtime.?.timeline;
+        if (timeline.stopping or timeline.failed_engines != 0) return error.Unconfirmed;
+        // Linux vcn1_jpeg1_workaround: JPEG and both video engines must never
+        // overlap. RPTR alone is insufficient; retain the exclusion until the
+        // exact fence and resource retirement have completed.
+        for (&timeline.entries) |*entry| if (entry.phase != .free and qr.isMedia(entry.engine) and
+            (engine == .jpeg) != (entry.engine == .jpeg)) return false;
+        return true;
+    }
+    pub fn submit(self: *Owner, engine: qr.Engine, fence: @import("r4os").abi.GfxFence, ib: packets.Ib,
+        jpeg_commands: []const u32, deadline: u64, resources: q.Resources) c.Error!void {
+        if (!try self.canSubmit(engine)) return error.Busy;
+        if ((engine == .jpeg and (jpeg_commands.len != ib.dwords or jpeg_commands.len == 0 or jpeg_commands.len > 2048)) or
+            (engine != .jpeg and jpeg_commands.len != 0)) return error.Invalid;
         const rt = self.runtime.?;
         const ticket = try rt.timeline.reserve(fence, engine, deadline, resources);
         var armed = false;
         errdefer { if (!armed) rt.timeline.cancelUnsubmitted(ticket) catch {} else rt.timeline.fault(qr.media_engines); }
+        var indirect = ib;
+        if (engine == .jpeg) {
+            // JPEG1 fetches its IB with VMID0; picture/stream BARs use VMID1.
+            // A timeline-owned slot retains this copied IB through uncertainty.
+            const dst = try rt.arena.ib(ticket.slot);
+            for (jpeg_commands, dst[0..jpeg_commands.len]) |word, *target| target.* = word;
+            indirect.address = try rt.arena.address(@import("queue_storage.zig").ib_offset +
+                @as(usize, ticket.slot) * @import("queue_storage.zig").ib_bytes, jpeg_commands.len * 4);
+            try c.hdpFlush(&self.memory.?.registers);
+        }
         var commands: [packets.max_words]u32 = undefined;
-        const count = try packets.frame(engine, ib, try rt.arena.address(@import("queue_storage.zig").fence_offset + @as(usize, ticket.slot) * 8, 8), @intCast(ticket.token), self.gpu + ve.ringOffset(engine), &commands);
+        const count = try packets.frame(engine, indirect, try rt.arena.address(@import("queue_storage.zig").fence_offset + @as(usize, ticket.slot) * 8, 8), @intCast(ticket.token), self.gpu + ve.ringOffset(engine), &commands);
         const staged = try self.engine.stage(engine, commands[0..count]);
         rt.timeline.arm(ticket) catch |err| { self.engine.rings[@intFromEnum(engine) - 3].cancel(staged) catch {}; return err; };
         armed = true;

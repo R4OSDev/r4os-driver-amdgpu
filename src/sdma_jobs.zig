@@ -171,7 +171,7 @@ pub const Owner = struct {
         var facts = try @import("device_facts.zig").profile(native, &graphics.engine, architecture, board);
         if (self.media) |media| {
             if (!media.verified or media.closed or media.epoch != self.memory.?.epoch) return error.Unconfirmed;
-            facts.facts.flags |= amd.device_fact_vcn1_ready;
+            facts.facts.flags |= amd.device_fact_vcn1_ready | amd.device_fact_jpeg1_submit;
         }
         var properties: a.GfxBackendProperties = .{ .interface_id_lo = amd.image_v1_header.interface_id_lo, .interface_id_hi = amd.image_v1_header.interface_id_hi, .revision = 3, .data_bytes = @sizeOf(amd.R4AmdDeviceFactsV3) };
         @memcpy(properties.data[0..@sizeOf(amd.R4AmdDeviceFactsV3)], std.mem.asBytes(&facts));

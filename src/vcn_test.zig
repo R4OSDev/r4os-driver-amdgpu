@@ -135,3 +135,62 @@ test "VCN 32-bit writebacks never wrap identity and IRQ hints cannot retire reso
     writeback[graphics.slot] = graphics.token; timeline.poll(5);
     try t.expectEqual(q.Phase.retiring, (try timeline.entry(graphics)).phase);
 }
+
+const NativeMedia = struct {
+    var runtime: @import("queue_runtime.zig").Owner = .{};
+    var memory: @import("memory_owner.zig").Owner = .{};
+    var media: @import("vcn_runtime.zig").Owner = .{};
+    var arena: [1024 * 1024 / 4]u32 align(4096) = undefined;
+    var release_ack = false;
+    var completions: u32 = 0;
+    fn retire(_: usize, _: a.GfxFence) bool { return release_ack; }
+    fn complete(_: *const a.GfxFence, result: u32, quiet: u32) callconv(.c) i32 {
+        std.debug.assert(result == a.gfx_queue_result_complete and quiet == 1); completions += 1; return 1;
+    }
+};
+test "VCN1 JPEG copies into VMID0, waits for video fence retirement and retains uncertain work" {
+    const N = NativeMedia;
+    F.reset(); N.runtime = .{}; N.memory = .{}; N.media = .{}; N.release_ack = false; N.completions = 0;
+    @memset(&N.arena, 0);
+    N.memory.epoch = 9;
+    N.memory.registers.window.value = .{ .handle = .{ .id = 1, .generation = 1 }, .cpu_address = @intFromPtr(&F.regs), .byte_length = @sizeOf(@TypeOf(F.regs)) };
+    const arena = &N.runtime.arena;
+    arena.* = .{ .self_address = @intFromPtr(arena), .ready = true, .gpu = 0x120000000,
+        .arena = .{ .value = .{ .handle = .{ .id = 2, .generation = 1 }, .cpu_address = @intFromPtr(&N.arena), .byte_length = @sizeOf(@TypeOf(N.arena)) } } };
+    N.runtime.queue = .{ .table = .{ .complete = @intFromPtr(&N.complete) } };
+    try N.runtime.timeline.init(.{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 }, try arena.fences(), 1);
+    N.media = .{ .self_address = @intFromPtr(&N.media), .memory = &N.memory, .runtime = &N.runtime, .epoch = 9,
+        .gpu = 0x101000000, .verified = true };
+    var io: F = .{};
+    try N.media.engine.begin(&io, &io, F.setup());
+    _ = try N.media.engine.advance(&io); _ = try N.media.engine.advance(&io); F.regs[r.UVD_STATUS / 4] = 2;
+    try t.expect(try N.media.engine.advance(&io));
+    const fence: a.GfxFence = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 8, .point = 1 };
+    const resources: q.Resources = .{ .context = 0, .retire = N.retire };
+    try N.media.submit(.decode, fence, .{ .address = 0x5000010000, .dwords = 16 }, &.{}, 1000, resources);
+    try t.expect(try N.media.canSubmit(.encode)); try t.expect(!try N.media.canSubmit(.jpeg));
+    var jpeg_fence = fence; jpeg_fence.point = 2;
+    var jpeg: [128]u32 = undefined;
+    for (&jpeg, 0..) |*word, i| word.* = if (i & 1 == 0) 0x60000000 else 0;
+    try t.expectError(error.Busy, N.media.submit(.jpeg, jpeg_fence, .{ .address = 0x5000020000, .dwords = 128 }, &jpeg, 1000, resources));
+    (try arena.fences())[0] = N.runtime.timeline.entries[0].token;
+    N.runtime.timeline.poll(2); try t.expect(!N.runtime.timeline.publish(N.runtime.queue.?));
+    try t.expect(!try N.media.canSubmit(.jpeg));
+    N.release_ack = true; try t.expect(N.runtime.timeline.publish(N.runtime.queue.?));
+    try N.media.submit(.jpeg, jpeg_fence, .{ .address = 0x5000020000, .dwords = 128 }, &jpeg, 1000, resources);
+    try t.expect(!try N.media.canSubmit(.decode)); try t.expect(!try N.media.canSubmit(.encode));
+    const copy = try arena.ib(0); @memset(&jpeg, 0xdeaddead);
+    for (copy[0..128], 0..) |word, i| try t.expectEqual(@as(u32, if (i & 1 == 0) 0x60000000 else 0), word);
+    // Ring packet points at the retained queue arena, never at the input VMID1 address.
+    var expected: [128]u32 = undefined;
+    const count = try p.frame(.jpeg, .{ .address = arena.gpu + @import("queue_storage.zig").ib_offset, .dwords = 128 },
+        arena.gpu + @import("queue_storage.zig").fence_offset, @intCast(N.runtime.timeline.entries[0].token),
+        N.media.gpu + ve.ringOffset(.jpeg), &expected);
+    const ring = F.arena[ve.ringOffset(.jpeg) / 4 ..][0..count];
+    try t.expectEqualSlices(u32, expected[0..count], ring);
+    N.runtime.timeline.poll(1001); try t.expect(N.runtime.timeline.entries[0].phase == .submitted);
+    try t.expectError(error.Unconfirmed, N.media.canSubmit(.decode));
+    // A timeout cannot free the IB/bindings. Supply exact modeled writeback
+    // only after checking that the retained original commands still exist.
+    try t.expectEqual(@as(u32, 0x60000000), copy[0]);
+}
