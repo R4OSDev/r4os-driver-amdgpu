@@ -283,4 +283,19 @@ test "AMD GFX9 contexts preserve priorities, generations and resource ownership 
         F.rt.timeline.poll(F.time); try t.expect(F.rt.timeline.publish(F.rt.queue.?)); _ = F.owner.collect(&F.rt);
     }
     try t.expect(low_dispatch != 0 and low_dispatch <= 9);
+    // Drain the one high-priority job left by the fairness workload, then
+    // idle worker passes must preserve all ring pointers and doorbells.
+    F.owner.step(&F.rt, &F.engine);
+    const last = F.rt.timeline.entries[0];
+    (try F.rt.arena.fences())[0] = last.token;
+    F.rt.timeline.poll(F.time); try t.expect(F.rt.timeline.publish(F.rt.queue.?));
+    try t.expect(F.owner.collect(&F.rt));
+    const dispatches = F.owner.dispatches;
+    const rings = F.engine.rings;
+    const doorbells = F.bells;
+    for (0..32) |_| F.owner.step(&F.rt, &F.engine);
+    try t.expectEqual(dispatches, F.owner.dispatches);
+    try t.expectEqualDeep(rings, F.engine.rings);
+    try t.expectEqualDeep(doorbells, F.bells);
+
 }
