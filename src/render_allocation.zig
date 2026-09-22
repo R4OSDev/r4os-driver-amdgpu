@@ -74,7 +74,7 @@ pub const Owner = struct {
             request.usage & (a.gfx_buffer_usage_cpu_read | a.gfx_buffer_usage_cpu_write) != 0) return error.Invalid;
         var desc: a.GfxBufferDescriptor = .{ .location = a.gfx_buffer_location_device_local, .adapter_id = memory.adapter, .device_generation = memory.epoch, .alignment = 4096, .usage = request.usage };
         if (request.kind == 0) {
-            if (request.width != 0 or request.height != 0 or request.layout != 0 or request.byte_length == 0 or request.byte_length > 64 * 1024 * 1024) return error.Unsupported;
+            if (request.width != 0 or request.height != 0 or request.layout != 0 or request.byte_length == 0 or request.byte_length > @import("render_virtual.zig").max_backing_bytes) return error.Unsupported;
             desc.byte_length = try l.aligned(request.byte_length, 4096);
         } else {
             if (request.byte_length != 0 or request.width == 0 or request.height == 0) return error.Invalid;

@@ -15,6 +15,7 @@ pub const Mapping = struct {
     adapter: u32 = 0, epoch: u64 = 0, address: u64 = 0, bytes: u64 = 0, vmid: u4 = 0,
     native_owner: u32 = 0, dma_only: bool = false,
     physical: []u64 = &.{}, prepared: bool = false, write_allowed: bool = false, ready: bool = false, translated: bool = false, flush_pending: bool = false,
+    validation: a.DriverHeapAllocation = .{},
     uses: [8]a.GfxFence = @splat(.{}),
     pub fn prepare(self: *Mapping, owner: *@import("memory_owner.zig").Owner, source: ?a.GfxBufferHandle,
         address: u64, bytes: u64, vmid: u4, physical: []u64) Error!void
@@ -67,10 +68,36 @@ pub const Mapping = struct {
             if (segment.version != 1 or segment.size < @sizeOf(a.GfxDmaSegment) or segment.dma_address == 0 or
                 segment.dma_address & 4095 != 0 or segment.dma_address >= l.address_limit or segment.byte_length != 4096 or
                 segment.next_offset != (i + 1) * 4096) return error.Sparse;
-            for (physical[0..i]) |old| if (old == segment.dma_address) return error.Invalid;
             page.* = segment.dma_address;
         }
+        try self.uniquePhysical();
         self.prepared = true;
+    }
+    fn uniquePhysical(self: *Mapping) Error!void {
+        var small: [64]u64 = undefined;
+        var copy: []u64 = undefined;
+        if (self.physical.len <= small.len) copy = small[0..self.physical.len] else {
+            const heap = self.owner.?.heap orelse return error.Unsupported;
+            const bytes = self.physical.len * 8;
+            if (heap.allocate(bytes, 16, &self.validation) != a.driver_heap_ok) return error.Capacity;
+            const allocation = self.validation;
+            if (allocation.version != 1 or allocation.size < @sizeOf(a.DriverHeapAllocation) or allocation.handle == 0 or
+                allocation.cpu_address == 0 or allocation.cpu_address % 16 != 0 or allocation.byte_length < bytes or
+                allocation.cpu_address > std.math.maxInt(u64) - bytes or allocation.alignment < 16 or allocation.reserved != 0) return error.Invalid;
+            const pointer: [*]u64 = @ptrFromInt(allocation.cpu_address);
+            copy = pointer[0..self.physical.len];
+        }
+        @memcpy(copy, self.physical);
+        std.sort.heap(u64, copy, {}, std.sort.asc(u64));
+        for (copy[1..], copy[0 .. copy.len - 1]) |page, previous| if (page == previous) return error.Invalid;
+        if (!self.releaseValidation()) return error.Busy;
+    }
+    fn releaseValidation(self: *Mapping) bool {
+        if (self.validation.handle != 0) {
+            if (self.owner.?.heap.?.release(self.validation.handle) != a.driver_heap_ok) return false;
+            self.validation = .{};
+        }
+        return true;
     }
     pub fn prepareNative(self: *Mapping, owner: *@import("memory_owner.zig").Owner, source: a.GfxBufferHandle, address: u64, physical: []u64) Error!void {
         if (self.self_address != 0 or !owner.prepared or owner.self_address != @intFromPtr(owner) or owner.mapping_users >= 128 or !valid(source)) return error.Busy;
@@ -198,6 +225,7 @@ pub const Mapping = struct {
         if (self.cpu.lease.id != 0) { if (memory.bufferUnmap(&self.cpu.lease) != 1) return false; self.cpu = .{}; }
         if (self.reference.reference.id != 0) { if (memory.bufferRelease(&self.reference.reference) != 1) return false; self.reference = .{}; }
         if (memory.collect() != 1) return false;
+        if (!self.releaseValidation()) return false;
         const owner = self.owner orelse return false;
         if (owner.self_address != @intFromPtr(owner) or owner.epoch != self.epoch or owner.mapping_users == 0) return false;
         owner.mapping_users -= 1;

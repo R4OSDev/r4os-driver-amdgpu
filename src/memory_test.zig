@@ -139,7 +139,10 @@ const F = struct {
     var layout: l.Layout = undefined;
     var regs: [r.required_prefix / 4]u32 align(4096) = undefined;
     var table: [l.table_bytes / 8]u64 align(4096) = undefined;
-    var contexts: [2 * 1024 * 1024 / 8]u64 align(4096) = undefined;
+    var contexts: [l.context_bytes / 8]u64 align(4096) = undefined;
+    var heap_slots: [64]?[]align(16) u8 = @splat(null);
+    var heap_fail = false;
+    var heap_release_fail = false;
     var render_data: [65536]u8 align(4096) = undefined;
     var frame_data: [65536]u8 align(4096) = undefined;
     var cpu: [8192]u8 align(4096) = undefined;
@@ -162,6 +165,8 @@ const F = struct {
     var charged: u64 = 0;
     var closed = false;
     fn reset() void {
+        for (&heap_slots) |*slot| std.debug.assert(slot.* == null);
+        heap_fail = false; heap_release_fail = false;
         owner = .{};
         layout = plan() catch unreachable;
         regs = @splat(0);
@@ -188,6 +193,27 @@ const F = struct {
         api.size = @sizeOf(a.DriverApi);
         api.gfx_memory_query = query;
         api.resource_query = resources;
+        api.heap_query = heapQuery;
+    }
+    fn heapQuery(out: *a.DriverHeapApi) callconv(.c) i32 {
+        out.* = .{ .allocate = @intFromPtr(&heapAllocate), .release = @intFromPtr(&heapRelease) };
+        return a.driver_heap_ok;
+    }
+    fn heapAllocate(bytes: u64, alignment: u32, out: *a.DriverHeapAllocation) callconv(.c) i32 {
+        if (heap_fail or alignment != 16) return a.err_no_fn;
+        for (&heap_slots, 0..) |*slot, i| if (slot.* == null) {
+            const data = t.allocator.alignedAlloc(u8, .@"16", @intCast(bytes)) catch return a.err_no_fn;
+            slot.* = data;
+            out.* = .{ .handle = i + 1, .cpu_address = @intFromPtr(data.ptr), .byte_length = bytes, .alignment = 16 };
+            return a.driver_heap_ok;
+        };
+        return a.err_no_fn;
+    }
+    fn heapRelease(handle: u64) callconv(.c) i32 {
+        if (heap_release_fail) return a.err_no_fn;
+        const slot = &heap_slots[handle - 1];
+        t.allocator.free(slot.*.?); slot.* = null;
+        return a.driver_heap_ok;
     }
     fn query(out: *a.GfxDriverMemoryApi) callconv(.c) i32 {
         out.* = .{ .reserved_span = @intFromPtr(&reserved), .mmio_map = @intFromPtr(&mapWindow), .mmio_unmap = @intFromPtr(&unmapWindow), .collect = @intFromPtr(&collect), .memory_budget = @intFromPtr(&budget), .device_lost = @intFromPtr(&lost), .buffer_create = @intFromPtr(&create), .buffer_import = @intFromPtr(&import), .buffer_describe = @intFromPtr(&describe), .buffer_map = @intFromPtr(&mapCpu), .buffer_unmap = @intFromPtr(&unmapCpu), .buffer_release = @intFromPtr(&release), .device_acquire = @intFromPtr(&acquire), .device_segment = @intFromPtr(&segment), .device_release = @intFromPtr(&deviceRelease), .buffer_reserve = @intFromPtr(&reserve), .buffer_commit = @intFromPtr(&commit), .buffer_abort = @intFromPtr(&abort), .buffer_take_release = @intFromPtr(&take), .buffer_finish_release = @intFromPtr(&finish) };
@@ -237,6 +263,10 @@ const F = struct {
         return 1;
     }
     fn import(ref: *const a.GfxBufferHandle, out: *a.GfxBufferReference) callconv(.c) i32 {
+        if (ref.id == 1 and shared) {
+            out.* = .{ .buffer = .{ .id = 1, .generation = 19 }, .reference = .{ .id = 2, .generation = 19 } };
+            return 1;
+        }
         std.debug.assert(ref.id == 101 and committed);
         native_refs += 1;
         out.* = .{ .buffer = ticket.buffer, .reference = .{ .id = 102, .generation = 19 } };
@@ -281,7 +311,7 @@ const F = struct {
         return 1;
     }
     fn segment(_: *const a.GfxDeviceLease, offset: u64, out: *a.GfxDmaSegment) callconv(.c) i32 {
-        std.debug.assert(dma and offset < cpu.len);
+        std.debug.assert(dma and offset < descriptor.byte_length);
         out.* = .{ .dma_address = if (segment_hole and offset != 0) 0 else 0x1000000 + (if (segment_duplicate) 0 else offset * 3), .byte_length = 4096, .next_offset = offset + 4096 };
         return 1;
     }
@@ -408,7 +438,7 @@ const Render = struct {
         return 1;
     }
     fn completeVirtual(_: *const a.GfxBufferHandle, input: *const a.GfxVirtualCompletion) callconv(.c) i32 {
-        std.debug.assert(input.result == 1);
+        if (input.result != 1) std.debug.assert(input.address == 0 and std.meta.eql(input.token, a.GfxVirtualToken{}));
         if (virtual_ack_fail) return a.gfx_buffer_error_busy;
         virtual_done = input.*;
         return 1;
@@ -596,6 +626,12 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
     try t.expectEqual(serial, R.owner.virtual.serial);
     const range = R.virtual_done;
     R.virtual_job = .{ .resource = .{ .id = 301, .generation = 31 }, .request = .{ .kind = 2, .adapter_id = 7, .memory_generation = 23, .parent = range.resource, .reference = .{ .id = 101, .generation = 19 }, .byte_length = 131072, .deadline_ns = 1_000_000 }, .parent_token = range.token, .reference = .{ .buffer = F.ticket.buffer, .reference = .{ .id = 101, .generation = 19 } } };
+    F.heap_fail = true;
+    R.virtual_pending = true;
+    try t.expect(R.owner.virtual.step());
+    try t.expectEqual(a.gfx_buffer_error_oom, R.virtual_done.result);
+    try t.expect(!F.gpu and F.native_refs == 1);
+    F.heap_fail = false;
     R.virtual_pending = true;
     try t.expect(R.owner.virtual.step());
     const bound = R.virtual_done;
@@ -615,6 +651,10 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
     F.release_fail = true;
     try t.expect(!R.owner.virtual.step());
     F.release_fail = false;
+    F.heap_release_fail = true;
+    try t.expect(!R.owner.virtual.step());
+    try t.expect(!F.gpu and F.native_refs == 1);
+    F.heap_release_fail = false;
     try t.expect(R.owner.virtual.step());
     try t.expect(!F.gpu and F.native_refs == 1);
     R.virtual_job = .{ .resource = range.resource, .operation = 1, .request = .{ .kind = 1 }, .token = range.token };
@@ -786,3 +826,78 @@ const DisplayBuffers = struct {
         try t.expect(F.owner.close(gate));
     }
 };
+
+
+test "AMD native VA extents fit 1 GB plus SMEM padding, preserve holes and retain failed acknowledgements" {
+    const R = Render;
+    const amd = @import("r4amd");
+    const large = @import("render_virtual.zig").max_backing_bytes;
+    try R.reset();
+    R.virtual_job = .{ .resource = .{ .id = 700, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7, .memory_generation = 23, .byte_length = large, .alignment = 65536, .deadline_ns = 1_000_000 } };
+    R.virtual_pending = true; R.virtual_ack_fail = true;
+    try t.expect(!R.owner.virtual.step());
+    const serial = R.owner.virtual.serial;
+    R.virtual_ack_fail = false; try t.expect(R.owner.virtual.step());
+    const first = R.virtual_done;
+    try t.expect(first.result == 1 and first.address == amd.native_va_start and R.owner.virtual.serial == serial);
+    R.virtual_job.resource.id += 1; R.virtual_job.request.byte_length = 65536;
+    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    const second = R.virtual_done;
+    try t.expect(second.result == 1 and second.address >= first.address + large and second.address % 65536 == 0);
+    R.virtual_job.resource.id += 1; R.virtual_job.request.fixed_address = first.address;
+    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    try t.expectEqual(a.gfx_buffer_error_oom, R.virtual_done.result);
+    R.virtual_job = .{ .resource = first.resource, .operation = 1, .request = .{ .kind = 1 }, .token = first.token };
+    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    R.virtual_job = .{ .resource = .{ .id = 704, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7, .memory_generation = 23, .byte_length = 65536, .alignment = 65536, .deadline_ns = 1_000_000 } };
+    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    const reused = R.virtual_done;
+    try t.expect(reused.result == 1 and reused.address == first.address and !std.meta.eql(reused.token, first.token));
+    for ([_]a.GfxVirtualCompletion{second, reused}) |range| {
+        R.virtual_job = .{ .resource = range.resource, .operation = 1, .request = .{ .kind = 1 }, .token = range.token };
+        R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    }
+    // Use the real page-table algorithm over RAM, without allocating fake
+    // payload backing or treating these page entries as a hardware proof.
+    const physical = try t.allocator.alloc(u64, large / 4096);
+    defer t.allocator.free(physical);
+    for (physical, 0..) |*page, i| page.* = 0x400000000 + i * 8192;
+    const mapped_before = F.owner.virtual.mapped_pages;
+    try F.owner.virtual.map(amd.native_va_start, physical, .{ .system = true, .write = true });
+    try t.expectEqual(physical[physical.len - 1], (try F.owner.virtual.lookup(amd.native_va_start + large - 4096)) & pages.physical_mask);
+    try F.owner.virtual.unmap(amd.native_va_start, physical.len);
+    try t.expectEqual(mapped_before, F.owner.virtual.mapped_pages);
+    try t.expect(R.owner.close());
+    try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+}
+
+test "AMD large SG admission preserves page order and retains validation metadata after OOM or failed free" {
+    const count = 1024 * 1024 * 1024 / 4096 + 1;
+    const physical = try t.allocator.alloc(u64, count);
+    defer t.allocator.free(physical);
+    for (0..4) |attempt| {
+        F.reset(); try F.prepare();
+        F.shared = true;
+        F.descriptor = .{ .byte_length = count * 4096, .usage = 15 };
+        F.heap_fail = attempt == 1;
+        F.heap_release_fail = attempt == 2;
+        F.segment_duplicate = attempt == 3;
+        var mapping: Mapping = .{};
+        const result = mapping.prepare(&F.owner, .{ .id = 1, .generation = 19 }, @import("r4amd").native_va_start, count * 4096, 1, physical);
+        if (attempt == 0) {
+            try result;
+            try t.expect(mapping.prepared and F.dma and !F.gpu);
+            for (physical, 0..) |value, i| try t.expectEqual(@as(u64, 0x1000000) + i * 4096 * 3, value);
+        } else if (attempt == 1) try t.expectError(error.Capacity, result)
+        else if (attempt == 2) {
+            try t.expectError(error.Busy, result);
+            try t.expect(mapping.validation.handle != 0 and !mapping.prepared);
+            try t.expect(!mapping.close(&F.owner.virtual, &hw));
+        } else try t.expectError(error.Invalid, result);
+        F.heap_fail = false; F.heap_release_fail = false;
+        try t.expect(mapping.close(&F.owner.virtual, &hw));
+        try t.expect(!F.shared and !F.dma and !F.gpu and F.owner.mapping_users == 0);
+        for (&F.heap_slots) |*slot| try t.expect(slot.* == null);
+        try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+    }
+}

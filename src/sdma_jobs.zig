@@ -151,7 +151,7 @@ pub const Owner = struct {
         self.verified = true;
         return true;
     }
-    pub fn activate(self: *Owner, native: *const @import("start_runtime.zig").Owner) Error!void {
+    pub fn activate(self: *Owner, native: *const @import("start_runtime.zig").Owner, board: *const @import("bios.zig").Board) Error!void {
         if (self.self_address != @intFromPtr(self) or !self.verified or self.registered or native.memory != self.memory or !native.flow.firmwareReady()) return error.Unconfirmed;
         const ctx = native.ctx.?;
         const queue = ctx.graphicsQueue() orelse return error.Unsupported;
@@ -167,9 +167,9 @@ pub const Owner = struct {
         if (graphics.engine.phase != .ready or graphics.engine.gb_addr_config == 0) return error.Unconfirmed;
         const architecture: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0, .gb_addr_config = graphics.engine.gb_addr_config, .chip_revision = chip.external_revision, .bind_alignment = 4096, .memory_generation = self.memory.?.epoch, .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
         graphics.architecture = architecture;
-        const facts = try @import("device_facts.zig").capture(native, &graphics.engine, architecture);
-        var properties: a.GfxBackendProperties = .{ .interface_id_lo = amd.image_v1_header.interface_id_lo, .interface_id_hi = amd.image_v1_header.interface_id_hi, .revision = 2, .data_bytes = @sizeOf(amd.R4AmdDeviceFacts) };
-        @memcpy(properties.data[0..@sizeOf(amd.R4AmdDeviceFacts)], std.mem.asBytes(&facts));
+        const facts = try @import("device_facts.zig").profile(native, &graphics.engine, architecture, board);
+        var properties: a.GfxBackendProperties = .{ .interface_id_lo = amd.image_v1_header.interface_id_lo, .interface_id_hi = amd.image_v1_header.interface_id_hi, .revision = 3, .data_bytes = @sizeOf(amd.R4AmdDeviceFactsV3) };
+        @memcpy(properties.data[0..@sizeOf(amd.R4AmdDeviceFactsV3)], std.mem.asBytes(&facts));
         if (queue.publishProperties(&self.binding, &properties) != 1) return error.Unsupported;
         try self.runtime.?.prepare(&ctx, self.memory.?, &native.snapshot, self.binding, .{ .memory_epoch = self.memory.?.epoch, .boot_held = true, .engines_quiesced = false });
         try self.runtime.?.start(&native.snapshot, .{ .context = self.self_address, .work = work, .event = event, .quiesce = quiesce, .before_poll = beforePoll, .irq_ready = irqReady });

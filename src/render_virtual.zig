@@ -1,6 +1,6 @@
 // Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0
 //! Canonical VA requests -> pinned system/UMA pages and real VMID1 PTEs.
-//! Fixed slots bound residency; neither an app token nor a close request is a
+//! Fixed slots bound residency, variable extents own VA; neither a token nor a close is a
 //! GPU completion proof. Only kernel-retained native bindings permit lookup.
 const std = @import("std");
 const r4os = @import("r4os");
@@ -11,9 +11,9 @@ const Mapping = @import("memory_mapping.zig").Mapping;
 const Error = @import("start_common.zig").Error;
 const valid = @import("memory_io.zig").handle;
 pub const capacity = 32;
-const stride: u64 = 64 * 1024 * 1024;
+pub const max_backing_bytes: u64 = 1024 * 1024 * 1024 + 4096;
 const Range = struct { serial: u64 = 0, resource: a.GfxBufferHandle = .{}, request: a.GfxVirtualRequest = .{}, address: u64 = 0, children: u32 = 0, ready: bool = false };
-pub const Binding = struct { serial: u64 = 0, resource: a.GfxBufferHandle = .{}, parent: u8 = 0, map: Mapping = .{}, descriptor: a.GfxBufferDescriptor = .{}, ready: bool = false, pages: [stride / 4096]u64 = undefined };
+pub const Binding = struct { serial: u64 = 0, resource: a.GfxBufferHandle = .{}, parent: u8 = 0, map: Mapping = .{}, descriptor: a.GfxBufferDescriptor = .{}, ready: bool = false, pages: a.DriverHeapAllocation = .{} };
 pub const Owner = struct {
     memory: ?*Memory = null,
     rt: ?*@import("queue_runtime.zig").Owner = null,
@@ -34,7 +34,8 @@ pub const Owner = struct {
     pub fn prepare(self: *Owner, memory: *Memory, rt: *@import("queue_runtime.zig").Owner) Error!void {
         if (self.memory != null) return error.Busy;
         const span: @import("memory_layout.zig").Span = .{ .offset = c.native_va_start, .bytes = c.native_va_end - c.native_va_start };
-        if (span.overlaps(memory.layout.?.mc) or span.overlaps(memory.layout.?.gart) or span.bytes != capacity * stride) return error.Invalid;
+        if (span.overlaps(memory.layout.?.mc) or span.overlaps(memory.layout.?.gart) or span.bytes < max_backing_bytes) return error.Invalid;
+        if (memory.heap == null) return error.Unsupported;
         self.memory = memory;
         self.rt = rt;
         if (memory.memory.?.virtualRegister(&.{ .adapter_id = memory.adapter, .memory_generation = memory.epoch, .notify = @intFromPtr(&notify), .context = @intFromPtr(self) }, &self.handle) != 1) return error.Unsupported;
@@ -61,21 +62,39 @@ pub const Owner = struct {
         if (self.pending) |job| if (job.operation == 1 and std.meta.eql(job.resource, b.resource)) return error.Retained;
         return b;
     }
+    fn chooseAddress(self: *const Owner, bytes: u64, alignment: u64, fixed: u64) Error!u64 {
+        const l = @import("memory_layout.zig");
+        var start = if (fixed != 0) fixed else try l.aligned(c.native_va_start, alignment);
+        if (start < c.native_va_start or start % alignment != 0) return error.Invalid;
+        // Each pass crosses at least one occupied extent. Reserved, failed-ACK
+        // and retiring ranges participate until their exact broker ACK arrives.
+        for (0..capacity + 1) |_| {
+            if (start >= c.native_va_end or bytes > c.native_va_end - start) return error.Capacity;
+            var next = start;
+            const span: l.Span = .{ .offset = start, .bytes = bytes };
+            for (&self.ranges) |*range| if (range.serial != 0 and span.overlaps(.{ .offset = range.address, .bytes = range.request.byte_length })) {
+                next = @max(next, range.address + range.request.byte_length);
+            };
+            if (next == start) return start;
+            if (fixed != 0) return error.Capacity;
+            start = try l.aligned(next, alignment);
+        }
+        return error.Capacity;
+    }
     fn create(self: *Owner, job: a.GfxVirtualJob) Error!void {
         const memory = self.memory.?;
         const r = job.request;
         if (self.closing) return error.Stale;
         if (r.version != 1 or r.size != @sizeOf(a.GfxVirtualRequest) or r.reserved0 != 0 or r.reserved1 != 0 or r.adapter_id != memory.adapter or
-            r.memory_generation != memory.epoch or r.flags != 0 or r.byte_length == 0 or r.byte_length > stride or r.byte_length & 4095 != 0 or
+            r.memory_generation != memory.epoch or r.flags != 0 or r.byte_length == 0 or r.byte_length > max_backing_bytes or r.byte_length & 4095 != 0 or
             r.location > 1 or (r.kind != 1 and r.kind != 2) or r.deadline_ns <= memory.registers.nowNs() or self.serial == std.math.maxInt(u64)) return error.Invalid;
         if (r.kind == 1) {
-            if (r.alignment < 4096 or r.alignment > stride or !std.math.isPowerOfTwo(r.alignment) or r.byte_offset != 0 or r.virtual_offset != 0 or
+            if (r.alignment < 4096 or r.alignment > 1024 * 1024 * 1024 or !std.math.isPowerOfTwo(r.alignment) or r.byte_offset != 0 or r.virtual_offset != 0 or
                 !std.meta.eql(r.parent, a.GfxBufferHandle{}) or !std.meta.eql(r.reference, a.GfxBufferHandle{})) return error.Invalid;
             for (&self.ranges, 0..) |*entry, i| if (entry.serial == 0) {
-                const address = c.native_va_start + i * stride;
-                if (r.fixed_address != 0 and r.fixed_address != address) continue;
+                const chosen = try self.chooseAddress(r.byte_length, r.alignment, r.fixed_address);
                 self.serial += 1;
-                entry.* = .{ .serial = self.serial, .resource = job.resource, .request = r, .address = address };
+                entry.* = .{ .serial = self.serial, .resource = job.resource, .request = r, .address = chosen };
                 self.slot = @intCast(i);
                 return;
             };
@@ -98,7 +117,15 @@ pub const Owner = struct {
             entry.descriptor = desc;
             self.slot = @intCast(i);
             range.children += 1;
-            const pages = entry.pages[0..@intCast(r.byte_length / 4096)];
+            const heap = memory.heap.?;
+            const metadata_bytes = r.byte_length / 4096 * 8;
+            if (heap.allocate(metadata_bytes, 16, &entry.pages) != a.driver_heap_ok) return error.Capacity;
+            const allocation = entry.pages;
+            if (allocation.version != 1 or allocation.size < @sizeOf(a.DriverHeapAllocation) or allocation.handle == 0 or
+                allocation.cpu_address == 0 or allocation.cpu_address % 16 != 0 or allocation.byte_length < metadata_bytes or
+                allocation.cpu_address > std.math.maxInt(u64) - metadata_bytes or allocation.alignment < 16 or allocation.reserved != 0) return error.Invalid;
+            const pointer: [*]u64 = @ptrFromInt(allocation.cpu_address);
+            const pages = pointer[0..@intCast(r.byte_length / 4096)];
             if (desc.location == a.gfx_buffer_location_device_local) try entry.map.prepareNative(memory, job.reference.reference, range.address, pages) else if (desc.location == a.gfx_buffer_location_system) try entry.map.prepare(memory, job.reference.reference, range.address, r.byte_length, 1, pages) else return error.Unsupported;
             try entry.map.publish(&memory.virtual, &memory.registers, entry.map.write_allowed, true);
             return;
@@ -112,7 +139,12 @@ pub const Owner = struct {
         }
         const b = &self.bindings[slot];
         const memory = self.memory.?;
-        return b.map.close(&memory.virtual, &memory.registers);
+        if (!b.map.close(&memory.virtual, &memory.registers)) return false;
+        if (b.pages.handle != 0) {
+            if (memory.heap.?.release(b.pages.handle) != a.driver_heap_ok) return false;
+            b.pages = .{};
+        }
+        return true;
     }
     fn clear(self: *Owner, kind: u32, slot: u8) void {
         if (kind == 1) {
@@ -120,7 +152,7 @@ pub const Owner = struct {
             return;
         }
         const b = &self.bindings[slot];
-        std.debug.assert(b.map.self_address == 0 and self.ranges[b.parent].children != 0);
+        std.debug.assert(b.map.self_address == 0 and b.pages.handle == 0 and self.ranges[b.parent].children != 0);
         self.ranges[b.parent].children -= 1;
         b.serial = 0;
         b.resource = .{};

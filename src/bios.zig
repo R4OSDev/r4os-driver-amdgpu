@@ -139,6 +139,24 @@ pub const Board = struct {
         if (khz < 24000 or khz > 100000) return error.Length;
         return khz;
     }
+    /// Picasso GC9.1/MP1 10.0 uses one quarter of the ATOM SMU reference.
+    /// amdgpu_atomfirmware_get_clock_info + soc15_get_xclk, pinned originals.
+    pub fn picassoTimestampClock(self: *const Board) Error!u32 {
+        const info = self.table("smu_info") orelse return error.Missing;
+        if (info.bytes.len < 4) return error.Short;
+        const length: usize = switch (info.bytes[3]) {
+            1 => @sizeOf(c.struct_atom_smu_info_v3_1),
+            2 => @sizeOf(c.struct_atom_smu_info_v3_2),
+            3 => @sizeOf(c.struct_atom_smu_info_v3_3),
+            else => return error.Revision,
+        };
+        try info.revision(3, info.bytes[3], length);
+        const reference = try field(c.struct_atom_smu_info_v3_1, "core_refclk_10khz", info.bytes);
+        // Work in the BIOS unit before converting, matching the hardware
+        // divider exactly. An unknown/fractional/out-of-range scale is absent.
+        if (reference < 2400 or reference > 10000 or reference % 4 != 0) return error.Length;
+        return reference / 4 * 10;
+    }
 };
 
 pub fn parse(bytes: []const u8, device: Device, board: *Board) Error!void {

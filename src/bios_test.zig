@@ -75,3 +75,30 @@ test "ATOM and VFCT validate source identity, revisions, topology, extents and m
     f.entry(&rom, "lcd_info", 0); f.entry(&rom, "integratedsysteminfo", 0); f.entry(&rom, "displayobjectinfo", 0);
     try bios.parse(&rom, f.device, &board); try t.expect(board.panel == null and board.integrated == null and board.path_count == 0);
 }
+
+
+test "Picasso timestamp scale uses complete SMU tables and rejects absent or fractional clock declarations" {
+    const c = bios.c;
+    var rom: [f.image_bytes]u8 = undefined;
+    var board: bios.Board = undefined;
+    f.rom(&rom); try bios.parse(&rom, f.device, &board);
+    try t.expectError(error.Missing, board.picassoTimestampClock());
+    inline for (.{ c.struct_atom_smu_info_v3_1, c.struct_atom_smu_info_v3_2, c.struct_atom_smu_info_v3_3 }, 1..) |T, minor| {
+        f.rom(&rom); f.entry(&rom, "smu_info", 0xb00);
+        f.header(rom[0xb00..], @sizeOf(T), 3, minor);
+        f.set(T, "core_refclk_10khz", rom[0xb00..], 10000);
+        try bios.parse(&rom, f.device, &board);
+        try t.expectEqual(@as(u32, 25000), try board.picassoTimestampClock());
+        f.set(T, "core_refclk_10khz", rom[0xb00..], 2700);
+        try t.expectEqual(@as(u32, 6750), try board.picassoTimestampClock());
+        f.set(T, "core_refclk_10khz", rom[0xb00..], 2701);
+        try t.expectError(error.Length, board.picassoTimestampClock());
+        f.set(T, "core_refclk_10khz", rom[0xb00..], 0);
+        try t.expectError(error.Length, board.picassoTimestampClock());
+        f.header(rom[0xb00..], @sizeOf(T) - 1, 3, minor);
+        try bios.parse(&rom, f.device, &board);
+        try t.expectError(error.Short, board.picassoTimestampClock());
+    }
+    f.header(rom[0xb00..], @sizeOf(c.struct_atom_smu_info_v3_3), 4, 3); try bios.parse(&rom, f.device, &board);
+    try t.expectError(error.Revision, board.picassoTimestampClock());
+}

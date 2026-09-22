@@ -4,6 +4,15 @@ const std = @import("std");
 const amd = @import("r4amd");
 const fw = @import("firmware.zig");
 const Error = @import("start_common.zig").Error;
+pub fn profile(native: *const @import("start_runtime.zig").Owner,
+    engine: *const @import("gc_engine.zig").Owner, architecture: amd.R4AmdArchitecture,
+    board: *const @import("bios.zig").Board) Error!amd.R4AmdDeviceFactsV3 {
+    const copied = try capture(native, engine, architecture);
+    return .{ .facts = copied,
+        .timestamp_clock_khz = board.picassoTimestampClock() catch 0,
+        .native_binding_capacity = @import("render_virtual.zig").capacity,
+        .max_backing_bytes = @import("render_virtual.zig").max_backing_bytes };
+}
 pub fn capture(native: *const @import("start_runtime.zig").Owner,
     engine: *const @import("gc_engine.zig").Owner, architecture: amd.R4AmdArchitecture) Error!amd.R4AmdDeviceFacts {
     const chip = native.chip orelse return error.Unconfirmed;

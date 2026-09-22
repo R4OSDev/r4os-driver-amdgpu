@@ -13,6 +13,7 @@ pub const Owner = struct {
         release: a.GfxOwnedBufferRelease = .{}, committed: bool = false,
     };
     self_address: usize = 0, memory: ?r4os.driver_memory.Context = null, layout: ?*l.Layout = null,
+    heap: ?r4os.r4dev.DriverHeapContext = null,
     adapter: u32 = 0, epoch: u64 = 0, budget_live: bool = false, prepared: bool = false, mapping_users: u32 = 0, engine_users: u32 = 0, firmware_users: u32 = 0, start_users: u32 = 0,
     registers: io.Registers = .{}, table_window: io.Window = .{}, context_window: io.Window = .{},
     gart: ?pages.Flat = null, virtual: pages.Virtual = .{}, controller: hubs.Controller = .{},
@@ -23,6 +24,7 @@ pub const Owner = struct {
         const memory = ctx.memory() orelse return error.Unsupported;
         if (memory.reservedSpan(map.physical.offset, map.physical.bytes) != 1) return error.Unsupported;
         self.self_address = @intFromPtr(self); self.memory = memory; self.layout = map; self.adapter = adapter; self.epoch = memory_epoch;
+        self.heap = ctx.heap();
         try self.registers.open(ctx, bar);
         try self.table_window.open(memory, map.physical.offset, map.physical.bytes, map.tables.span.offset, map.tables.span.bytes, true);
         try self.context_window.open(memory, map.physical.offset, map.physical.bytes, map.contexts.span.offset, map.contexts.span.bytes, true);

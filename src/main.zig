@@ -170,7 +170,7 @@ pub fn advanceNative() !bool {
         if (display_runtime.self_address == 0) display_runtime.audio_peer = audio_peer;
         if (display_output.self_address == 0) try display_output.request(&ctx, &native_start, &sdma_runtime, &display_runtime, &display_pipeline,
             &display_present, .{ &display_images[0], &display_images[1] }, &firmware.board, display_clock_runtime.table.?, gc_runtime.engine.gb_addr_config);
-        try sdma_runtime.activate(&native_start);
+        try sdma_runtime.activate(&native_start, &firmware.board);
     }
     return sdma_runtime.active;
 }

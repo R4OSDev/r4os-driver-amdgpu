@@ -8,6 +8,9 @@ pub const page: u64 = 4096;
 pub const address_limit: u64 = @as(u64, 1) << 48;
 pub const gart_bytes: u64 = 1024 * 1024 * 1024;
 pub const table_bytes: u64 = gart_bytes / page * 8;
+// VMID1 covers the complete native 2 GB aperture plus retained display maps.
+// Directory pages remain owned until both hubs are quiescent; include scratch.
+pub const context_bytes: u64 = 8 * 1024 * 1024;
 pub const Error = error{ Invalid, Overflow, Capacity, Busy, Stale, Sparse, Unsupported };
 pub const Span = struct {
     offset: u64 = 0, bytes: u64 = 0,
@@ -114,7 +117,7 @@ pub const Layout = struct {
         const fw = try pool.allocate(16 * 1024 * 1024, 1024 * 1024, .firmware);
         const tables = try pool.allocate(table_bytes, page, .tables);
         const rings = try pool.allocate(1024 * 1024, 64 * 1024, .rings);
-        const contexts = try pool.allocate(2 * 1024 * 1024, 64 * 1024, .contexts);
+        const contexts = try pool.allocate(context_bytes, 64 * 1024, .contexts);
         // Immutable shaders plus eight independent 4 KB descriptor/push slots.
         // Contexts above are page tables and must never contain shader data.
         const render = try pool.allocate(64 * 1024, 64 * 1024, .contexts);

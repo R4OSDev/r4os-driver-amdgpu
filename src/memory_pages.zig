@@ -55,7 +55,7 @@ pub const Flat = struct {
 /// hubs are disabled/quiesced. Empty directories stay allocated until reset.
 /// This prevents reusing a PDE page still cached in a walker after an unmap.
 pub const Virtual = struct {
-    const max_nodes = 512;
+    const max_nodes = layout.context_bytes / 4096;
     entries: []volatile u64 = &.{}, physical: u64 = 0, count: usize = 0, mapped_pages: usize = 0,
     pub fn init(self: *Virtual, entries: []volatile u64, physical: u64) Error!void {
         if (self.count != 0 or entries.len < 4 * 512 or entries.len > max_nodes * 512 or entries.len % 512 != 0 or
