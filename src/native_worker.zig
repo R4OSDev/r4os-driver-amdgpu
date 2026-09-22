@@ -7,6 +7,7 @@ const a = r4os.abi;
 pub const Hooks = struct {
     advance: *const fn () anyerror!bool,
     recover: *const fn () bool,
+    restart: ?*const fn () anyerror!void = null,
 };
 
 /// Part of the existing init/unbind host test; every clock/Task event here is
@@ -28,6 +29,7 @@ pub fn check() !void {
         var fail_start = false;
         var fail_advance = false;
         var result: i32 = 0;
+        var runtime_fault = false; var fail_restart = false; var stop_in_recover = false; var restart_calls: u32 = 0;
         fn log(_: [*:0]const u8) callconv(.c) void {}
         fn query(out: *a.DriverThreadApi) callconv(.c) i32 {
             out.* = .{ .start = @intFromPtr(&start), .join = @intFromPtr(&join), .release = @intFromPtr(&release),
@@ -49,12 +51,26 @@ pub fn check() !void {
         fn release(id: u64) callconv(.c) i32 { std.debug.assert(id == 77 and ran); return if (fail_release) -1 else 0; }
         fn sleep(ticks: u64) callconv(.c) i32 {
             std.debug.assert(ticks == 10); time += ticks * std.time.ns_per_ms; sleeps += 1;
-            if (sleeps == 4) @atomicStore(u32, &output.restore_requested, 1, .release);
+            if (sleeps == 4 or (restart_calls != 0 and sleeps == 8)) {
+                @atomicStore(u32, &output.recovery_fault, if (runtime_fault) 2 else 0, .release);
+                @atomicStore(u32, &output.restore_requested, 1, .release);
+            }
             return 0;
         }
-        fn advance() !bool { advances += 1; if (fail_advance) return error.Firmware; return advances == 2; }
-        fn recover() bool { recovers += 1; return !hold_recovery and recovers >= 3; }
+        fn advance() !bool { advances += 1; if (fail_advance) return error.Firmware; return advances % 2 == 0; }
+        fn recover() bool {
+            recovers += 1;
+            if (hold_recovery or recovers < 3) return false;
+            output = .{};
+            if (stop_in_recover) owner.requestStop();
+            return true;
+        }
+        fn restart() !void {
+            std.debug.assert(recovers >= 3 and output.restore_requested == 0);
+            restart_calls += 1; if (fail_restart) return error.Capture;
+        }
         fn reset() void {
+            runtime_fault = false; fail_restart = false; stop_in_recover = false; restart_calls = 0;
             owner = .{}; output = .{}; time = 1000; advances = 0; recovers = 0; sleeps = 0; ran = false;
             fail_release = false; hold_recovery = false; fail_start = false; fail_advance = false;
             api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
@@ -80,6 +96,25 @@ pub fn check() !void {
     try t.expectError(error.Capacity, F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover }));
     try t.expect(F.owner.thread == 77 and !F.owner.join());
     F.owner.requestStop(); F.run(); try t.expect(F.advances == 0 and F.owner.recovered == 1 and F.owner.join());
+    // Use real worker control flow with injected boundary callbacks. A
+    // second runtime loss, manual restore, failed capture or concurrent stop
+    // must never create an unbounded restart loop.
+    F.reset(); F.runtime_fault = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover, .restart = F.restart }); F.run();
+    try t.expect(F.restart_calls == 1 and F.owner.restarts == 1 and F.advances == 4 and F.owner.recovered == 1);
+    try t.expect(F.owner.join());
+    F.reset();
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover, .restart = F.restart }); F.run();
+    try t.expect(F.restart_calls == 0 and F.owner.recovered == 1 and F.owner.join());
+    F.reset(); F.runtime_fault = true; F.hold_recovery = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover, .restart = F.restart }); F.run();
+    try t.expect(F.restart_calls == 0 and F.owner.recovered == 0 and F.result == -1 and F.owner.join());
+    F.reset(); F.runtime_fault = true; F.fail_restart = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover, .restart = F.restart }); F.run();
+    try t.expect(F.restart_calls == 1 and F.owner.failure.? == error.Capture and F.result == -1 and F.owner.join());
+    F.reset(); F.runtime_fault = true; F.stop_in_recover = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover, .restart = F.restart }); F.run();
+    try t.expect(F.restart_calls == 0 and F.owner.recovered == 1 and F.owner.join());
     std.debug.print("[amd-native-worker] real Task callbacks, asynchronous admission, output-loss recovery, bounded retention and late join/release; model only\n", .{});
 }
 pub fn supported(ctx: *const r4os.r4dev.DriverContext) bool {
@@ -101,6 +136,7 @@ pub const Owner = struct {
     stop: u32 = 0,
     recovered: u32 = 0,
     ready: bool = false,
+    restarts: u32 = 0,
     failure: ?anyerror = null,
     interval_ticks: u64 = 1,
     pub fn start(self: *Owner, ctx: *const r4os.r4dev.DriverContext, output: *@import("display_output.zig").Owner, hooks: Hooks) !void {
@@ -130,34 +166,60 @@ pub const Owner = struct {
         const self: *Owner = @ptrFromInt(raw);
         if (self.self_address != raw) return -1;
         var last = self.clock.?.nowNs();
-        const begin = last;
+        var begin = last;
         var cleanup_begin: ?u64 = null;
+        var recovering = false;
+        var restart_allowed = false;
         while (true) {
             const now = self.clock.?.nowNs();
-            if (now < last or now == std.math.maxInt(u64)) { self.failure = error.Clock; self.requestStop(); }
+            if (now < last or now == std.math.maxInt(u64)) { self.failure = error.Clock; recovering = true; restart_allowed = false; }
             last = now;
-            if (@atomicLoad(u32, &self.output.?.restore_requested, .acquire) != 0) self.requestStop();
-            if (@atomicLoad(u32, &self.stop, .acquire) == 0) {
+            const requested = @atomicLoad(u32, &self.output.?.restore_requested, .acquire) != 0;
+            if (!recovering and requested) {
+                // A software switch uses the same restore callback but is not
+                // a fault. Only a previously active output permits one retry.
+                restart_allowed = self.ready and self.restarts == 0 and
+                    @atomicLoad(u32, &self.output.?.recovery_fault, .acquire) == 2;
+                recovering = true;
+            }
+            if (@atomicLoad(u32, &self.stop, .acquire) != 0) { recovering = true; restart_allowed = false; }
+            if (!recovering) {
                 if (!self.ready) {
                     self.ready = self.hooks.?.advance() catch |err| failed: {
-                        self.failure = err; self.requestStop();
+                        self.failure = err; recovering = true; restart_allowed = false;
                         var buffer: [128]u8 = undefined;
                         if (std.fmt.bufPrintZ(&buffer, "AMDGPU native start: failure={s}; recovery requested", .{@errorName(err)})) |message|
                             self.ctx.?.logError(message) else |_| {}
                         break :failed false;
                     };
-                    if (!self.ready and now -| begin > 120 * std.time.ns_per_s) { self.failure = error.Deadline; self.requestStop(); }
+                    if (!self.ready and now -| begin > 120 * std.time.ns_per_s) { self.failure = error.Deadline; recovering = true; }
                 }
             } else {
                 if (cleanup_begin == null) cleanup_begin = now;
-                if (self.hooks.?.recover()) { @atomicStore(u32, &self.recovered, 1, .release); return 0; }
+                if (self.hooks.?.recover()) {
+                    if (restart_allowed and self.hooks.?.restart != null and @atomicLoad(u32, &self.stop, .acquire) == 0) {
+                        self.restarts += 1; // consume before the fallible call
+                        self.hooks.?.restart.?() catch |err| {
+                            self.failure = err;
+                            self.ctx.?.logError("AMDGPU recovery: fresh boot capture failed; restart required, select R4OS Software Graphics for one boot");
+                            return -1;
+                        };
+                        self.ready = false; self.failure = null; recovering = false; restart_allowed = false;
+                        cleanup_begin = null; begin = now;
+                        continue;
+                    }
+                    @atomicStore(u32, &self.recovered, 1, .release);
+                    self.ctx.?.logError("AMDGPU recovery: confirmed boot scanout restored; native owner stopped");
+                    return 0;
+                }
                 if (now < cleanup_begin.? or now - cleanup_begin.? >= 30 * std.time.ns_per_s or (self.failure != null and self.failure.? == error.Clock)) {
-                    self.ctx.?.logError("AMDGPU recovery: bounded attempt ended; hardware or callback resources retained"); return -1;
+                    self.ctx.?.logError("AMDGPU recovery: resources quarantined; unconfirmed scanout stays blocked; restart with R4OS Software Graphics if needed"); return -1;
                 }
             }
             if (self.threads.?.sleepTicks(self.interval_ticks) != 0) {
-                self.failure = error.Wait; self.requestStop();
+                self.failure = error.Wait;
                 if (self.hooks.?.recover()) { @atomicStore(u32, &self.recovered, 1, .release); return 0; }
+                self.ctx.?.logError("AMDGPU recovery: wait failed; resources quarantined, headless/restart required");
                 return -1;
             }
         }

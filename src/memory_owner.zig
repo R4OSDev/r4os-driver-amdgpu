@@ -47,6 +47,12 @@ pub const Owner = struct {
         const scratch = try map.physicalAddress(.{ .offset = map.contexts.span.end() - 4096, .bytes = 4096 });
         try self.controller.enable(&self.registers, map, try self.virtual.root(), scratch, gate);
     }
+    /// Copy-only identity/table reads; safe for the parent while the queue
+    /// worker is still draining. It must not mutate that worker's BO pool.
+    pub fn closeAdmission(self: *const Owner) bool {
+        if (!self.budget_live) return true;
+        return (self.memory orelse return false).deviceLost(self.adapter, self.epoch, false) == 1;
+    }
     /// Device-local means opaque driver-owned storage. On Picasso those pages
     /// come from the BIOS UMA carveout, not an additional RAM allocation.
     /// WINSVC's location_device_local + adapter + memory_generation checks fit.
@@ -141,15 +147,18 @@ pub const Owner = struct {
         if (self.self_address != @intFromPtr(self)) return false;
         if (self.mapping_users != 0 or self.engine_users != 0 or self.firmware_users != 0 or self.start_users != 0 or self.orphan_release.cookie != 0 or self.virtual.mapped_pages != 0) return false;
         if (self.gart) |gart| if (gart.mapped_pages != 0) return false;
-        if (!self.collect()) return false;
-        for (&self.records) |*record| if (record.allocation.serial != 0) return false;
+        // All child DMA/firmware/VM owners have retired. Invalidate backing
+        // before collecting release tickets so idle application references
+        // cannot deadlock recovery. Those invalid references stay closeable.
         self.controller.disable(&self.registers, gate) catch return false;
-        self.prepared = false;
-        if (!self.context_window.close() or !self.table_window.close() or !self.registers.close()) return false;
         if (self.budget_live) {
             if (self.memory.?.deviceLost(self.adapter, self.epoch, true) != 1) return false;
             self.budget_live = false;
         }
+        if (!self.collect()) return false;
+        for (&self.records) |*record| if (record.allocation.serial != 0) return false;
+        self.prepared = false;
+        if (!self.context_window.close() or !self.table_window.close() or !self.registers.close()) return false;
         self.* = .{}; return true;
     }
 };

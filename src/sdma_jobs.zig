@@ -194,6 +194,12 @@ pub const Owner = struct {
     }
     /// Outer native shutdown joins the worker before touching its ring/maps.
     /// A false return keeps every outstanding mapping and owning object live.
+    pub fn closeAdmission(self: *const Owner) bool {
+        const memory_closed = if (self.memory) |memory| memory.closeAdmission() else true;
+        if (!self.registered) return memory_closed;
+        const queue_closed = @import("device_loss.zig").announce(self.queue orelse return false, self.binding);
+        return memory_closed and queue_closed;
+    }
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0 or self.closed) return true;
         if (self.self_address != @intFromPtr(self)) return false;

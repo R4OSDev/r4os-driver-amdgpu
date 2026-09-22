@@ -315,6 +315,16 @@ const Fixture = struct {
 
 test "AMD actual init and unbind preserve software boot and bound source-backed identity/UMA probes" {
     try @import("native_worker.zig").check();
+    Fixture.reset();
+    const original_boot = Fixture.boot_info;
+    var next_boot = original_boot; next_boot.generation += 10;
+    const can_restart = @import("device_loss.zig").restartBoot;
+    try t.expect(can_restart(original_boot, next_boot));
+    try t.expect(!can_restart(original_boot, original_boot));
+    next_boot.state = a.display_state_unavailable; try t.expect(!can_restart(original_boot, next_boot));
+    next_boot.state = a.display_state_bootfb; next_boot.policy = 2; try t.expect(!can_restart(original_boot, next_boot));
+    next_boot.policy = 0; next_boot.physical_address += 4096; try t.expect(!can_restart(original_boot, next_boot));
+
     const f = Fixture;
     defer { f.fail_unmap = false; f.fail_collect = false; _ = driver.amdgpu_shutdown(); }
     // PCI revision C8 is not ASIC revision 8: the two identities are separate.

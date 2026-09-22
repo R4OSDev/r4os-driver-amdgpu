@@ -131,7 +131,7 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
     if (native_requested) {
         audio_peer = @import("display_audio.zig").capture(&ctx, device.snapshot.pci);
         log("AMDGPU display audio: HDA companion={s} format=48000-stereo-S16 physical-verified=no", .{if (audio_peer != null) @as([]const u8, "1002:15de") else "unavailable"});
-        native_worker.start(&ctx, &display_output, .{ .advance = advanceNative, .recover = recoverNative }) catch return reject("native-worker-unavailable", -8);
+        native_worker.start(&ctx, &display_output, .{ .advance = advanceNative, .recover = recoverNative, .restart = restartNative }) catch return reject("native-worker-unavailable", -8);
         ctx.logInfo("AMDGPU native start: asynchronous worker admitted; output ownership awaits confirmed scanout");
     }
     return 0;
@@ -198,9 +198,13 @@ pub export fn amdgpu_shutdown() callconv(.c) i32 {
     return 0;
 }
 fn recoverNative() bool {
+    // Stop application admission even if the worker cannot yet be joined.
+    // Binding/queue are immutable from activation until this owner retires it.
+    const memory_closed = memory_runtime.closeAdmission();
+    const announced = sdma_runtime.closeAdmission() and memory_closed;
     // Stop and join the sole BO/queue owner before starting independent DCN
     // restoration tasks or mutating any of its retained maps and pools.
-    if (!queue_runtime.stopWorker()) return false;
+    if (!queue_runtime.stopWorker() or !announced) return false;
     if (display_output.self_address != 0) display_output.phase = .closing;
     if (!display_output.beginReset()) return false;
     if (!sdma_runtime.power.close(&sdma_runtime)) return false;
@@ -223,6 +227,22 @@ fn recoverNative() bool {
     sdma_runtime = .{}; gc_runtime = .{}; vcn_runtime = .{}; queue_runtime = .{};
     display_present = .{}; display_pipeline = .{};
     return true;
+}
+fn restartNative() !void {
+    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+    if (native_start.self_address != 0 or memory_runtime.self_address != 0 or queue_runtime.self_address != 0 or
+        display_output.self_address != 0 or !boot_snapshot.valid) return error.Unconfirmed;
+    const display = ctx.graphicsDisplay() orelse return error.Unsupported;
+    var current: a.GfxNativeBootInfo = .{};
+    if (display.bootInfo(&current) != a.gfx_output_ok or !@import("device_loss.zig").restartBoot(boot_snapshot.boot, current)) return error.Unconfirmed;
+    const selected = boot_association orelse return error.State;
+    if (!boot_snapshot.close()) return error.Retained;
+    boot_snapshot.capture(&ctx, selected.adapter, current) catch |err| {
+        _ = boot_snapshot.close(); // failed release keeps the snapshot resident
+        return err;
+    };
+    boot_association.?.generation = current.generation;
+    log("AMDGPU recovery: boot scanout confirmed; fresh start generation={d}; old application contexts remain lost", .{current.generation});
 }
 const Reader = struct {
     ctx: r4os.r4dev.DriverContext,

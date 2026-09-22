@@ -24,6 +24,9 @@ pub const Owner = struct {
     hooks: ?Hooks = null, semaphore: u64 = 0, thread: u64 = 0,
     stop: u32 = 0, wake_fault: u32 = 0, poll_ticks: u64 = 1, prepared: bool = false, started: bool = false,
     activity_sequence: u64 = 0, notify_state: u32 = 0x80000000, closed: bool = false,
+    loss_announced: bool = false, loss_logged: bool = false,
+    fault_event: ?ih.Event = null,
+    binding: a.GfxBackendBinding = .{},
     thread_stop_requested: bool = false, thread_joined: bool = false, worker_result: i32 = 0,
     pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *@import("memory_owner.zig").Owner,
         snapshot: *const @import("identity.zig").Snapshot, binding: a.GfxBackendBinding, gate: @import("memory_hubs.zig").Gate) Error!void
@@ -43,6 +46,7 @@ pub const Owner = struct {
         } else if (self.arena.memory != memory or self.arena.epoch != memory.epoch or self.arena.self_address != @intFromPtr(&self.arena) or
             self.arena.doorbell.value.physical_address != snapshot.bars[2].base) return error.Stale;
         try self.timeline.init(binding, try self.arena.fences(), self.clock.?.nowNs());
+        self.binding = binding;
         if (self.semaphores.?.create(0, 1, &self.semaphore) != 0 or self.semaphore == 0) return error.Capacity;
         self.prepared = true;
         @atomicStore(u32, &self.notify_state, 0, .release);
@@ -89,6 +93,7 @@ pub const Owner = struct {
             for (0..128) |_| {
                 const event = self.irq.mailbox.pop() orelse break;
                 if (!std.meta.eql(event.epoch, self.timeline.epoch)) continue;
+                if (event.faultMask() != 0 and self.fault_event == null) self.fault_event = event;
                 self.timeline.fault(event.faultMask()); hooks.event(hooks.context, event);
             }
             if (captured < 32) break;
@@ -97,11 +102,38 @@ pub const Owner = struct {
         if (hooks.before_poll) |before| before(self, hooks.context);
         self.timeline.poll(self.clock.?.nowNs());
         const failed = self.timeline.failed_engines;
-        if (failed != 0) if (hooks.quiesce(hooks.context, self.timeline.epoch, failed)) |proof| {
-            self.timeline.abort(proof, a.gfx_queue_result_device_lost) catch {};
-        };
+        if (failed != 0) {
+            self.timeline.stopping = true;
+            // One IP fault loses this entire shared APU generation. Notify
+            // consumers BEFORE a slow/failed power, firmware or DMA drain.
+            if (!self.loss_announced) {
+                const memory_closed = self.memory.?.closeAdmission();
+                const queue_closed = @import("device_loss.zig").announce(self.queue.?, self.binding);
+                self.loss_announced = memory_closed and queue_closed;
+            }
+            self.reportLoss(failed);
+            self.timeline.fault(@import("queue_ring.zig").all_engines);
+            if (hooks.quiesce(hooks.context, self.timeline.epoch, @import("queue_ring.zig").all_engines)) |proof|
+                self.timeline.abort(proof, a.gfx_queue_result_device_lost) catch {};
+        }
         _ = self.timeline.publish(self.queue.?);
         if (self.timeline.failed_engines == 0 and @atomicLoad(u32, &self.stop, .acquire) == 0) hooks.work(self, hooks.context);
+    }
+    fn reportLoss(self: *Owner, failed: q.EngineMask) void {
+        if (self.loss_logged) return;
+        self.loss_logged = true;
+        const epoch = self.timeline.epoch;
+        var text: [384]u8 = undefined;
+        const message = if (self.fault_event) |event|
+            std.fmt.bufPrintZ(&text, "AMDGPU lost: adapter={x} device={d} reset={d} engines={x} IH client={x} source={x} vmid={d} pasid={d} data={x},{x},{x},{x}; DMA retained until proven stop",
+                .{ epoch.adapter, epoch.device, epoch.reset, failed, event.client, event.source, event.vmid, event.pasid, event.data[0], event.data[1], event.data[2], event.data[3] })
+        else blk: {
+            var expired: a.GfxFence = .{};
+            for (&self.timeline.entries) |*entry| if (entry.result == a.gfx_queue_result_timeout) { expired = entry.fence; break; };
+            break :blk std.fmt.bufPrintZ(&text, "AMDGPU lost: adapter={x} device={d} reset={d} engines={x} timeout-timeline={d} point={d} time-ns={d}; DMA retained until proven stop",
+                .{ epoch.adapter, epoch.device, epoch.reset, failed, expired.timeline, expired.point, self.timeline.last_time });
+        };
+        if (message) |value| self.ctx.?.logError(value) else |_| {}
     }
     fn worker(raw: usize) callconv(.c) i32 {
         const self: *Owner = @ptrFromInt(raw);

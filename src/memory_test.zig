@@ -163,7 +163,7 @@ const F = struct {
     var span_fail = false;
     var windows: usize = 0;
     var charged: u64 = 0;
-    var closed = false;
+    var closed = false; var logically_lost = false;
     fn reset() void {
         for (&heap_slots) |*slot| std.debug.assert(slot.* == null);
         heap_fail = false; heap_release_fail = false;
@@ -186,7 +186,7 @@ const F = struct {
         span_fail = false;
         windows = 0;
         charged = 0;
-        closed = false;
+        closed = false; logically_lost = false;
         api = undefined;
         api.magic = a.driver_magic;
         api.version = a.driver_api_version;
@@ -251,8 +251,9 @@ const F = struct {
         return 1;
     }
     fn lost(adapter: u32, epoch: u64, quiesced: u32) callconv(.c) i32 {
-        std.debug.assert(adapter == 7 and epoch == 23 and quiesced == 1);
-        closed = true;
+        std.debug.assert(adapter == 7 and epoch == 23 and quiesced <= 1);
+        logically_lost = true;
+        if (quiesced == 1) closed = true;
         return 1;
     }
     fn create(desc: *const a.GfxBufferDescriptor, out: *a.GfxBufferReference) callconv(.c) i32 {
@@ -349,7 +350,7 @@ const F = struct {
         return 1;
     }
     fn take(_: u32, _: u64, out: *a.GfxOwnedBufferRelease) callconv(.c) i32 {
-        if (!committed or native_refs != 0 or gpu or claimed) return a.gfx_buffer_error_busy;
+        if (!committed or (native_refs != 0 and !closed) or gpu or claimed) return a.gfx_buffer_error_busy;
         claimed = true;
         out.* = .{ .buffer = ticket.buffer, .cookie = ticket.cookie, .byte_length = ticket.allocation_bytes, .attempt = 17, .device_generation = 23, .driver_generation = 31, .adapter_id = 7, .driver_owner = 9 };
         return 1;
@@ -749,6 +750,17 @@ test "AMD actual memory facades retain SG/UMA backing until fence and both TLB a
     try t.expect(F.charged == 0 and !F.committed);
     try t.expect(F.owner.close(gate));
     try t.expect(F.closed and F.windows == 0);
+    F.reset(); try F.prepare();
+    _ = try F.owner.create(.{ .byte_length = 8192, .usage = 12, .location = a.gfx_buffer_location_device_local, .adapter_id = 7, .device_generation = 23 });
+    try t.expect(F.owner.closeAdmission() and F.logically_lost and !F.closed and F.native_refs == 1);
+    try t.expect(F.owner.collect() and F.committed and F.charged == 8192);
+    F.owner.engine_users = 1;
+    try t.expect(!F.owner.close(gate) and !F.closed and F.committed);
+    F.owner.engine_users = 0; F.release_fail = true;
+    try t.expect(!F.owner.close(gate) and F.closed and F.claimed and F.charged == 8192);
+    F.release_fail = false;
+    try t.expect(F.owner.close(gate) and F.owner.close(gate) and F.charged == 0 and F.native_refs == 1);
+
     for (0..2) |i| {
         F.reset();
         try F.prepare();

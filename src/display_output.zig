@@ -49,6 +49,7 @@ pub const Owner = struct {
     deadline: u64 = 0,
     last_time: u64 = 0,
     restore_requested: u32 = 0,
+    recovery_fault: u32 = 0, // 1: startup failure; 2: previously active output
     restore_ready: u32 = 0,
     reset_original: u64 = 0,
     reset_state: a.GfxNativeState = .{},
@@ -493,7 +494,11 @@ pub const Owner = struct {
         @memcpy(self.publication.edid[0..p.edid_length], p.edid_bytes[0..p.edid_length]);
     }
     pub fn fail(self: *Owner, err: anyerror) void {
-        if (self.failure == null) { self.failure = err; self.failed_phase = self.phase; }
+        if (self.failure == null) {
+            self.failure = err; self.failed_phase = self.phase;
+            @atomicStore(u32, &self.recovery_fault, if (self.phase == .active) 2 else 1, .release);
+        }
+        if (self.engine) |engine| _ = engine.closeAdmission();
         self.phase = .failed; @atomicStore(u32, &self.restore_requested, 1, .release);
         self.statistics.publish(self);
         if (self.output.connection_generation != 0) _ = self.outputs.?.pauseOutput(&self.output, true);

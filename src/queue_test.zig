@@ -26,6 +26,7 @@ const F = struct {
     var irq_register_fail = false; var irq_close_fail = false;
     var sem_live = false; var sem_permit = false; var sem_destroy_fail = false; var sem_acquire_error: i32 = 0;
     var request: a.DriverThreadRequest = .{}; var thread_live = false; var thread_join_busy = false; var thread_release_fail = false;
+    var loss_calls: usize = 0; var lost = false; var loss_error = false; var loss_logs: usize = 0;
     var completed: usize = 0; var last_fence: a.GfxFence = .{}; var last_result: u32 = 0;
     var complete_fail = false; var retire_fail = false; var retired: usize = 0;
     var worker_stop = false; var worker_calls: usize = 0; var event_calls: usize = 0; var prove_quiescence = false;
@@ -35,9 +36,11 @@ const F = struct {
         mapped = 0; unmap_fail = false; map_fail = false; msi_result = 24; msi_live = false; msi_close_fail = false;
         irq_handler = null; irq_context = 0; irq_number = 0; irq_flags = 0; irq_register_fail = false; irq_close_fail = false;
         sem_live = false; sem_permit = false; sem_destroy_fail = false; sem_acquire_error = 0; request = .{}; thread_live = false; thread_join_busy = false; thread_release_fail = false;
+        loss_calls = 0; lost = false; loss_error = false; loss_logs = 0;
         completed = 0; last_fence = .{}; last_result = 0; complete_fail = false; retire_fail = false; retired = 0;
         worker_stop = false; worker_calls = 0; event_calls = 0; prove_quiescence = false;
         api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+        api.log_error = log;
         api.gfx_memory_query = memoryQuery; api.gfx_queue_query = queueQuery; api.resource_query = resourceQuery;
         api.thread_query = threadQuery; api.semaphore_query = semQuery; api.timer_frequency = frequency;
         api.pci_read_config32 = config; api.pci_enable_msi = msiEnable; api.pci_disable_msi = msiDisable;
@@ -62,9 +65,16 @@ const F = struct {
     fn start() !void { try run.start(&snapshot(), .{ .context = 7, .work = work, .event = event, .quiesce = quiesce }); }
     fn work(_: *Runtime, context: usize) void { std.debug.assert(context == 7); worker_calls += 1; if (worker_stop) @atomicStore(u32, &run.stop, 1, .release); }
     fn event(context: usize, _: ih.Event) void { std.debug.assert(context == 7); event_calls += 1; }
-    fn quiesce(_: usize, current: q.Epoch, mask: q.EngineMask) ?q.Quiescence { return if (prove_quiescence) .{ .epoch = current, .engines = mask } else null; }
+    fn quiesce(_: usize, current: q.Epoch, mask: q.EngineMask) ?q.Quiescence { std.debug.assert(loss_calls != 0 and mask == 63); return if (prove_quiescence) .{ .epoch = current, .engines = mask } else null; }
     fn retire(_: usize, value: a.GfxFence) bool { std.debug.assert(value.timeline == 3 and @atomicLoad(u32, &run.irq.gate, .acquire) != 2); if (retire_fail) return false; retired += 1; return true; }
-    fn queueContext() r4os.driver_queue.Context { return .{ .table = .{ .complete = @intFromPtr(&complete) } }; }
+    fn queueContext() r4os.driver_queue.Context { return .{ .table = .{ .complete = @intFromPtr(&complete), .reset = @intFromPtr(&resetQueue) } }; }
+    fn log(_: [*:0]const u8) callconv(.c) void { loss_logs += 1; }
+    fn resetQueue(value: *const a.GfxBackendBinding, quiet: u32, _: *a.GfxBackendBinding) callconv(.c) i32 {
+        std.debug.assert(std.meta.eql(value.*, binding) and quiet == 0);
+        loss_calls += 1;
+        if (loss_error) return a.gfx_queue_error_unavailable;
+        lost = true; return a.gfx_queue_error_busy;
+    }
     fn complete(value: *const a.GfxFence, result: u32, quiesced: u32) callconv(.c) i32 {
         std.debug.assert(quiesced == 1 and retired > completed and @atomicLoad(u32, &run.irq.gate, .acquire) != 2); if (complete_fail) return -4;
         completed += 1; last_fence = value.*; last_result = result; return 1;
@@ -240,7 +250,10 @@ test "AMD worker publishes exact writebacks, polls lost IRQs and retains timeout
     const next = try F.run.timeline.reserve(fence(2), .sdma, 1000, resources); try t.expect(next.token != ticket.token);
     try F.run.timeline.arm(next); F.run.timeline.writeback[next.slot] = ticket.token; F.clock = 104; F.run.step(); try t.expectEqual(@as(usize, 1), F.completed);
     var stale = next; stale.epoch.reset += 1; try t.expectError(error.Stale, F.run.timeline.entry(stale));
-    F.clock = 1000; F.run.step(); try t.expectEqual(q.Phase.submitted, (try F.run.timeline.entry(next)).phase);
+    F.loss_error = true; F.clock = 1000; F.run.step();
+    try t.expect(F.loss_calls == 1 and !F.lost and !F.run.loss_announced and F.loss_logs == 1);
+    F.loss_error = false; F.run.step();
+    try t.expect(F.lost and F.run.loss_announced and F.loss_calls == 2 and F.loss_logs == 1 and F.run.timeline.stopping); try t.expectEqual(q.Phase.submitted, (try F.run.timeline.entry(next)).phase);
     try t.expectEqual(@as(usize, 1), F.retired); try t.expectEqual(@as(usize, 1), F.completed);
     try t.expectError(error.Unconfirmed, F.run.timeline.abort(.{ .epoch = stale.epoch, .engines = 63 }, a.gfx_queue_result_device_lost));
     F.prove_quiescence = true; F.run.step(); try t.expectEqual(a.gfx_queue_result_timeout, F.last_result); try t.expect(F.run.timeline.empty());
