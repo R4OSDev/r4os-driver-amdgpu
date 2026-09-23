@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 3,
   "revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0",
   "upstream": "https://gitlab.com/kernel-firmware/linux-firmware",
   "driver_source": "Linux 7.2.4",
@@ -22,7 +22,9 @@
       "ucode_version": 553648365,
       "payload_offset": 256,
       "payload_bytes": 196864,
-      "crc32": 3793595107
+      "crc32": 3793595107,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_ta.bin",
@@ -42,7 +44,9 @@
       "ucode_version": 553648364,
       "payload_offset": 256,
       "payload_bytes": 45824,
-      "crc32": 1536582749
+      "crc32": 1536582749,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_pfp.bin",
@@ -62,7 +66,9 @@
       "ucode_version": 195,
       "payload_offset": 256,
       "payload_bytes": 21376,
-      "crc32": 3446116776
+      "crc32": 3446116776,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_me.bin",
@@ -82,7 +88,9 @@
       "ucode_version": 167,
       "payload_offset": 256,
       "payload_bytes": 17280,
-      "crc32": 1488126561
+      "crc32": 1488126561,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_ce.bin",
@@ -102,7 +110,9 @@
       "ucode_version": 80,
       "payload_offset": 256,
       "payload_bytes": 9088,
-      "crc32": 3282890178
+      "crc32": 3282890178,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_mec.bin",
@@ -122,7 +132,9 @@
       "ucode_version": 472,
       "payload_offset": 256,
       "payload_bytes": 267808,
-      "crc32": 2233386527
+      "crc32": 2233386527,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_mec2.bin",
@@ -142,7 +154,9 @@
       "ucode_version": 472,
       "payload_offset": 256,
       "payload_bytes": 267808,
-      "crc32": 2233386527
+      "crc32": 2233386527,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_rlc.bin",
@@ -162,7 +176,9 @@
       "ucode_version": 111,
       "payload_offset": 256,
       "payload_bytes": 16896,
-      "crc32": 956679272
+      "crc32": 956679272,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_rlc_am4.bin",
@@ -182,7 +198,9 @@
       "ucode_version": 551,
       "payload_offset": 256,
       "payload_bytes": 16896,
-      "crc32": 1917803846
+      "crc32": 1917803846,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_sdma.bin",
@@ -202,7 +220,9 @@
       "ucode_version": 169,
       "payload_offset": 256,
       "payload_bytes": 17152,
-      "crc32": 3974518576
+      "crc32": 3974518576,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_vcn.bin",
@@ -222,7 +242,9 @@
       "ucode_version": 51441669,
       "payload_offset": 256,
       "payload_bytes": 369152,
-      "crc32": 2191998816
+      "crc32": 2191998816,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/picasso_gpu_info.bin",
@@ -242,7 +264,9 @@
       "ucode_version": 1,
       "payload_offset": 256,
       "payload_bytes": 60,
-      "crc32": 166927086
+      "crc32": 166927086,
+      "family": "picasso",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/amdgpu/raven_dmcu.bin",
@@ -262,7 +286,251 @@
       "ucode_version": 1,
       "payload_offset": 256,
       "payload_bytes": 22928,
-      "crc32": 620070095
+      "crc32": 620070095,
+      "family": "shared",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_asd.bin",
+      "resource": "raven2_asd.bin",
+      "bytes": 193024,
+      "sha256": "3594c98bd86656e223c3bea55dc040ace63c349caaf792f103bd66a8728c57c1",
+      "upstream_path": "amdgpu/raven2_asd.bin",
+      "git_blob": "92d4b83878f01af4ac42e65a2648c030fc5fec48",
+      "role": "asd",
+      "kind": "psp_asd",
+      "requirement": "boot",
+      "header_bytes": 44,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 10,
+      "ip_minor": 1,
+      "ucode_version": 553648344,
+      "payload_offset": 256,
+      "payload_bytes": 192768,
+      "crc32": 3171104251,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_ta.bin",
+      "resource": "raven2_ta.bin",
+      "bytes": 33536,
+      "sha256": "bc7a8b0fe15faa97fa6f7822263218ca94b387c16304bad7d674c166899a3a97",
+      "upstream_path": "amdgpu/raven2_ta.bin",
+      "git_blob": "bf1a867f63f355b4a9c5355fa4d21dd78a4d6b1a",
+      "role": "ta",
+      "kind": "psp_ta",
+      "requirement": "trusted_applications",
+      "header_bytes": 92,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 11,
+      "ip_minor": 0,
+      "ucode_version": 553648350,
+      "payload_offset": 256,
+      "payload_bytes": 33280,
+      "crc32": 1117352461,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_pfp.bin",
+      "resource": "raven2_pfp.bin",
+      "bytes": 21632,
+      "sha256": "29ec75eb4599bfd9a483d90c9b3deb7f1448d014974e387189a5e54f91a7ec28",
+      "upstream_path": "amdgpu/raven2_pfp.bin",
+      "git_blob": "9354b90747eac1a2185da18712ab786161f71b2d",
+      "role": "pfp",
+      "kind": "gfx",
+      "requirement": "boot",
+      "header_bytes": 44,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 9,
+      "ip_minor": 3,
+      "ucode_version": 195,
+      "payload_offset": 256,
+      "payload_bytes": 21376,
+      "crc32": 488297156,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_me.bin",
+      "resource": "raven2_me.bin",
+      "bytes": 17536,
+      "sha256": "1d5f3b34fdd27735dce1b62b20dfceadd98eaeb94f95684c095cc2ab6d2b6864",
+      "upstream_path": "amdgpu/raven2_me.bin",
+      "git_blob": "bc181d7f33722c33eece7a1a1a87270aab6374d0",
+      "role": "me",
+      "kind": "gfx",
+      "requirement": "boot",
+      "header_bytes": 44,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 9,
+      "ip_minor": 3,
+      "ucode_version": 167,
+      "payload_offset": 256,
+      "payload_bytes": 17280,
+      "crc32": 7352848,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_ce.bin",
+      "resource": "raven2_ce.bin",
+      "bytes": 9344,
+      "sha256": "eb6f47850eccb751cb5f949c09550fc28b5ff8802c36d3b952a5a36c5d342098",
+      "upstream_path": "amdgpu/raven2_ce.bin",
+      "git_blob": "745067930656943ffa765878872079b144e37c5b",
+      "role": "ce",
+      "kind": "gfx",
+      "requirement": "boot",
+      "header_bytes": 44,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 9,
+      "ip_minor": 3,
+      "ucode_version": 80,
+      "payload_offset": 256,
+      "payload_bytes": 9088,
+      "crc32": 548176213,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_mec.bin",
+      "resource": "raven2_mec.bin",
+      "bytes": 268064,
+      "sha256": "d1e4d3a766e8e7a539431fdc84ad9b87cb51817a644bdc0c616ef782e62696c0",
+      "upstream_path": "amdgpu/raven2_mec.bin",
+      "git_blob": "7e64fb7891cec8ced00eb5338c951c3d7561c5d5",
+      "role": "mec",
+      "kind": "gfx",
+      "requirement": "boot",
+      "header_bytes": 44,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 9,
+      "ip_minor": 1,
+      "ucode_version": 472,
+      "payload_offset": 256,
+      "payload_bytes": 267808,
+      "crc32": 2803892030,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_mec2.bin",
+      "resource": "raven2_mec2.bin",
+      "bytes": 268064,
+      "sha256": "d1e4d3a766e8e7a539431fdc84ad9b87cb51817a644bdc0c616ef782e62696c0",
+      "upstream_path": "amdgpu/raven2_mec2.bin",
+      "git_blob": "7e64fb7891cec8ced00eb5338c951c3d7561c5d5",
+      "role": "mec2",
+      "kind": "gfx",
+      "requirement": "second_compute_engine",
+      "header_bytes": 44,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 9,
+      "ip_minor": 1,
+      "ucode_version": 472,
+      "payload_offset": 256,
+      "payload_bytes": 267808,
+      "crc32": 2803892030,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_rlc.bin",
+      "resource": "raven2_rlc.bin",
+      "bytes": 38324,
+      "sha256": "370b453daf80ae22b40451b98454a4a2c9d1dd3168a5ab664509a25493070e73",
+      "upstream_path": "amdgpu/raven2_rlc.bin",
+      "git_blob": "6947fe1d0463a2a2f8c386597534447c03a6c90f",
+      "role": "rlc",
+      "kind": "rlc",
+      "requirement": "boot",
+      "header_bytes": 104,
+      "header_major": 2,
+      "header_minor": 1,
+      "ip_major": 9,
+      "ip_minor": 3,
+      "ucode_version": 73,
+      "payload_offset": 256,
+      "payload_bytes": 16896,
+      "crc32": 519841962,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_sdma.bin",
+      "resource": "raven2_sdma.bin",
+      "bytes": 17408,
+      "sha256": "d15abea9f0060f7d8771013176c69dfe6796bd2fa29b59a3fd7796cf12362187",
+      "upstream_path": "amdgpu/raven2_sdma.bin",
+      "git_blob": "139b9553b9e89c3a8817c65b864d6f0b1488c7d4",
+      "role": "sdma",
+      "kind": "sdma",
+      "requirement": "boot",
+      "header_bytes": 48,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 4,
+      "ip_minor": 1,
+      "ucode_version": 169,
+      "payload_offset": 256,
+      "payload_bytes": 17152,
+      "crc32": 663387225,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_vcn.bin",
+      "resource": "raven2_vcn.bin",
+      "bytes": 369408,
+      "sha256": "b14710218cbf1345f2458084eb1cc29334011b06c1e7d863cf46f4f5d498f912",
+      "upstream_path": "amdgpu/raven2_vcn.bin",
+      "git_blob": "b400f36446801bb2053ace05ae0d547c012447cd",
+      "role": "vcn",
+      "kind": "vcn",
+      "requirement": "video",
+      "header_bytes": 32,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 1,
+      "ip_minor": 0,
+      "ucode_version": 51441669,
+      "payload_offset": 256,
+      "payload_bytes": 369152,
+      "crc32": 2191998816,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
+    },
+    {
+      "path": "Firmware/amdgpu/raven2_gpu_info.bin",
+      "resource": "raven2_gpu_info.bin",
+      "bytes": 316,
+      "sha256": "73e76d7e99a0fd5f63ed7d7fe8c91bc8fdd9b320cafdb7915b873f2851cdc576",
+      "upstream_path": "amdgpu/raven2_gpu_info.bin",
+      "git_blob": "4c361f5024dd111d9c1194cc03be5f5641bc8114",
+      "role": "gpu_info",
+      "kind": "gpu_info",
+      "requirement": "topology_reference",
+      "header_bytes": 36,
+      "header_major": 1,
+      "header_minor": 0,
+      "ip_major": 9,
+      "ip_minor": 3,
+      "ucode_version": 1,
+      "payload_offset": 256,
+      "payload_bytes": 60,
+      "crc32": 1601773694,
+      "family": "raven2",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     }
   ],
   "metadata": [
@@ -272,7 +540,8 @@
       "bytes": 486031,
       "sha256": "9553656e3983a2bef68b8011b0b1ecb4eff1993e19505ead0e2a45c50a474e36",
       "upstream_path": "WHENCE",
-      "git_blob": "51cfc9bbe48c2353c22d26a52ea2cc62d2762ae0"
+      "git_blob": "51cfc9bbe48c2353c22d26a52ea2cc62d2762ae0",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     },
     {
       "path": "Firmware/LICENSES/LICENSE.amdgpu",
@@ -280,7 +549,9 @@
       "bytes": 2938,
       "sha256": "572872598565dc3513470de971a32bf9db301f47afeef3636345eadae33b2eee",
       "upstream_path": "LICENSES/LICENSE.amdgpu",
-      "git_blob": "c2004b11faa88e46ad3abaccad25d27785716de9"
+      "git_blob": "c2004b11faa88e46ad3abaccad25d27785716de9",
+      "upstream_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
     }
-  ]
+  ],
+  "raven2_rlc_revision": "2b8daaf611fbade74f26a5b58ec1defe6a02f5e0"
 }

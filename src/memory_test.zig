@@ -10,7 +10,7 @@ const r = @import("memory_registers.zig");
 const Owner = @import("memory_owner.zig").Owner;
 const Mapping = @import("memory_mapping.zig").Mapping;
 fn plan() !l.Layout {
-    return l.Layout.create(.{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 }, .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024, .{ .offset = 0x1fe00000, .bytes = 2 * 1024 * 1024, .driver_scratch_bytes = 4096 });
+    return l.Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 }, .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024, .{ .offset = 0x1fe00000, .bytes = 2 * 1024 * 1024, .driver_scratch_bytes = 4096 });
 }
 const Hardware = struct {
     words: [r.required_prefix / 4]u32 = @splat(0),
@@ -21,9 +21,17 @@ const Hardware = struct {
     clock: u64 = 1000,
     backward: bool = false,
     disconnected: bool = false,
+    require_semaphore: bool = false, semaphore_busy: bool = false, semaphore_held: bool = false,
+    fail_release: bool = false, missing_mm_ack: bool = false,
+    semaphore_acquires: usize = 0, semaphore_releases: usize = 0,
     pub fn read(self: *@This(), offset: u32) hubs.Error!u32 {
         if (self.disconnected) return 0xffffffff;
+        if (offset == r.mm.VM_INVALIDATE_ENG17_SEM) {
+            if (self.semaphore_busy or self.semaphore_held) return 0;
+            self.semaphore_held = true; self.semaphore_acquires += 1; return 1;
+        }
         if (offset == r.gfx.VM_INVALIDATE_ENG17_ACK or offset == r.mm.VM_INVALIDATE_ENG17_ACK) {
+            if (offset == r.mm.VM_INVALIDATE_ENG17_ACK and self.missing_mm_ack) return 0;
             self.polls += 1;
             const req = if (offset == r.gfx.VM_INVALIDATE_ENG17_ACK) r.gfx.VM_INVALIDATE_ENG17_REQ else r.mm.VM_INVALIDATE_ENG17_REQ;
             return if (!self.missing_ack and self.polls % 3 == 0) self.words[req / 4] & 0xffff else 0;
@@ -31,6 +39,12 @@ const Hardware = struct {
         return self.words[offset / 4];
     }
     pub fn write(self: *@This(), offset: u32, value: u32) hubs.Error!void {
+        if (offset == r.mm.VM_INVALIDATE_ENG17_REQ and self.require_semaphore) std.debug.assert(self.semaphore_held);
+        if (offset == r.mm.VM_INVALIDATE_ENG17_SEM) {
+            std.debug.assert(value == 0);
+            if (self.fail_release) return error.Unconfirmed;
+            self.semaphore_held = false; self.semaphore_releases += 1;
+        }
         self.words[offset / 4] = value;
         self.writes += 1;
     }
@@ -47,6 +61,25 @@ var flat_words: [512]u64 align(4096) = undefined;
 var vm_words: [8 * 512]u64 align(4096) = undefined;
 
 test "Picasso UMA partitions conserve capacity and GPU page tables reject holes and mixed addresses" {
+    const Profile = @import("asic_profile.zig").Profile;
+    const identity = @import("identity.zig");
+    const shift = @import("registers.zig").revision_shift;
+    try t.expectEqual(Profile.picasso, try Profile.select(try identity.chip(0x15d8, 1 << shift)));
+    var raven2 = try identity.chip(0x15d8, 9 << shift);
+    try t.expectEqual(Profile.raven2, try Profile.select(raven2));
+    var board: identity.Snapshot = .{ .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 },
+        .pci_revision = 0xc4, .subsystem_vendor = 0x17aa, .subsystem_device = 0x3808 };
+    try t.expect(Profile.nativeBoard(board, raven2));
+    board.pci_revision = 0x94; try t.expect(!Profile.nativeBoard(board, raven2));
+    board.pci_revision = 0xc4; board.subsystem_device = 0;
+    try t.expect(!Profile.nativeBoard(board, raven2));
+    raven2.gc = 0x090100;
+    try t.expectError(error.Unsupported, Profile.select(raven2));
+    try t.expectError(error.Unsupported, Profile.select(try identity.chip(0x15dd, 1 << shift)));
+    try t.expectEqual(@as(u32, 0x3d1fff), try Profile.picasso.apertureHigh(0xf480000000));
+    try t.expectEqual(@as(u32, 0x3d2000), try Profile.raven2.apertureHigh(0xf480000000));
+    try t.expectError(error.Invalid, Profile.raven2.apertureHigh(0));
+    try t.expectError(error.Invalid, Profile.raven2.apertureHigh(l.address_limit));
     var map = try plan();
     try t.expect(map.physical.offset != map.mc.offset and !map.gart.overlaps(map.mc));
     try t.expectEqual(map.physical.bytes, map.pool.reserved_bytes + map.pool.allocated_bytes + map.native_budget);
@@ -64,7 +97,7 @@ test "Picasso UMA partitions conserve capacity and GPU page tables reject holes 
     try pool.release(block);
     try t.expectError(error.Stale, pool.release(block));
     try t.expectEqual(@as(u64, 0), pool.allocated_bytes);
-    try t.expectError(error.Invalid, l.Layout.create(.{ .base = 4096, .bytes = l.address_limit }, .{ .base = 0, .bytes = l.address_limit }, 4096, 4096, null));
+    try t.expectError(error.Invalid, l.Layout.create(.picasso, .{ .base = 4096, .bytes = l.address_limit }, .{ .base = 0, .bytes = l.address_limit }, 4096, 4096, null));
 }
 
 test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and confirmed teardown" {
@@ -117,6 +150,35 @@ test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and conf
     try t.expectEqual(@as(u32, 0x1234), hw.words[r.gfx.MC_VM_AGP_BASE / 4]);
     try t.expectEqual(@as(u32, 0x4567), hw.words[r.mm.VM_CONTEXT1_PAGE_TABLE_BASE_ADDR_LO32 / 4]);
     try t.expectEqual(@as(u32, 0x89), hw.words[r.at.ATC_VMID0_PASID_MAPPING / 4]);
+    // Both real hub register paths use the Raven2 high-page workaround,
+    // without extending the allocator; teardown restores the BIOS values.
+    map.profile = .raven2;
+    hw.require_semaphore = true;
+    const budget = map.native_budget;
+    hw.words[r.gfx.MC_VM_SYSTEM_APERTURE_HIGH_ADDR / 4] = 0x1122;
+    hw.words[r.mm.MC_VM_SYSTEM_APERTURE_HIGH_ADDR / 4] = 0x3344;
+    try controller.enable(&hw, &map, root, scratch, gate);
+    try t.expectEqual(@as(u32, 0x4800), hw.words[r.gfx.MC_VM_SYSTEM_APERTURE_HIGH_ADDR / 4]);
+    try t.expectEqual(@as(u32, 0x4800), hw.words[r.mm.MC_VM_SYSTEM_APERTURE_HIGH_ADDR / 4]);
+    try t.expectEqual(budget, map.native_budget);
+    try controller.disable(&hw, gate);
+    try t.expect(hw.semaphore_acquires == 6 and hw.semaphore_releases == 6 and !hw.semaphore_held);
+    try t.expectEqual(@as(u32, 0x1122), hw.words[r.gfx.MC_VM_SYSTEM_APERTURE_HIGH_ADDR / 4]);
+    try t.expectEqual(@as(u32, 0x3344), hw.words[r.mm.MC_VM_SYSTEM_APERTURE_HIGH_ADDR / 4]);
+    // Busy acquire never submits MMHUB; missing ACK releases the acquired
+    // semaphore, but a failed release stays with the owner for retry.
+    hw = .{ .require_semaphore = true, .semaphore_busy = true };
+    controller = .{ .invalidator = .{ .profile = .raven2 } };
+    try t.expectError(error.Deadline, controller.flush(&hw, 1));
+    try t.expect(hw.words[r.mm.VM_INVALIDATE_ENG17_REQ / 4] == 0 and !controller.invalidator.mm_semaphore);
+    hw.semaphore_busy = false; hw.missing_mm_ack = true;
+    try t.expectError(error.Deadline, controller.flush(&hw, 1));
+    try t.expect(!hw.semaphore_held and !controller.invalidator.mm_semaphore and hw.semaphore_releases == 1);
+    hw.missing_mm_ack = false; hw.fail_release = true;
+    try t.expectError(error.Unconfirmed, controller.flush(&hw, 1));
+    try t.expect(hw.semaphore_held and controller.invalidator.mm_semaphore);
+    hw.fail_release = false; try controller.flush(&hw, 1);
+    try t.expect(!hw.semaphore_held and !controller.invalidator.mm_semaphore);
     // Failure before the first enable write still requires stop to preserve
     // every BIOS register which only the shutdown path subsequently touches.
     hw = .{};
@@ -128,10 +190,10 @@ test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and conf
     try t.expectEqual(@as(u32, 0x76543210), hw.words[r.mm.VM_L2_CNTL3 / 4]);
     hw = .{};
     hw.backward = true;
-    try t.expectError(error.Deadline, hubs.flush(&hw, 1));
+    try t.expectError(error.Deadline, controller.flush(&hw, 1));
     hw = .{};
     hw.disconnected = true;
-    try t.expectError(error.Disconnected, hubs.flush(&hw, 0));
+    try t.expectError(error.Disconnected, controller.flush(&hw, 0));
 }
 const F = struct {
     var api: a.DriverApi = undefined;
@@ -216,7 +278,7 @@ const F = struct {
         return a.driver_heap_ok;
     }
     fn query(out: *a.GfxDriverMemoryApi) callconv(.c) i32 {
-        out.* = .{ .reserved_span = @intFromPtr(&reserved), .mmio_map = @intFromPtr(&mapWindow), .mmio_unmap = @intFromPtr(&unmapWindow), .collect = @intFromPtr(&collect), .memory_budget = @intFromPtr(&budget), .device_lost = @intFromPtr(&lost), .buffer_create = @intFromPtr(&create), .buffer_import = @intFromPtr(&import), .buffer_describe = @intFromPtr(&describe), .buffer_map = @intFromPtr(&mapCpu), .buffer_unmap = @intFromPtr(&unmapCpu), .buffer_release = @intFromPtr(&release), .device_acquire = @intFromPtr(&acquire), .device_segment = @intFromPtr(&segment), .device_release = @intFromPtr(&deviceRelease), .buffer_reserve = @intFromPtr(&reserve), .buffer_commit = @intFromPtr(&commit), .buffer_abort = @intFromPtr(&abort), .buffer_take_release = @intFromPtr(&take), .buffer_finish_release = @intFromPtr(&finish) };
+        out.* = .{ .unmanaged_span = @intFromPtr(&unmanaged), .mmio_map = @intFromPtr(&mapWindow), .mmio_unmap = @intFromPtr(&unmapWindow), .collect = @intFromPtr(&collect), .memory_budget = @intFromPtr(&budget), .device_lost = @intFromPtr(&lost), .buffer_create = @intFromPtr(&create), .buffer_import = @intFromPtr(&import), .buffer_describe = @intFromPtr(&describe), .buffer_map = @intFromPtr(&mapCpu), .buffer_unmap = @intFromPtr(&unmapCpu), .buffer_release = @intFromPtr(&release), .device_acquire = @intFromPtr(&acquire), .device_segment = @intFromPtr(&segment), .device_release = @intFromPtr(&deviceRelease), .buffer_reserve = @intFromPtr(&reserve), .buffer_commit = @intFromPtr(&commit), .buffer_abort = @intFromPtr(&abort), .buffer_take_release = @intFromPtr(&take), .buffer_finish_release = @intFromPtr(&finish) };
         return 1;
     }
     fn resources(out: *a.DriverResourceApi) callconv(.c) i32 {
@@ -226,7 +288,7 @@ const F = struct {
     fn now() callconv(.c) u64 {
         return 1000;
     }
-    fn reserved(base: u64, bytes: u64) callconv(.c) i32 {
+    fn unmanaged(base: u64, bytes: u64) callconv(.c) i32 {
         return if (!span_fail and base == layout.physical.offset and bytes == layout.physical.bytes) 1 else -6;
     }
     fn mapWindow(req: *const a.GfxMmioRequest, out: *a.GfxMmioWindow) callconv(.c) i32 {
@@ -571,7 +633,7 @@ const Render = struct {
         rt = .{ .self_address = @intFromPtr(&rt), .prepared = true, .memory = &F.owner, .queue = .{ .table = .{ .retain_resource = @intFromPtr(&retain), .complete = @intFromPtr(&complete) } } };
         rt.arena = .{ .self_address = @intFromPtr(&rt.arena), .memory = &F.owner, .epoch = 23, .gpu = 0x120000000, .ready = true, .arena = .{ .value = .{ .handle = .{ .id = 30, .generation = 31 }, .cpu_address = @intFromPtr(&data), .byte_length = storage.bytes } }, .doorbell = .{ .value = .{ .handle = .{ .id = 31, .generation = 31 }, .cpu_address = @intFromPtr(&bells), .byte_length = 4096 } } };
         try rt.timeline.init(binding, try rt.arena.fences(), 1000);
-        try contexts.init(rt.timeline.epoch);
+        try contexts.init(rt.timeline.epoch, .picasso);
         engine.phase = .ready;
         engine.rings[0] = try @import("queue_ring.zig").Ring.init(try rt.arena.words32(storage.ringOffset(.gfx), storage.ring_bytes), 8, 0);
         const arch: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0, .gb_addr_config = 0x24000042, .chip_revision = 0x41, .bind_alignment = 4096, .memory_generation = 23, .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
@@ -781,13 +843,13 @@ test "AMD actual memory facades retain SG/UMA backing until fence and both TLB a
     try t.expectError(error.Unsupported, F.prepare());
     F.map_fail = false;
     try t.expect(F.owner.close(gate));
-    var table: a.GfxDriverMemoryApi = .{ .size = 240, .reserved_span = @intFromPtr(&F.reserved) };
+    var table: a.GfxDriverMemoryApi = .{ .size = 248, .unmanaged_span = @intFromPtr(&F.unmanaged) };
     var memory: r4os.driver_memory.Context = .{ .table = table };
-    try t.expectEqual(a.err_no_fn, memory.reservedSpan(1, 1));
-    table.size = 248;
-    table.reserved_span = 0;
+    try t.expectEqual(a.err_no_fn, memory.unmanagedSpan(1, 1));
+    table.size = 256;
+    table.unmanaged_span = 0;
     memory.table = table;
-    try t.expectEqual(a.err_no_fn, memory.reservedSpan(1, 1));
+    try t.expectEqual(a.err_no_fn, memory.unmanagedSpan(1, 1));
 }
 
 const DisplayBuffers = struct {

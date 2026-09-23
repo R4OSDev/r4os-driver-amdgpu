@@ -18,18 +18,20 @@ pub const Owner = struct {
         if (self.self_address != 0 or !native.firmwareReady() or native.memory != memory or !memory.controller.enabled or
             !sdma.verified or sdma.active or sdma.memory != memory or sdma.runtime != runtime or sdma.graphics != null or
             runtime.started or !runtime.arena.ready or runtime.arena.memory != memory or runtime.arena.epoch != memory.epoch) return error.Unconfirmed;
+        if (memory.layout.?.profile == .raven2 and (!native.flow.rlc.ready or native.flow.rlc.generation != native.flow.plan.generation)) return error.Unconfirmed;
         self.self_address = @intFromPtr(self);
         self.memory = memory;
         self.runtime = runtime;
         sdma.graphics = self;
-        try self.engine.begin(&memory.registers, &runtime.arena, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+        try self.engine.begin(&memory.registers, &runtime.arena, .{ .profile = memory.layout.?.profile, .rlc = &native.flow.rlc,
+            .firmware_ready = true, .boot_held = true, .gmc_enabled = true, .restore_ready = native.flow.plan.restoreConfirmed() });
     }
     pub fn advance(self: *Owner) c.Error!bool {
         if (self.self_address != @intFromPtr(self) or self.closed or self.runtime.?.started) return error.State;
         return self.engine.advance(&self.memory.?.registers, &self.runtime.?.arena);
     }
     pub fn irqReady(self: *Owner) c.Error!void {
-        try self.contexts.init(self.runtime.?.timeline.epoch);
+        try self.contexts.init(self.runtime.?.timeline.epoch, self.memory.?.layout.?.profile);
         try self.renderer.prepare(self.memory.?, self.runtime.?, &self.contexts, self.architecture orelse return error.Unconfirmed);
         try self.engine.interrupts(&self.memory.?.registers);
     }

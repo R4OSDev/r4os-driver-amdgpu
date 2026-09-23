@@ -54,7 +54,7 @@ int r4dcn_dp_stream_bind(void *storage,uint32_t index) {
 int r4dcn_dp_stream_configure(void *storage,uint32_t index,uint32_t pipe,uint32_t bpc) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  struct r4dcn_link *l=edp(d,index);
- if(!l || !l->dp_stream_bound || !l->initialized || !d->prepared || pipe>=4 || !(d->mask&(1u<<pipe)) || d->fault)result=R4DCN_STATE;
+ if(!l || !l->dp_stream_bound || !l->initialized || !d->prepared || pipe>=d->limits.pipe_count || !(d->mask&(1u<<pipe)) || d->fault)result=R4DCN_STATE;
  else if((bpc!=6 && bpc!=8) || d->streams[pipe].signal!=SIGNAL_TYPE_EDP ||
   d->streams[pipe].timing.display_color_depth!=(bpc==6?COLOR_DEPTH_666:COLOR_DEPTH_888))result=R4DCN_INVALID;
  else if(l->enabled || dcn10_is_dig_enabled(&l->encoder.base) ||

@@ -7,7 +7,7 @@ pub const Error = c.Error;
 pub const Phase = enum { empty, smu_version_send, smu_version_wait, smu_interface_send, smu_interface_wait,
     gfx_wake_send, gfx_wake_wait, gfx_on, sdma_wake_send, sdma_wake_wait, park, parked,
     psp_create, psp_wait, tmr_send, tmr_wait, firmware_send, firmware_wait, asd_send, asd_wait,
-    firmware_ready, cleanup_drain, cleanup_park, cleanup_parked, cleanup_asd, cleanup_tmr, cleanup_ring, closed, retained };
+    firmware_park, firmware_parked, firmware_ready, cleanup_drain, cleanup_park, cleanup_parked, cleanup_asd, cleanup_tmr, cleanup_ring, closed, retained };
 pub const Flow = struct {
     phase: Phase = .empty, failure: ?Error = null, failed_phase: Phase = .empty,
     epoch: u64 = 0, smu_version_raw: u32 = 0, smu_version: u32 = 0, smu_interface: u32 = 0,
@@ -15,10 +15,17 @@ pub const Flow = struct {
     total: c.Deadline = .{}, cleanup_deadline: c.Deadline = .{},
     smu: @import("start_smu.zig").Mailbox = .{}, psp: @import("start_psp.zig").Controller = .{},
     engines: @import("start_engines.zig").Park = .{}, plan: @import("start_firmware.zig").Plan = .{},
+    rlc: @import("gc_rlc.zig").Plan = .{},
+    restore_rejected: u8 = 0,
+    allow_restore_degraded: bool = false,
+    // Set only by the outer cleanup owner after SDMA/GC have stopped and
+    // released their mappings. It requests fresh register checks, not trust
+    // in a stale pre-firmware or pre-GMC receipt.
+    cleanup_recheck: bool = false,
     pub fn begin(self: *Flow, io: anytype, view: s.View, store: *const fw.Store, epoch: u64, boot_latched: bool) Error!void {
         if (self.phase != .empty) return error.Busy;
         if (epoch == 0 or !boot_latched) return error.Unconfirmed;
-        try self.plan.prepare(store); try self.total.start(io.nowNs(), 35_000_000_000, 0);
+        try self.plan.prepare(store); try self.rlc.prepare(store); try self.total.start(io.nowNs(), 35_000_000_000, 0);
         self.epoch = epoch; self.view = view; self.store = store; self.phase = .smu_version_send;
     }
     pub fn advance(self: *Flow, io: anytype) Error!void {
@@ -65,7 +72,12 @@ pub const Flow = struct {
             },
             .tmr_wait => if (try self.psp.poll(io, view, false)) { self.phase = .firmware_send; },
             .firmware_send => {
-                if (self.upload == self.plan.count) { self.phase = .asd_send; return; }
+                if (self.upload == self.plan.count) {
+                    // The exact Lenovo exception admits core firmware only.
+                    // Restore rejection is retained and forbids SRM/GC sleep.
+                    if (!self.executionPlanReady()) return error.Response;
+                    self.phase = .asd_send; return;
+                }
                 const entry = &self.plan.entries[self.upload];
                 const blob = self.store.?.container(entry.role) orelse return error.Firmware;
                 try view.copyFirmware(entry.span.slice(blob));
@@ -73,8 +85,22 @@ pub const Flow = struct {
                 try self.psp.submit(io, view, .firmware, &.{ @truncate(gpu), @truncate(gpu >> 32), @intCast(entry.span.bytes), entry.fw_type });
                 self.phase = .firmware_wait;
             },
-            .firmware_wait => if (try self.psp.poll(io, view, false)) {
+            .firmware_wait => if (self.psp.poll(io, view, false) catch |err| {
+                if (err != error.Response or self.psp.operation != .none) return err;
+                const entry = &self.plan.entries[self.upload];
+                entry.receipt = true; entry.response = self.psp.response;
+                // The measured Raven2 PSP completes these original images with
+                // FFFF300F/FFFF000F. Linux continues on PSP status warnings. Collect the
+                // remaining real receipts without turning a rejection into an
+                // ACK. All other failures keep the immediate cleanup path.
+                if (self.store.?.profile.?.family != .raven2 or !entry.restoreList() or
+                    (entry.response != 0xffff300f and entry.response != 0xffff000f)) return err;
+                self.restore_rejected += 1;
+                self.upload += 1; self.phase = .firmware_send;
+                return;
+            }) {
                 const entry = &self.plan.entries[self.upload]; const addr = self.psp.firmware_address;
+                entry.receipt = true; entry.response = self.psp.response;
                 // MEC instruction bases are consumed by the later GC ring owner.
                 // A nonzero returned address must point into our actual TMR.
                 const tmr = view.address(view.tmr_offset);
@@ -90,7 +116,11 @@ pub const Flow = struct {
                 try self.psp.submit(io, view, .asd, &.{ @truncate(gpu), @truncate(gpu >> 32), @intCast(self.plan.asd.bytes), 0, 0, 0 });
                 self.phase = .asd_wait;
             },
-            .asd_wait => if (try self.psp.poll(io, view, false)) { self.phase = .firmware_ready; },
+            .asd_wait => if (try self.psp.poll(io, view, false)) { self.phase = .firmware_park; },
+            // PSP firmware loading can release SDMA HALT (measured on Raven2).
+            // Re-establish every engine stop before the caller changes GMC.
+            .firmware_park => { try self.engines.begin(io); self.phase = .firmware_parked; },
+            .firmware_parked => if (try self.engines.poll(io)) { self.phase = .firmware_ready; },
             .cleanup_drain => {
                 if (self.smu.active) {
                     _ = self.smu.poll(io, true) catch |err| { if (self.smu.active) return err; return; };
@@ -108,7 +138,8 @@ pub const Flow = struct {
             .cleanup_park => {
                 if (!self.smu_effects and !self.engines.touched) { self.phase = .cleanup_asd; return; }
                 if (!try gfxOn(io)) return;
-                try self.engines.begin(io); self.phase = .cleanup_parked;
+                if (self.cleanup_recheck) try self.engines.recheck(io) else try self.engines.begin(io);
+                self.phase = .cleanup_parked;
             },
             .cleanup_parked => if (try self.engines.poll(io)) { self.phase = .cleanup_asd; },
             .cleanup_asd => {
@@ -140,9 +171,15 @@ pub const Flow = struct {
         self.phase = .cleanup_drain;
     }
     pub fn firmwareReady(self: *const Flow) bool {
-        return self.phase == .firmware_ready and self.failure == null and self.plan.confirmed() and
+        return self.phase == .firmware_ready and self.failure == null and self.executionPlanReady() and
             self.psp.ring_ready and self.psp.tmr_ready and self.psp.asd_ready and self.engines.confirmed and
             self.smu_version != 0 and (self.smu_interface == r.smu_driver_if or self.smu_interface == r.smu_driver_if + 1);
+    }
+    fn executionPlanReady(self: *const Flow) bool {
+        const profile = if (self.store) |store| store.profile else null;
+        const optional = self.allow_restore_degraded and profile != null and profile.?.family == .raven2 and
+            self.smu_version_raw == 0x251f00 and self.smu_interface == 7;
+        return self.plan.executionConfirmed(optional);
     }
     pub fn safeToRelease(self: *const Flow) bool {
         return (self.phase == .empty or self.phase == .closed) and !self.smu.active and self.psp.safeToRelease() and

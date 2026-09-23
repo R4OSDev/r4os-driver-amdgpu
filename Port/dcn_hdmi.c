@@ -124,7 +124,7 @@ int r4dcn_hdmi_color_configure(void *storage,uint32_t index,uint32_t pipe,const 
  struct r4dcn_link *l=link(d,index);unsigned sum=0;
  if(avi)for(unsigned i=0;i<17;i++)sum+=avi[i];
  unsigned hsum=0;if(hdr)for(unsigned i=0;i<30;i++)hsum+=hdr[i];
- if(!l || !l->i2c_ready || !l->initialized || !avi || pipe>=4 || !(d->mask&(1u<<pipe)) || !d->prepared || d->fault)result=R4DCN_STATE;
+ if(!l || !l->i2c_ready || !l->initialized || !avi || pipe>=d->limits.pipe_count || !(d->mask&(1u<<pipe)) || !d->prepared || d->fault)result=R4DCN_STATE;
  else if((hdr && (hdr[0]!=0x87 || hdr[1]!=1 || hdr[2]!=26 || hsum%256 || hdr[4]>3 || hdr[5])) || avi[0]!=0x82 || avi[1]!=2 || avi[2]!=13 || sum%256 || avi[4]&0xe0 ||
   d->streams[pipe].signal!=SIGNAL_TYPE_HDMI_TYPE_A || (uint64_t)d->streams[pipe].timing.pix_clk_100hz*(d->streams[pipe].timing.display_color_depth==COLOR_DEPTH_101010?10:8)>3400000ull*8)result=R4DCN_INVALID;
  else if(l->enabled || dcn10_is_dig_enabled(&l->encoder.base) ||
@@ -184,7 +184,7 @@ int r4dcn_hdmi_stopped(void *storage,uint32_t index,uint32_t *stopped){
 }
 int r4dcn_hdmi_active(void *storage,uint32_t index,uint32_t pipe,uint32_t *active){
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;struct r4dcn_link *l=link(d,index);
- if(!l || !active || pipe>=4 || !l->hdmi_configured || l->hdmi_pipe!=pipe || d->fault)result=R4DCN_STATE;
+ if(!l || !active || pipe>=d->limits.pipe_count || !l->hdmi_configured || l->hdmi_pipe!=pipe || d->fault)result=R4DCN_STATE;
  else {
   uint32_t control=rd(d,tg_regs[pipe].OTG_CONTROL);
   uint32_t enable=OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK|OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK;

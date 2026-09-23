@@ -67,7 +67,7 @@ const Fixture = struct {
     var package_duplicate_handle = false;
     var package_reads: usize = 0;
     var package_stats: usize = 0;
-    var package_seen: [16]bool = @splat(false);
+    var package_seen: [package_store.count]bool = @splat(false);
     var allocated = false;
     var buffer_live = false;
     var lease_live = false;
@@ -159,11 +159,11 @@ const Fixture = struct {
     }
     fn memoryQuery(output: *a.GfxDriverMemoryApi) callconv(.c) i32 {
         output.* = .{ .mmio_map = @intFromPtr(&map), .mmio_unmap = @intFromPtr(&unmap), .collect = @intFromPtr(&collect),
-            .reserved_span = @intFromPtr(&reservedSpan), .buffer_create = @intFromPtr(&bufferCreate), .buffer_map = @intFromPtr(&bufferMap),
+            .unmanaged_span = @intFromPtr(&unmanagedSpan), .buffer_create = @intFromPtr(&bufferCreate), .buffer_map = @intFromPtr(&bufferMap),
             .buffer_unmap = @intFromPtr(&bufferUnmap), .buffer_release = @intFromPtr(&bufferRelease) };
         return a.gfx_buffer_result_ok;
     }
-    fn reservedSpan(base: u64, bytes: u64) callconv(.c) i32 {
+    fn unmanagedSpan(base: u64, bytes: u64) callconv(.c) i32 {
         return if (base == @as(u64, fb_offset) << 24 and bytes == @as(u64, megabytes) * 1024 * 1024) 1 else -1;
     }
     fn map(request: *const a.GfxMmioRequest, output: *a.GfxMmioWindow) callconv(.c) i32 {
@@ -314,6 +314,11 @@ const Fixture = struct {
 };
 
 test "AMD actual init and unbind preserve software boot and bound source-backed identity/UMA probes" {
+    Fixture.reset();
+    try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&Fixture.api));
+    try @import("shutdown_test.zig").check(&Fixture.api, &driver.native_worker, driver.amdgpu_shutdown);
+    try Fixture.stop();
+    try @import("shutdown_drain.zig").check();
     try @import("native_worker.zig").check();
     Fixture.reset();
     const original_boot = Fixture.boot_info;
@@ -365,8 +370,13 @@ test "AMD actual init and unbind preserve software boot and bound source-backed 
     f.reset(); f.config[0x24 / 4] |= 1;
     try t.expectEqual(@as(i32, -5), driver.amdgpu_init(&f.api)); try t.expect(f.maps == 0); try f.stop();
     f.reset(); f.strap = 0x080015d8;
-    try t.expectEqual(@as(i32, -7), driver.amdgpu_init(&f.api));
-    try t.expect(f.saw_raven2 and !f.saw_picasso and f.maps == 1); try f.stop();
+    try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api));
+    try t.expect(f.saw_raven2 and !f.saw_picasso and f.maps == 4 and f.unmaps == 4 and !f.live);
+    try t.expect(driver.firmware.valid and driver.boot_snapshot.valid and driver.memory_layout != null);
+    try t.expect(driver.firmware_package.valid and driver.firmware_package.profile.?.family == .raven2);
+    try t.expectError(error.Unsupported, driver.beginNative(12));
+    try t.expect(driver.memory_runtime.self_address == 0 and driver.native_start.self_address == 0);
+    try f.stop();
     f.reset(); f.strap = 0xffffffff;
     try t.expectEqual(@as(i32, -6), driver.amdgpu_init(&f.api)); try t.expect(!f.live); try f.stop();
     f.reset(); f.unstable = true;
@@ -497,13 +507,14 @@ test "AMD actual firmware package admission enforces profile, bytes, epochs, dea
         try t.expectEqual(if (am4) fw.Socket.am4 else .fp5, store.profile.?.socket);
         try t.expect((store.container(.rlc_am4) != null) == am4);
         try t.expect((store.container(.rlc) != null) != am4);
-        for (fw.lock.firmware, 0..) |entry, i| try t.expectEqual(store.profile.?.includes(entry.role), f.package_seen[i + 3]);
+        for (fw.lock.firmware, 0..) |entry, i| try t.expectEqual(store.profile.?.selects(entry), f.package_seen[i + fw.firmware_first]);
         try f.stop();
     }
     // Every selected entry, including both legal files and the package lock,
     // must be present before any CPU allocation/hold. The unused RLC is not read.
     for (0..package_store.count) |missing| {
-        if (missing >= 3 and fw.lock.firmware[missing - 3].role == .rlc) continue;
+        const selected: fw.Profile = .{ .socket = .am4, .pci_revision = 0xc8 };
+        if (missing >= fw.firmware_first and !selected.selects(fw.lock.firmware[missing - fw.firmware_first])) continue;
         f.reset(); f.package_missing = missing;
         try t.expectEqual(@as(i32, -11), driver.amdgpu_init(&f.api));
         try t.expect(!driver.firmware_package.valid and f.hold_calls == 0 and !f.package_allocated and f.package_reads == 0);
@@ -523,8 +534,12 @@ test "AMD actual firmware package admission enforces profile, bytes, epochs, dea
     try t.expectEqual(@as(i32, -1), driver.amdgpu_init(&f.api));
     f.package_fail_release = false; try f.stop();
     f.reset(); f.strap = 0x080015d8;
-    try t.expectEqual(@as(i32, -7), driver.amdgpu_init(&f.api));
-    try t.expect(f.package_stats == 0 and f.package_reads == 0); try f.stop();
+    try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api));
+    try t.expect(driver.firmware_package.valid and driver.firmware_package.profile.?.family == .raven2);
+    for (fw.lock.firmware, 0..) |entry, i| try t.expectEqual(entry.family == .raven2 or entry.family == .shared, f.package_seen[i + fw.firmware_first]);
+    try t.expectEqual(@as(u32, 73), driver.firmware_package.specification(.rlc).?.ucode_version);
+    try t.expect(driver.firmware_package.container(.rlc_am4) == null);
+    try f.stop();
     f.reset(); f.boot_info.policy = 1;
     try t.expectEqual(@as(i32, 0), driver.amdgpu_init(&f.api));
     try t.expect(f.package_stats == 0 and f.package_reads == 0 and f.heap_calls == 0); try f.stop();

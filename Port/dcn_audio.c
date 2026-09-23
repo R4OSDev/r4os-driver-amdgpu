@@ -48,7 +48,7 @@ int r4dcn_audio_bind(void *storage,uint32_t index,uint32_t *endpoint){
  if(!l || !endpoint || d->fault)rc=R4DCN_STATE;
  else if(l->audio_bound)*endpoint=l->audio_inst;
  else {
-  for(unsigned i=0;i<4;i++){
+  for(unsigned i=0;i<d->limits.pipe_count;i++){
    d->audio[i]=(struct dce_audio){.base={.ctx=&d->ctx,.inst=i},.regs=&audio_regs[i],.shifts=&audio_shift,.masks=&audio_mask};
    uint32_t value=az_read(d,i,PIN_DEFAULT);
    if(d->fault)break;

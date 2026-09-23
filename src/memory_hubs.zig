@@ -19,7 +19,7 @@
 // ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 // 
-//! Picasso GMC9 programming, ported from pinned AMD MIT gfxhub_v1_0.c,
+//! Picasso/Raven2 GMC9 programming, ported from pinned AMD MIT gfxhub_v1_0.c,
 //! mmhub_v1_0.c, athub_v1_0.c and gmc_v9_0.c. No Linux runtime dependencies.
 const std = @import("std");
 const r = @import("memory_registers.zig");
@@ -33,32 +33,58 @@ fn set(io: anytype, comptime R: type, comptime reg: []const u8, comptime name: [
     if (old == 0xffffffff) return error.Disconnected;
     try io.write(offset, field(old, @field(R, reg ++ "__" ++ name ++ "_MASK"), @field(R, reg ++ "__" ++ name ++ "__SHIFT"), value));
 }
-pub fn flush(io: anytype, vmid: u4) Error!void {
-    try io.barrier();
-    // Complete CPU writes before walker invalidation. CPU fence alone is not
-    // a GPU HDP/TLB acknowledgement. Picasso specifically needs no MM semaphore.
-    try io.write(r.nb.HDP_MEM_COHERENCY_FLUSH_CNTL, 0);
-    _ = try io.read(r.nb.HDP_MEM_COHERENCY_FLUSH_CNTL);
-    const start = io.nowNs(); const deadline = std.math.add(u64, start, 10_000_000) catch return error.Deadline;
-    var last = start;
-    inline for (.{ r.gfx, r.mm }) |R| {
-        const req = (@as(u32, 1) << vmid) | R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PTES_MASK |
-            R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PDE0_MASK | R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PDE1_MASK |
-            R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PDE2_MASK | R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L1_PTES_MASK;
-        try io.write(R.VM_INVALIDATE_ENG17_REQ, req);
-        // Required GFX9 posted-read boundary prevents an old ACK being accepted.
-        _ = try io.read(R.VM_INVALIDATE_ENG17_REQ);
-        var confirmed = false;
-        for (0..10000) |_| {
-            const now = io.nowNs(); if (now < last or now >= deadline) return error.Deadline; last = now;
-            const ack = try io.read(R.VM_INVALIDATE_ENG17_ACK);
-            if (ack == 0xffffffff) return error.Disconnected;
-            if (ack & (@as(u32, 1) << vmid) != 0) { confirmed = true; break; }
-        }
-        if (!confirmed) return error.Deadline;
+// Retained by the memory owner: a failed release must be retried before
+// another flush or resource retirement, including during failed startup.
+pub const Invalidator = struct {
+    profile: @import("asic_profile.zig").Profile = .picasso,
+    mm_semaphore: bool = false,
+    fn release(self: *Invalidator, io: anytype) Error!void {
+        if (!self.mm_semaphore) return;
+        try io.write(r.mm.VM_INVALIDATE_ENG17_SEM, 0);
+        try io.barrier(); // Reading SEM here would acquire it again.
+        self.mm_semaphore = false;
     }
-    try io.barrier();
-}
+    pub fn flush(self: *Invalidator, io: anytype, vmid: u4) Error!void {
+        try self.release(io);
+        try io.barrier();
+        // Complete CPU writes before walker invalidation. CPU fence alone
+        // cannot acknowledge GPU HDP/TLB state.
+        try io.write(r.nb.HDP_MEM_COHERENCY_FLUSH_CNTL, 0);
+        _ = try io.read(r.nb.HDP_MEM_COHERENCY_FLUSH_CNTL);
+        const start = io.nowNs(); const deadline = std.math.add(u64, start, 10_000_000) catch return error.Deadline;
+        var last = start;
+        errdefer self.release(io) catch {}; // Ownership survives failed release.
+        inline for (.{ r.gfx, r.mm }) |R| {
+            // gmc_v9_0_use_invalidate_semaphore: Raven2 MMHUB needs the
+            // read-to-acquire protocol; Picasso and GFXHUB do not use it.
+            if (R == r.mm and self.profile == .raven2) {
+                for (0..10000) |_| {
+                    const now = io.nowNs(); if (now < last or now >= deadline) return error.Deadline; last = now;
+                    const value = try io.read(r.mm.VM_INVALIDATE_ENG17_SEM);
+                    if (value == 0xffffffff) return error.Disconnected;
+                    if (value & 1 != 0) { self.mm_semaphore = true; break; }
+                }
+                if (!self.mm_semaphore) return error.Deadline;
+            }
+            const req = (@as(u32, 1) << vmid) | R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PTES_MASK |
+                R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PDE0_MASK | R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PDE1_MASK |
+                R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L2_PDE2_MASK | R.VM_INVALIDATE_ENG0_REQ__INVALIDATE_L1_PTES_MASK;
+            try io.write(R.VM_INVALIDATE_ENG17_REQ, req);
+            // Required GFX9 posted-read boundary prevents an old ACK being accepted.
+            _ = try io.read(R.VM_INVALIDATE_ENG17_REQ);
+            var confirmed = false;
+            for (0..10000) |_| {
+                const now = io.nowNs(); if (now < last or now >= deadline) return error.Deadline; last = now;
+                const ack = try io.read(R.VM_INVALIDATE_ENG17_ACK);
+                if (ack == 0xffffffff) return error.Disconnected;
+                if (ack & (@as(u32, 1) << vmid) != 0) { confirmed = true; break; }
+            }
+            if (!confirmed) return error.Deadline;
+            if (R == r.mm) try self.release(io);
+        }
+        try io.barrier();
+    }
+};
 fn context(io: anytype, comptime R: type, vmid: u4, root: u64, span: l.Span, depth: u2) Error!void {
     const distance = R.VM_CONTEXT1_PAGE_TABLE_BASE_ADDR_LO32 - R.VM_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32;
     const offset = distance * @as(u32, vmid);
@@ -82,6 +108,8 @@ fn context(io: anytype, comptime R: type, vmid: u4, root: u64, span: l.Span, dep
 pub const Controller = struct {
     epoch: u64 = 0, touched: bool = false, enabled: bool = false,
     journal: @import("memory_journal.zig").Journal = .{},
+    invalidator: Invalidator = .{},
+    pub fn flush(self: *Controller, io: anytype, vmid: u4) Error!void { try self.invalidator.flush(io, vmid); }
     pub fn enable(self: *Controller, target: anytype, map: *const l.Layout, virtual_root: u64, scratch_physical: u64, gate: Gate) Error!void {
         if (self.touched or self.enabled) return error.Busy;
         if (gate.memory_epoch == 0 or !gate.boot_held or !gate.engines_quiesced) return error.Unconfirmed;
@@ -90,7 +118,8 @@ pub const Controller = struct {
         if (!map.physical.contains(.{ .offset = scratch_physical, .bytes = 4096 }) or scratch_physical & 4095 != 0) return error.Invalid;
         const context_physical = try map.physicalAddress(map.contexts.span);
         if ((virtual_root & p.physical_mask) != context_physical or scratch_physical != context_physical + map.contexts.span.bytes - 4096) return error.Invalid;
-        self.epoch = gate.memory_epoch; self.touched = true;
+        const aperture_high = try map.profile.apertureHigh(map.mc.end());
+        self.epoch = gate.memory_epoch; self.invalidator.profile = map.profile; self.touched = true;
         var journal_io: @import("memory_journal.zig").Io(@TypeOf(target)) = .{ .target = target, .journal = &self.journal };
         const io = &journal_io;
         // Memory and hub register mutation occurs exclusively in the owner's
@@ -103,7 +132,7 @@ pub const Controller = struct {
             try io.write(R.MC_VM_AGP_BASE, 0);
             try io.write(R.MC_VM_AGP_BOT, 0x00ffffff); try io.write(R.MC_VM_AGP_TOP, 0); // no AGP alias
             try io.write(R.MC_VM_SYSTEM_APERTURE_LOW_ADDR, @intCast(map.mc.offset >> 18));
-            try io.write(R.MC_VM_SYSTEM_APERTURE_HIGH_ADDR, @intCast((map.mc.end() - 1) >> 18));
+            try io.write(R.MC_VM_SYSTEM_APERTURE_HIGH_ADDR, aperture_high);
             try io.write(R.MC_VM_SYSTEM_APERTURE_DEFAULT_ADDR_LSB, @truncate(scratch_physical >> 12));
             try io.write(R.MC_VM_SYSTEM_APERTURE_DEFAULT_ADDR_MSB, @truncate(scratch_physical >> 44));
             try io.write(R.VM_L2_PROTECTION_FAULT_DEFAULT_ADDR_LO32, @truncate(scratch_physical >> 12));
@@ -142,7 +171,7 @@ pub const Controller = struct {
         }
         try io.write(r.hdp.HDP_NONSURFACE_BASE, @truncate(map.mc.offset >> 8));
         try io.write(r.hdp.HDP_NONSURFACE_BASE_HI, @truncate(map.mc.offset >> 40));
-        try flush(io, 0); try flush(io, 1); self.enabled = true;
+        try self.flush(io, 0); try self.flush(io, 1); self.enabled = true;
     }
     pub fn disable(self: *Controller, target: anytype, gate: Gate) Error!void {
         if (!self.touched) return;
@@ -155,13 +184,13 @@ pub const Controller = struct {
         inline for (.{ r.gfx, r.mm }) |R| {
             for (0..16) |i| try io.write(R.VM_CONTEXT0_CNTL + @as(u32, @intCast(i)) * (R.VM_CONTEXT1_CNTL - R.VM_CONTEXT0_CNTL), 0);
         }
-        try flush(io, 0); try flush(io, 1);
+        try self.flush(io, 0); try self.flush(io, 1);
         inline for (.{ r.gfx, r.mm }) |R| {
             try set(io, R, "MC_VM_MX_L1_TLB_CNTL", "ENABLE_L1_TLB", 0);
             try set(io, R, "MC_VM_MX_L1_TLB_CNTL", "ENABLE_ADVANCED_DRIVER_MODEL", 0);
             try set(io, R, "VM_L2_CNTL", "ENABLE_L2_CACHE", 0); try io.write(R.VM_L2_CNTL3, 0);
         }
-        try self.journal.restore(target);
+        try self.journal.restore(target, &self.invalidator);
         self.* = .{};
     }
 };

@@ -28,14 +28,17 @@ No x86 option-ROM code or Linux driver runtime is executed or linked.
 
 ## AMD firmware package (0.80.6)
 
-Firmware/amdgpu contains thirteen unchanged original binaries from
-linux-firmware commit 2b8daaf611fbade74f26a5b58ec1defe6a02f5e0.
+Firmware/amdgpu contains twenty-four unchanged original binaries from
+linux-firmware baseline 2b8daaf611fbade74f26a5b58ec1defe6a02f5e0.
 Firmware/LICENSES/LICENSE.amdgpu and Firmware/WHENCE retain the original
 AMD binary redistribution terms and provenance. WHENCE's historical
 LICENSE.amdgpu basename refers to the preserved file under LICENSES/.
 They are shipped as named R4M0 resources with the package lock. Firmware
 is not relicensed, disassembled, modified or executed by the host tools.
 All original file identities and metadata are in src/firmware_lock.json.
+During0.80.39 eleven Raven2 binaries were added from the same pinned commit.
+The original Raven DMCU is shared by Picasso and Raven2, as specified in
+amdgpu_dm.c. Family-specific headers and hashes stay distinct in the lock.
 
 Nine additional unchanged MIT sources from Linux 7.2.4 document firmware
 headers, names, RLC selection, PSP/TA, VCN/SDMA and DMCU dependencies.
@@ -43,7 +46,7 @@ Their notices and SHA256 identities are preserved in ThirdParty/Sources.json.
 The format parser implements bounded reads of public container layouts;
 it does not incorporate a Linux driver runtime or reverse engineer microcode.
 Tools/ExportLegal.ps1 emits the complete original source notices and copies
-both original firmware legal files for distribution images.
+the original baseline firmware license and WHENCE for distribution images.
 
 ## GMC9, GFXHUB, MMHUB and ATHUB memory (0.80.7)
 
@@ -183,3 +186,19 @@ notices and pinned SHA256 identities. The derived Zig clocks, ring packets
 and engine sequence carry the original grant. No Linux media scheduler,
 DRM runtime or kernel is linked. Existing ExportLegal.ps1 exports all source
 notices and firmware licensing; the thirteen firmware binaries are unchanged.
+
+## Raven2 startup preparation (0.80.39)
+
+The existing pinned AMD MIT gfx_v9_0.c, sdma_v4_0.c, gfxhub_v1_0.c and
+mmhub_v1_0.c also supply Raven2 golden tables, the aperture-high workaround
+and the bounded RLC save/restore port in src/gc_rlc.zig. Original sources
+remain unchanged; the derived RLC port retains the AMD copyright and MIT grant.
+
+## Historical RLC comparison (0.80.39)
+
+Driver versions0.1.43 and0.1.44 tested unchanged Raven2 RLC107 and101 with
+the matching original copyright/license/WHENCE embedded and exported.
+Both were rejected by the Lenovo. Version0.1.45 restores the unchanged
+baseline RLC73; all active firmware now shares the baseline revision.
+The historical originals, legal notices and exact provenance remain in the
+workspace reference collection ExFiles/Reference/AMD/Firmware/Raven2-RLC-History.

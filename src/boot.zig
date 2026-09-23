@@ -33,7 +33,7 @@ pub fn select(devices: []const Device, info: a.GfxNativeBootInfo) Error!Associat
     var unsupported_variant = false;
     for (devices, 0..) |*device, index| {
         if (!id.target(device.snapshot.pci)) continue;
-        if (device.measured.chip.family != .picasso) { unsupported_variant = true; continue; }
+        if (device.measured.chip.family != .picasso and device.measured.chip.family != .raven2) { unsupported_variant = true; continue; }
         const stolen = device.measured.uma orelse continue;
         var path: ?Path = null; var offset: u64 = 0;
         if (stolen.contains(info.physical_address, info.byte_length)) { path = .uma_direct; offset = info.physical_address - stolen.base; }

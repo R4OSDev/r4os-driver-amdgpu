@@ -30,6 +30,8 @@ struct r4dcn_limits {
   * board. A reference bounding box is never hardware evidence. */
  uint32_t channels,dcf_khz,disp_khz,dpp_khz,fabric_khz,soc_khz,ref_khz;
  uint32_t gb_addr_config,reserved;
+ /* ASIC resource count: Raven2/DCN1.01 has three; Picasso/DCN1.0 four. */
+ uint32_t pipe_count;
 };
 struct r4dcn_plan {
  uint32_t count,pipe_mask,disp_khz,dpp_khz,dcf_khz,fabric_khz;
@@ -118,7 +120,11 @@ int r4dcn_scanout_stop(void *,uint32_t pipe_mask);
 /* Held boot ownership is required by the caller. Stops inherited frontends
  * before the first native programming; all device allocations remain pinned. */
 int r4dcn_inherited_stop(void *);
-int r4dcn_inherited_admit(void *);
+struct r4dcn_inherited_probe {
+ uint32_t checked_mask,power_mask,rejected_pipe;
+ uint32_t control[4],hubp[4],power[4];
+};
+int r4dcn_inherited_admit(void *,struct r4dcn_inherited_probe *);
 int r4dcn_scanout_sample(void *,uint32_t pipe,struct r4dcn_scanout_sample *);
 int r4dcn_scanout_flip(void *,uint32_t pipe,uint64_t mc_address,uint64_t bytes);
 int r4dcn_scanout_cursor(void *,uint32_t pipe,const struct r4dcn_cursor *);

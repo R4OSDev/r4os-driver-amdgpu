@@ -30,8 +30,19 @@ const F = struct {
     var completed: usize = 0; var last_fence: a.GfxFence = .{}; var last_result: u32 = 0;
     var complete_fail = false; var retire_fail = false; var retired: usize = 0;
     var worker_stop = false; var worker_calls: usize = 0; var event_calls: usize = 0; var prove_quiescence = false;
+    var work_result: i32 = 0;
+    var dispatch_fail = false;
+    fn submitOwned(handler: a.DriverWorkHandler, raw: usize, handle: *u32) callconv(.c) i32 {
+        if (dispatch_fail) { handle.* = 0; return -1; }
+        work_result = handler(raw); handle.* = 19; return 0;
+    }
+    fn workStatus(handle: u32, out: *a.DriverCompletionStatus) callconv(.c) i32 {
+        std.debug.assert(handle == 19);
+        out.* = .{ .state = a.driver_work_state_completed, .result = work_result }; return 0;
+    }
+    fn releaseWork(handle: u32) callconv(.c) i32 { std.debug.assert(handle == 19); return 0; }
     fn reset() void {
-        run = .{}; memory = .{}; regs = @splat(0); arena = @splat(0); bells = @splat(0); clock = 100;
+        run = .{}; memory = .{}; regs = @splat(0); arena = @splat(0); bells = @splat(0); clock = 100; dispatch_fail = false;
         dummy = @splat(0xff); dummy_live = false; dummy_dma = false; dummy_cpu = false; dma_release_fail = false; dummy_address = 0x334400000;
         mapped = 0; unmap_fail = false; map_fail = false; msi_result = 24; msi_live = false; msi_close_fail = false;
         irq_handler = null; irq_context = 0; irq_number = 0; irq_flags = 0; irq_register_fail = false; irq_close_fail = false;
@@ -41,11 +52,12 @@ const F = struct {
         worker_stop = false; worker_calls = 0; event_calls = 0; prove_quiescence = false;
         api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
         api.log_error = log;
+        api.driver_work_submit_owned = submitOwned; api.driver_completion_status = workStatus; api.driver_completion_release = releaseWork;
         api.gfx_memory_query = memoryQuery; api.gfx_queue_query = queueQuery; api.resource_query = resourceQuery;
         api.thread_query = threadQuery; api.semaphore_query = semQuery; api.timer_frequency = frequency;
         api.pci_read_config32 = config; api.pci_enable_msi = msiEnable; api.pci_disable_msi = msiDisable;
         api.irq_register = irqRegister; api.irq_unregister = irqUnregister;
-        layout = @import("memory_layout.zig").Layout.create(.{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
+        layout = @import("memory_layout.zig").Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
             .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024, null) catch unreachable;
         const memctx: r4os.driver_memory.Context = .{ .table = .{ .mmio_map = @intFromPtr(&map), .mmio_unmap = @intFromPtr(&unmap), .collect = @intFromPtr(&collect),
             .buffer_create = @intFromPtr(&createDummy), .buffer_describe = @intFromPtr(&describeDummy), .buffer_map = @intFromPtr(&mapDummy), .buffer_unmap = @intFromPtr(&unmapDummy),
@@ -159,6 +171,12 @@ test "AMD bounded ring and fixed queue arenas preserve wrap, staged ownership an
     try t.expectEqual(@as(u64, 36), ring.write); try t.expectEqual(@as(u32, 24), words[0]); try ring.observe(4);
     const cancel = try ring.stage(&.{9}); try ring.cancel(cancel); try t.expectEqual(@as(u64, 36), ring.write);
     ring.serial = std.math.maxInt(u64); try t.expectError(error.Overflow, ring.stage(&.{1}));
+    // A DPM/display lease must not precede the exclusive fixed arena claim.
+    // Native startup therefore acquires the queue first, then the clock table.
+    F.reset(); F.memory.engine_users = 1;
+    try t.expectError(error.Busy, F.prepare());
+    try t.expect(F.run.arena.self_address == 0 and F.mapped == 0 and !F.dummy_live);
+    try t.expect(F.run.close(null)); try t.expectEqual(@as(u32, 1), F.memory.engine_users);
     F.reset(); try F.prepare(); try t.expectEqual(@as(u32, 1), F.memory.engine_users);
     try t.expect(F.dummy_dma and !F.dummy_cpu and F.memory.mapping_users == 1);
     for (F.dummy) |byte| try t.expectEqual(@as(u8, 0), byte);
@@ -274,6 +292,11 @@ test "AMD worker publishes exact writebacks, polls lost IRQs and retains timeout
     const fail_callback: *const fn (usize) callconv(.c) i32 = @ptrFromInt(F.request.handler);
     try t.expectEqual(a.driver_semaphore_error_context, fail_callback(F.request.context));
     try t.expectEqual(a.gfx_queue_result_device_lost, F.last_result); try t.expect(F.run.timeline.empty() and F.run.timeline.stopping);
+    try t.expect(!F.run.close(proof)); F.clock += 1_000_000; try t.expect(F.run.close(proof));
+    F.reset(); try F.prepare(); try F.start(); F.dispatch_fail = true;
+    const dispatch_callback: *const fn (usize) callconv(.c) i32 = @ptrFromInt(F.request.handler);
+    try t.expectEqual(@as(i32, -1), dispatch_callback(F.request.context));
+    try t.expect(F.run.wake_fault == 1 and F.run.stop == 1 and F.worker_calls == 0);
     try t.expect(!F.run.close(proof)); F.clock += 1_000_000; try t.expect(F.run.close(proof));
     F.reset(); try F.prepare();
     for (0..q.capacity) |i| _ = try F.run.timeline.reserve(fence(i + 1), .gfx, 1000, resources);

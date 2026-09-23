@@ -51,9 +51,11 @@ pub const Capture = struct {
         if (strap != self.read(regs.strap) or megabytes != self.read(regs.memsize)) return error.Unstable;
         const chip = try identity.chip(snapshot.pci.device_id, strap);
         if (!self.close(ctx)) return error.Cleanup;
-        // Raven2 is identified explicitly, but GC9.1 MMIO and Picasso
-        // firmware/layout assumptions are not extended to its GC9.2.2 path.
-        if (chip.family != .picasso) return .{ .chip = chip };
+        // Pinned gmc_v9_0 uses the same gfxhub_v1_0/mmhub_v1_0 read
+        // registers for Raven2 (GC9.2.2/MMHUB9.2.0). This admits only the
+        // aperture snapshot; firmware, register writes and native start
+        // remain independently profile-gated.
+        if (chip.family != .picasso and chip.family != .raven2) return .{ .chip = chip };
         try self.page(ctx, base, regs.fb_offset & ~@as(u64, 0xfff));
         const fb = self.read(regs.fb_offset);
         const gc_base = self.read(memregs.gfx.MC_VM_FB_LOCATION_BASE);

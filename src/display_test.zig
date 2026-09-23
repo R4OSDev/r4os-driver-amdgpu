@@ -13,7 +13,7 @@ fn reg(comptime name: []const u8) usize {
     const index = @field(hw, "mm" ++ name ++ "_BASE_IDX");
     return @field(hw, std.fmt.comptimePrint("DCE_BASE__INST0_SEG{d}", .{index})) + @field(hw, "mm" ++ name);
 }
-const limits: c.struct_r4dcn_limits = .{ .channels = 2, .dcf_khz = 600000, .disp_khz = 960000, .dpp_khz = 626000, .fabric_khz = 1066666, .soc_khz = 626000, .ref_khz = 48000, .gb_addr_config = 0x24000042, .reserved = 0 };
+const limits: c.struct_r4dcn_limits = .{ .channels = 2, .dcf_khz = 600000, .disp_khz = 960000, .dpp_khz = 626000, .fabric_khz = 1066666, .soc_khz = 626000, .ref_khz = 48000, .gb_addr_config = 0x24000042, .reserved = 0, .pipe_count = 4 };
 const mode: c.struct_r4dcn_mode = .{ .width = 1920, .height = 1080, .h_total = 2200, .v_total = 1125, .h_front = 88, .h_sync = 44, .v_front = 4, .v_sync = 5, .pixel_khz = 148500, .pitch_bytes = 7680, .pipe = 0, .flags = 6, .mc_address = 0x200000000, .buffer_bytes = 7680 * 1080 };
 const F = struct {
     var bytes: [5 * 1024 * 1024]u8 align(16) = undefined;
@@ -29,6 +29,18 @@ const F = struct {
     var hold_stop = false;
     var tear_frame = false;
     var fail_read: usize = 0;
+    var reject_fourth = false;
+    fn absent(offset: u32) bool {
+        if (!reject_fourth) return false;
+        // top/bottom/opp in start_registers are shared MPCC muxes, not OPP3.
+        inline for (.{ "hubp_cntl", "format", "tiling", "pitch", "primary", "primary_hi", "inuse", "inuse_hi", "flip", "surface", "otg", "control", "htotal", "vtotal", "blank" }) |name| {
+            if (offset == @field(d, name)[3]) return true;
+        }
+        inline for (.{ "DOMAIN6_PG_STATUS" }) |name| {
+            if (offset / 4 == reg(name)) return true;
+        }
+        return false;
+    }
     fn reset() void {
         @memset(&words, 0);
         ticks = 0;
@@ -41,10 +53,12 @@ const F = struct {
         hold_stop = false;
         tear_frame = false;
         fail_read = 0;
+        reject_fourth = false;
     }
     fn read(_: ?*anyopaque, offset: u32, out: [*c]u32) callconv(.c) c_int {
         if (offset % 4 != 0 or offset >= @sizeOf(@TypeOf(words))) return -1;
         reads += 1;
+        if (absent(offset)) return -1;
         if (fail_read != 0 and reads == fail_read) return -1;
         out.* = words[offset / 4];
         if (tear_frame and offset / 4 == reg("OTG0_OTG_STATUS_FRAME_COUNT")) words[offset / 4] +%= 1;
@@ -53,6 +67,7 @@ const F = struct {
     fn write(_: ?*anyopaque, offset: u32, value: u32) callconv(.c) c_int {
         if (offset % 4 != 0 or offset >= @sizeOf(@TypeOf(words))) return -1;
         writes += 1;
+        if (absent(offset)) return -1;
         if (fail_write != 0 and writes == fail_write) return -1;
         words[offset / 4] = value;
         if (scanout_model) {
@@ -177,10 +192,41 @@ test "DCN1 original bandwidth timing and MMIO reject invalid modes and unconfirm
     try t.expect(plan.count == 123 and F.writes == 0);
     c.r4dcn_destroy(&F.bytes);
     std.debug.print("[amd-dcn1] real DML/RQ/DLG, timing and frontend MMIO; clock timeout retained; 1080p planning; no physical device\n", .{});
+
+    // Measured Raven2: only three frontends. Absent instance3 must never be
+    // used as an idle receipt, nor touched by frontend/clock programming.
+    // Shared MPC crossbar slots retain the original four-slot constructor.
+    F.reset();
+    var rv2 = limits; rv2.pipe_count = 3;
+    F.reject_fourth = true;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &rv2));
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan));
+    F.blank();
+    F.words[d.hubp_cntl[3] / 4] = 0;
+    F.scanout_model = true;
+    var inherited: c.struct_r4dcn_inherited_probe = undefined;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_inherited_admit(&F.bytes, &inherited));
+    try t.expectEqual(@as(u32, 6), inherited.checked_mask);
+    try t.expectEqual(@as(u32, 0), inherited.power_mask);
+    try t.expectEqual(@as(usize, 0), F.writes);
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_inherited_stop(&F.bytes));
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_fixed_clock(&F.bytes, 600000));
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes));
+    invalid = mode; invalid.pipe = 3;
+    try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_prepare(&F.bytes, &invalid, 1, &plan));
+    c.r4dcn_destroy(&F.bytes);
+    for ([_]u32{ 0, 1, 2, 5, 0xffffffff }) |count| {
+        rv2.pipe_count = count;
+        const reads = F.reads; const writes = F.writes;
+        try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &rv2));
+        try t.expect(F.reads == reads and F.writes == writes);
+    }
 }
 
 const Runtime = struct {
     var owner: core.Owner = .{};
+    var layout: @import("memory_layout.zig").Layout = undefined;
     var memory: @import("memory_owner.zig").Owner = .{};
     var native: @import("start_runtime.zig").Owner = .{};
     var board: @import("bios.zig").Board = undefined;
@@ -198,6 +244,19 @@ const Runtime = struct {
     var panel_bytes: [@sizeOf(@import("panel_runtime.zig").Runtime)]u8 align(16) = undefined;
     var rom: [4096]u8 = undefined;
     var thread_result: i32 = 0;
+    var work_result: i32 = 0;
+    var in_owned_work = false;
+    fn submitOwned(handler: a.DriverWorkHandler, raw: usize, handle: *u32) callconv(.c) i32 {
+        std.debug.assert(!in_owned_work);
+        in_owned_work = true; work_result = handler(raw); in_owned_work = false;
+        handle.* = 19; return 0;
+    }
+    fn workStatus(handle: u32, out: *a.DriverCompletionStatus) callconv(.c) i32 {
+        std.debug.assert(handle == 19);
+        out.* = .{ .state = a.driver_work_state_completed, .result = work_result }; return 0;
+    }
+    fn releaseWork(handle: u32) callconv(.c) i32 { std.debug.assert(handle == 19); return 0; }
+    fn noOutputs(_: *a.GfxDriverOutputApi) callconv(.c) i32 { return a.gfx_output_error_unavailable; }
     var fail_join = false;
     var fail_release = false;
     var fail_heap = false;
@@ -232,8 +291,14 @@ const Runtime = struct {
         api.resource_query = resourceQuery;
         api.timer_frequency = frequency;
         api.log_error = log;
+        api.gfx_output_query = noOutputs;
+        api.driver_work_submit_owned = submitOwned; api.driver_completion_status = workStatus; api.driver_completion_release = releaseWork;
         memory.self_address = @intFromPtr(&memory);
         memory.prepared = true;
+        layout = try @import("memory_layout.zig").Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
+            .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024,
+            .{ .offset = 0x1fe00000, .bytes = 2 * 1024 * 1024, .driver_scratch_bytes = 4096 });
+        memory.layout = &layout;
         memory.epoch = 7;
         memory.adapter = 1;
         memory.engine_users = 1;
@@ -513,7 +578,48 @@ test "DCN1 real scanout flip cursor registers require coherent hardware receipts
     var plan: c.struct_r4dcn_plan = undefined;
     try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan));
     F.blank();
+    // A stopped, power-gated unused HUBP cannot acknowledge IN_BLANK.
+    // Test all documented PGFSM values and both TG enable indications.
+    const before_inherited = F.writes;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_inherited_admit(&F.bytes, null));
+    inline for (1..4) |i| {
+        const pg = reg(std.fmt.comptimePrint("DOMAIN{d}_PG_STATUS", .{i * 2}));
+        F.words[d.hubp_cntl[i] / 4] = 0;
+        for (0..4) |state| {
+            F.words[pg] = @as(u32, @intCast(state)) << hw.DOMAIN0_PG_STATUS__DOMAIN0_PGFSM_PWR_STATUS__SHIFT;
+            try t.expectEqual(@as(c_int, if (state == 2) 0 else c.R4DCN_UNSUPPORTED), c.r4dcn_inherited_admit(&F.bytes, null));
+        }
+        F.words[pg] = @as(u32, 2) << hw.DOMAIN0_PG_STATUS__DOMAIN0_PGFSM_PWR_STATUS__SHIFT;
+        for ([_]u32{ hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK, hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK }) |enabled| {
+            F.words[d.control[i] / 4] = enabled;
+            try t.expectEqual(@as(c_int, c.R4DCN_UNSUPPORTED), c.r4dcn_inherited_admit(&F.bytes, null));
+        }
+        F.words[d.control[i] / 4] = 0;
+        F.words[d.hubp_cntl[i] / 4] = hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+        F.words[pg] = 0;
+    }
+    try t.expectEqual(before_inherited, F.writes);
+    // A selected power-gated pipe is not ready for frontend programming.
+    F.words[d.hubp_cntl[0] / 4] = 0;
+    F.words[reg("DOMAIN0_PG_STATUS")] = @as(u32, 2) << hw.DOMAIN0_PG_STATUS__DOMAIN0_PGFSM_PWR_STATUS__SHIFT;
+    try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_fixed_clock(&F.bytes, 600000));
+    try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_program(&F.bytes));
+    try t.expectEqual(before_inherited, F.writes);
+    F.words[reg("DOMAIN0_PG_STATUS")] = 0;
+    F.words[d.hubp_cntl[0] / 4] = hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK | hw.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK;
+    inline for (1..4) |i| {
+        F.words[d.hubp_cntl[i] / 4] = 0;
+        F.words[reg(std.fmt.comptimePrint("DOMAIN{d}_PG_STATUS", .{i * 2}))] = @as(u32, 2) << hw.DOMAIN0_PG_STATUS__DOMAIN0_PGFSM_PWR_STATUS__SHIFT;
+    }
+    var inherited: c.struct_r4dcn_inherited_probe = undefined;
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_inherited_admit(&F.bytes, &inherited));
+    try t.expectEqual(@as(u32, 14), inherited.checked_mask);
+    try t.expectEqual(@as(u32, 14), inherited.power_mask);
+    try t.expectEqual(std.math.maxInt(u32), inherited.rejected_pipe);
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_inherited_stop(&F.bytes));
+    try t.expectEqual(@as(c_int, 0), c.r4dcn_fixed_clock(&F.bytes, 600000));
     try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+    for (1..4) |i| try t.expectEqual(@as(u32, 0), F.words[d.hubp_cntl[i] / 4]);
     latchScanout(mode.mc_address, 0xfffffe);
     try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_enable(&F.bytes, 0));
     var sample: c.struct_r4dcn_scanout_sample = undefined;
@@ -863,7 +969,7 @@ const ClockMemory = struct {
     fn init() !void {
         try Runtime.reset();
         owner = .{}; live = false; fail_map = false; fail_unmap = false; clears = 0;
-        map = try l.Layout.create(.{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
+        map = try l.Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
             .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 8 * 1024 * 1024, null);
         Runtime.memory.layout = &map;
         Runtime.memory.memory = .{ .table = .{ .mmio_map = @intFromPtr(&mapping), .mmio_unmap = @intFromPtr(&unmap), .collect = @intFromPtr(&collect) } };
@@ -1609,7 +1715,7 @@ const Integration = struct {
         }
         R.api.gfx_memory_query = memoryQuery; R.api.gfx_display_query = displayQuery; R.api.gfx_output_query = outputQuery;
         const ctx = r4os.r4dev.DriverContext.init(&R.api);
-        layout = try @import("memory_layout.zig").Layout.create(.{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
+        layout = try @import("memory_layout.zig").Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
             .{ .base = mode.mc_address, .bytes = 512 * 1024 * 1024 }, 0, mode.buffer_bytes, null);
         R.memory.layout = &layout; R.memory.memory = ctx.memory();
         R.memory.controller = .{ .enabled = true, .epoch = R.memory.epoch };

@@ -13,19 +13,28 @@ const F = struct {
     var view: s.View = undefined;
     var clock: u64 = 0; var writes: usize = 0; var commands: usize = 0; var loads: usize = 0;
     var smu_reply: u32 = 1; var smu_if: u32 = 6; var psp_reply: u32 = 0;
+    var smu_version: u32 = 0x1e460000;
     var auto_smu = true; var auto_psp = true; var fail_write: usize = 0; var disconnected = false;
     var invalid_address = false;
+    var restore_reply: u32 = 0;
+    var mixed_restore_reply = false;
     fn reset() !void { try resetFor(.fp5); }
     fn resetFor(socket: fw.Socket) !void {
+        try resetProfile(.{ .socket = socket, .pci_revision = if (socket == .am4) 0xc8 else 0xc1 });
+    }
+    fn resetProfile(profile: fw.Profile) !void {
         words = @splat(0); arena = @splat(0); flow = .{}; active = &flow; store = .{};
         clock = 100; writes = 0; commands = 0; loads = 0; smu_reply = 1; smu_if = 6; psp_reply = 0;
+        smu_version = 0x1e460000;
         auto_smu = true; auto_psp = true; fail_write = 0; disconnected = false; invalid_address = false;
+        restore_reply = 0;
+        mixed_restore_reply = false;
         view = try s.View.create(&arena, 0x100300000, 0x220300000);
-        store.profile = .{ .socket = socket, .pci_revision = if (socket == .am4) 0xc8 else 0xc1 }; store.generation = 19; store.valid = true;
+        store.profile = profile; store.generation = 19; store.valid = true;
         for (fw.lock.firmware, 0..) |spec, i| {
-            if (!store.profile.?.includes(spec.role)) continue;
-            const data = @import("firmware_samples").files[i + 3];
-            store.info[i + 3].handle = i + 1; store.offsets[i + 3] = store.bytes;
+            if (!store.profile.?.selects(spec)) continue;
+            const data = @import("firmware_samples").files[i + fw.firmware_first];
+            store.info[i + fw.firmware_first].handle = i + 1; store.offsets[i + fw.firmware_first] = store.bytes;
             @memcpy(package[store.bytes..][0..data.len], data);
             store.layouts[i] = try fw.verify(data, &fw.lock.firmware[i]);
             store.bytes += std.mem.alignForward(usize, data.len, 16);
@@ -44,8 +53,12 @@ const F = struct {
     pub fn write(_: *@This(), address: u32, value: u32) c.Error!void {
         writes += 1; if (writes == fail_write) return error.Invalid;
         words[address / 4] = value;
+        // Hardware CP receipt from Native40; MEC models command bits that
+        // do not persist, not a measured MEC sample (the CP check ran first).
+        if (address == r.gc.CP_ME_CNTL) words[address / 4] &= 0x15150000;
+        if (address == r.gc.CP_MEC_CNTL) words[address / 4] &= 0x50000000;
         if (address == r.smu.MP1_SMN_C2PMSG_66 and auto_smu) {
-            words[r.smu.MP1_SMN_C2PMSG_82 / 4] = switch (value) { r.PPSMC_MSG_GetSmuVersion => 0x1e460000, r.PPSMC_MSG_GetDriverIfVersion => smu_if, else => 0 };
+            words[r.smu.MP1_SMN_C2PMSG_82 / 4] = switch (value) { r.PPSMC_MSG_GetSmuVersion => smu_version, r.PPSMC_MSG_GetDriverIfVersion => smu_if, else => 0 };
             words[r.smu.MP1_SMN_C2PMSG_90 / 4] = smu_reply;
         }
         if (address == r.psp.MP0_SMN_C2PMSG_64 and auto_psp) words[address / 4] = value | 0x80000000;
@@ -66,6 +79,8 @@ const F = struct {
         }
         if (cmd == c.wire.GFX_CMD_ID_LOAD_IP_FW) {
             const entry = &active.plan.entries[active.upload];
+            if (entry.restoreList() and restore_reply != 0) arena[resp] = restore_reply;
+            if (mixed_restore_reply and entry.restoreList()) arena[resp] = if (active.upload == 8) 0xffff300f else 0xffff000f;
             std.debug.assert(arena[args + 2] == entry.span.bytes and arena[args + 3] == entry.fw_type);
             const original = entry.span.slice(store.container(entry.role).?);
             for (0..original.len / 4) |i| std.debug.assert(arena[s.staging / 4 + i] == std.mem.readInt(u32, original[i * 4..][0..4], .little));
@@ -96,7 +111,7 @@ test "Picasso PSP10 actual command ABI, original upload sections, bounded SMU10 
     try t.expectEqual(@as(usize, 0), F.writes);
     try F.begin(&io); try F.until(&io, .firmware_ready);
     try t.expect(F.flow.firmwareReady() and F.loads == 13 and F.commands == 15);
-    try t.expect(F.flow.plan.entries[4].span.bytes < fw.specification(.mec).payload_bytes);
+    try t.expect(F.flow.plan.entries[4].span.bytes < fw.specification(.picasso, .mec).payload_bytes);
     try t.expectEqual(@as(u32, c.wire.GFX_FW_TYPE_CP_MEC_ME2), F.flow.plan.entries[7].fw_type);
     try t.expectEqual(@as(u32, 0x1e4600), F.flow.smu_version);
     try t.expect(F.words[r.gc.CP_ME_CNTL / 4] & @import("start_engines.zig").cp_mask != 0);
@@ -111,12 +126,80 @@ test "Picasso PSP10 actual command ABI, original upload sections, bounded SMU10 
     try F.reset(); F.smu_if = 7; try F.begin(&io); try F.until(&io, .firmware_ready); try F.close(&io);
     try F.resetFor(.am4); try F.begin(&io); try F.until(&io, .firmware_ready);
     try t.expect(F.flow.plan.entries[11].role == .rlc_am4 and F.flow.plan.entries[11].version == 551); try F.close(&io);
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    try F.begin(&io);
+    try t.expect(F.flow.rlc.ready and F.flow.rlc.generation == F.store.generation);
+    try t.expectEqual(@as(usize, 0), F.writes);
+    try F.until(&io, .firmware_ready);
+    try t.expect(F.flow.plan.entries[11].role == .rlc and F.flow.plan.entries[11].version == 73);
+    try F.close(&io);
+    // A successful PSP response is not a persistent engine stop. Reproduce
+    // the measured post-load SDMA HALT=0 before allowing any GMC consumer.
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    try F.begin(&io); try F.until(&io, .asd_wait);
+    F.words[r.sdma.SDMA0_F32_CNTL / 4] = 0;
+    try F.tick(&io);
+    try t.expect(F.flow.psp.asd_ready and F.flow.phase == .firmware_park and !F.flow.firmwareReady());
+    try F.tick(&io);
+    try t.expect(F.flow.phase == .firmware_parked and !F.flow.firmwareReady());
+    try t.expect(F.words[r.sdma.SDMA0_F32_CNTL / 4] & r.sdma.SDMA0_F32_CNTL__HALT_MASK != 0);
+    F.words[r.gc.GRBM_STATUS2 / 4] = r.gc.GRBM_STATUS2__RLC_BUSY_MASK;
+    try F.tick(&io); try t.expect(!F.flow.firmwareReady() and F.flow.engines.wait == .rlc_busy);
+    F.words[r.gc.GRBM_STATUS2 / 4] = 0;
+    try F.until(&io, .firmware_ready);
+    // An outer engine stop is followed by fresh checks without a second
+    // reset. A stale/missing HALT still times out and retains all firmware.
+    for ([_]bool{ false, true }) |missing_halt| {
+        F.flow.cleanup_recheck = true;
+        F.flow.abort(&io); try F.until(&io, .cleanup_park);
+        if (missing_halt) F.words[r.sdma.SDMA0_F32_CNTL / 4] = 0;
+        const writes_before = F.writes;
+        try F.tick(&io);
+        try t.expect(F.flow.phase == .cleanup_parked and F.writes == writes_before);
+        if (missing_halt) {
+            try F.tick(&io); try t.expect(F.flow.engines.wait == .sdma_halt and !F.flow.safeToRelease());
+            F.clock += 500_000_000;
+            try t.expectError(error.Deadline, F.flow.advance(&io));
+            try t.expect(F.flow.phase == .retained and F.flow.psp.asd_ready and F.flow.psp.tmr_ready);
+            F.words[r.sdma.SDMA0_F32_CNTL / 4] = r.sdma.SDMA0_F32_CNTL__HALT_MASK;
+            try F.close(&io);
+        } else {
+            try F.until(&io, .closed); try t.expect(F.flow.safeToRelease());
+            try F.reset(); try F.begin(&io); try F.until(&io, .firmware_ready);
+        }
+    }
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    for (fw.lock.firmware, 0..) |spec, i| if (spec.family == .raven2 and spec.role == .rlc) {
+        std.mem.writeInt(u32, F.package[F.store.offsets[i + fw.firmware_first] + 60..][0..4], 511, .little);
+    };
+    try t.expectError(error.Firmware, F.begin(&io));
+    try t.expectEqual(@as(usize, 0), F.writes);
     // Third interface revisions cannot reach PSP or engine writes.
     try F.reset(); F.smu_if = 8; try F.begin(&io); try F.until(&io, .smu_interface_wait);
     try t.expectError(error.Interface, F.tick(&io)); try F.close(&io); try t.expectEqual(@as(usize, 0), F.commands);
 }
 
 test "Picasso startup failures preserve outstanding mailbox, TMR and firmware ownership" {
+    // Each execution HALT bit is still mandatory even if all command bits
+    // have cleared. A missing bit must time out without admitting PSP work.
+    var park_io: F = .{};
+    inline for (.{ .{ r.gc.CP_ME_CNTL, 0x01000000 }, .{ r.gc.CP_ME_CNTL, 0x04000000 },
+        .{ r.gc.CP_ME_CNTL, 0x10000000 }, .{ r.gc.CP_MEC_CNTL, 0x40000000 }, .{ r.gc.CP_MEC_CNTL, 0x10000000 } }) |missing| {
+        try F.reset(); try F.begin(&park_io); try F.until(&park_io, .parked);
+        F.words[missing[0] / 4] &= ~@as(u32, missing[1]);
+        try F.tick(&park_io); try t.expect(F.flow.phase == .parked and !F.flow.engines.confirmed);
+        try t.expectEqual(@as(usize, 0), F.commands);
+        F.clock += 500_000_000; try t.expectError(error.Deadline, F.flow.advance(&park_io));
+        try t.expect(!F.flow.safeToRelease()); try F.close(&park_io);
+    }
+    // HALT alone does not establish idle. A busy engine still blocks and
+    // retains ownership until its independent status check succeeds.
+    try F.reset(); try F.begin(&park_io); try F.until(&park_io, .parked);
+    F.words[r.gc.GRBM_STATUS / 4] = r.gc.GRBM_STATUS__GUI_ACTIVE_MASK;
+    try F.tick(&park_io); try t.expect(F.flow.engines.wait == .gui and !F.flow.engines.confirmed);
+    F.clock += 500_000_000; try t.expectError(error.Deadline, F.flow.advance(&park_io));
+    try t.expect(!F.flow.safeToRelease());
+    F.words[r.gc.GRBM_STATUS / 4] = 0; try F.close(&park_io);
     // The real MMIO wrapper arbitrates across different worker-owned
     // mailboxes, including an acknowledged response not consumed yet.
     try F.reset();
@@ -171,6 +254,68 @@ test "Picasso startup failures preserve outstanding mailbox, TMR and firmware ow
     F.psp_reply = 0; try F.close(&io); try t.expect(!F.flow.plan.entries[0].confirmed);
     try F.reset(); try F.begin(&io); try F.until(&io, .firmware_send); F.invalid_address = true;
     try F.tick(&io); try t.expectError(error.Firmware, F.tick(&io)); F.invalid_address = false; try F.close(&io);
+    // The bounded Raven2 probe distinguishes all restore receipts from the
+    // main RLC/VCN images. It never reports rejected images as confirmed and
+    // never submits ASD or admits engines, even if later uploads succeed.
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    F.mixed_restore_reply = true; try F.begin(&io);
+    while (F.flow.upload < F.flow.plan.count) try F.tick(&io);
+    try t.expectEqual(@as(usize, 13), F.loads);
+    try t.expectEqual(@as(usize, 14), F.commands); // TMR + uploads, no ASD
+    try t.expectEqual(@as(u8, 3), F.flow.restore_rejected);
+    for (F.flow.plan.entries[0..F.flow.plan.count], 0..) |entry, index| {
+        try t.expect(entry.receipt);
+        try t.expectEqual(!entry.restoreList(), entry.confirmed);
+        try t.expectEqual(if (entry.restoreList()) @as(u32, if (index == 8) 0xffff300f else 0xffff000f) else 0, entry.response);
+    }
+    try t.expect(!F.flow.firmwareReady() and !F.flow.plan.confirmed() and !F.flow.psp.asd_ready);
+    try t.expectError(error.Response, F.tick(&io)); try F.close(&io);
+    try t.expectEqual(@as(usize, 15), F.commands); // destroy TMR, no ASD unload
+    // Exact-board opt-in and measured SMU permit core execution with restore
+    // unavailable, never inventing three firmware acknowledgements.
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    F.flow.allow_restore_degraded = true; F.smu_version = 0x251f00; F.smu_if = 7;
+    F.mixed_restore_reply = true; try F.begin(&io); try F.until(&io, .firmware_ready);
+    try t.expect(F.flow.firmwareReady() and !F.flow.plan.confirmed() and !F.flow.plan.restoreConfirmed());
+    try t.expect(F.flow.psp.asd_ready and F.commands == 15);
+    F.flow.plan.entries[11].confirmed = false;
+    try t.expect(!F.flow.firmwareReady()); // main RLC is mandatory
+    F.flow.plan.entries[11].confirmed = true;
+    F.flow.plan.entries[8].receipt = false;
+    try t.expect(!F.flow.firmwareReady()); // timeout/missing response cannot opt in
+    F.flow.plan.entries[8].receipt = true;
+    F.flow.plan.entries[8].version = 107;
+    try t.expect(!F.flow.firmwareReady()); // historical comparison is not qualified
+    F.flow.plan.entries[8].version = 73;
+    F.flow.plan.entries[9].response = 0xffff0008;
+    try t.expect(!F.flow.firmwareReady());
+    F.flow.plan.entries[9].response = 0xffff000f;
+    F.flow.smu_version_raw ^= 1; try t.expect(!F.flow.firmwareReady()); F.flow.smu_version_raw ^= 1;
+    F.flow.allow_restore_degraded = false; try t.expect(!F.flow.firmwareReady()); F.flow.allow_restore_degraded = true;
+    try F.close(&io); try t.expectEqual(@as(usize, 17), F.commands);
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    F.flow.allow_restore_degraded = true; F.mixed_restore_reply = true; try F.begin(&io);
+    while (F.flow.upload < F.flow.plan.count) try F.tick(&io);
+    try t.expectError(error.Response, F.tick(&io)); // different SMU stays blocked
+    try t.expect(!F.flow.psp.asd_ready); try F.close(&io);
+    // Neither Picasso, other status codes nor another firmware type receives
+    // this diagnostic continuation. An exact timeout still retains ownership.
+    for ([_]fw.Family{ .picasso, .raven2 }) |family| {
+        for ([_]u32{ 0xffff300f, 0xffff000f, 0xffff0008, 0xffffffff }) |reply| {
+            if (family == .raven2 and (reply == 0xffff300f or reply == 0xffff000f)) continue;
+            try F.resetProfile(.{ .family = family, .socket = .fp5, .pci_revision = if (family == .raven2) 0xc4 else 0xc1 });
+            F.restore_reply = reply; try F.begin(&io);
+            while (F.flow.upload < 8 or F.flow.phase != .firmware_wait) try F.tick(&io);
+            try t.expectError(error.Response, F.tick(&io));
+            try t.expect(F.flow.restore_rejected == 0 and F.loads == 9 and !F.flow.psp.asd_ready);
+            F.restore_reply = 0; try F.close(&io);
+        }
+    }
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    try F.begin(&io); try F.until(&io, .firmware_send); F.psp_reply = 0xffff300f;
+    try F.tick(&io); try t.expectError(error.Response, F.tick(&io));
+    try t.expect(F.flow.restore_rejected == 0 and F.loads == 1);
+    F.psp_reply = 0; try F.close(&io);
     try F.reset(); try F.begin(&io); try F.until(&io, .firmware_send); F.auto_psp = false;
     try F.tick(&io); const token = F.flow.psp.token;
     F.arena[s.fence / 4] = token - 1; try F.tick(&io); try t.expect(F.flow.phase == .firmware_wait);
@@ -205,6 +350,55 @@ test "Picasso boot display guard compares actual scanout, format, pitch and rout
     try t.expectError(error.Unconfirmed, guard.capture(&io, 0x100100000, 128));
     try F.reset(); guard = .{}; F.words[r.dc.surface[0] / 4] = r.dc.HUBPREQ0_DCSURF_SURFACE_CONTROL__PRIMARY_SURFACE_DCC_EN_MASK;
     try t.expectError(error.Unconfirmed, guard.capture(&io, 0x100100000, 128));
+    // Original DCN1 hubp1_is_flip_pending checks EARLIEST_INUSE, not the
+    // adjacent SURFACE_INUSE shadow (0xe94c/0xe950). The Lenovo firmware
+    // leaves that shadow zero. A stale earliest address must still fail.
+    try F.reset(); guard = .{};
+    F.words[0xe94c / 4] = 0; F.words[0xe950 / 4] = 0;
+    try guard.capture(&io, 0x100100000, 128);
+    guard = .{}; F.words[r.dc.inuse[0] / 4] = 0;
+    F.words[0xe94c / 4] = 0x100000; F.words[0xe950 / 4] = 1;
+    try t.expectError(error.Unconfirmed, guard.capture(&io, 0x100100000, 128));
+    try t.expectEqual(@as(usize, 0), F.writes);
+    // Initial GOP admission is tied to this exact board, ROM and geometry.
+    // Restored/native DCN planes keep the original minus-one convention.
+    const bp = @import("boot_pitch.zig"); const a = @import("r4os").abi;
+    const snapshot: @import("identity.zig").Snapshot = .{
+        .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 },
+        .subsystem_vendor = 0x17aa, .subsystem_device = 0x3808, .pci_revision = 0xc4,
+    };
+    const chip = try @import("identity.zig").chip(0x15d8, 0x090015d8);
+    const boot: a.GfxNativeBootInfo = .{ .generation = 1, .state = a.display_state_bootfb,
+        .width = 1920, .height = 1080, .pitch = 7680, .byte_length = 8294400, .format = a.gfx_buffer_format_xrgb8888 };
+    const policy = bp.select(snapshot, chip, bp.rom_sha256, boot);
+    try t.expectEqual(bp.Policy.lenovo_gop_1920, policy);
+    var changed_board = snapshot; changed_board.subsystem_device ^= 1;
+    try t.expectEqual(bp.Policy.standard, bp.select(changed_board, chip, bp.rom_sha256, boot));
+    var changed_rom = bp.rom_sha256; changed_rom[0] ^= 1;
+    try t.expectEqual(bp.Policy.standard, bp.select(snapshot, chip, changed_rom, boot));
+    const restore_quirk = @import("start_firmware.zig").restoreQuirk;
+    try t.expect(restore_quirk(snapshot, chip, bp.rom_sha256));
+    try t.expect(!restore_quirk(changed_board, chip, bp.rom_sha256));
+    try t.expect(!restore_quirk(snapshot, chip, changed_rom));
+    var changed_revision = snapshot; changed_revision.pci_revision ^= 1;
+    try t.expect(!restore_quirk(changed_revision, chip, bp.rom_sha256));
+    var changed_boot = boot; changed_boot.pitch += 4;
+    try t.expectEqual(bp.Policy.standard, bp.select(snapshot, chip, bp.rom_sha256, changed_boot));
+    changed_boot = boot; changed_boot.width -= 1;
+    try t.expectEqual(bp.Policy.standard, bp.select(snapshot, chip, bp.rom_sha256, changed_boot));
+    changed_boot = boot; changed_boot.state = a.display_state_preparing;
+    try t.expectEqual(bp.Policy.standard, bp.select(snapshot, chip, bp.rom_sha256, changed_boot));
+    try F.reset(); F.words[r.dc.pitch[0] / 4] = 1920;
+    guard = .{}; try t.expectError(error.Unconfirmed, guard.capture(&io, 0x100100000, 7680));
+    guard = .{}; try guard.captureFirmware(&io, 0x100100000, 7680, policy);
+    try t.expect(guard.firmware_pitch and try guard.matches(&io));
+    F.words[r.dc.pitch[0] / 4] = 1921; try t.expect(!try guard.matches(&io));
+    guard = .{}; try t.expectError(error.Unconfirmed, guard.captureFirmware(&io, 0x100100000, 7680, policy));
+    F.words[r.dc.pitch[0] / 4] = 1920; F.words[r.dc.inuse[0] / 4] = 0;
+    guard = .{}; try t.expectError(error.Unconfirmed, guard.captureFirmware(&io, 0x100100000, 7680, policy));
+    F.words[r.dc.inuse[0] / 4] = 0x100000; F.words[r.dc.flip[0] / 4] = r.dc.HUBPREQ0_DCSURF_FLIP_CONTROL__SURFACE_FLIP_PENDING_MASK;
+    guard = .{}; try t.expectError(error.Unconfirmed, guard.captureFirmware(&io, 0x100100000, 7680, policy));
+    try t.expectEqual(@as(usize, 0), F.writes);
 }
 
 const N = struct {
@@ -220,11 +414,14 @@ const N = struct {
     var fail_unmap = false; var fail_finish = false; var fail_release = false; var fail_pci = false;
     var pixels: [4096]u8 = @splat(0x5a);
     var last_wptr: u32 = 0;
-    fn reset() !void {
-        try F.reset(); run = .{}; memory = .{}; F.active = &run.flow;
+    fn reset() !void { try resetProfile(.picasso); }
+    fn resetProfile(profile: @import("asic_profile.zig").Profile) !void {
+        try F.resetProfile(.{ .family = if (profile == .raven2) .raven2 else .picasso,
+            .socket = .fp5, .pci_revision = if (profile == .raven2) 0xc4 else 0xc1 });
+        run = .{}; memory = .{}; F.active = &run.flow;
         command = 2; held = false; effects = false; mapped = false; buffer_live = false; cpu_live = false;
         recoveries = 0; fail_unmap = false; fail_finish = false; fail_release = false; fail_pci = false; last_wptr = 0;
-        map = try @import("memory_layout.zig").Layout.create(.{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
+        map = try @import("memory_layout.zig").Layout.create(profile, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
             .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024, null);
         expected = .{ .generation = 11, .state = a.display_state_bootfb, .physical_address = 0x220100000,
             .byte_length = 4096, .width = 32, .height = 32, .pitch = 128, .format = a.gfx_buffer_format_xrgb8888 };
@@ -239,9 +436,9 @@ const N = struct {
     }
     fn prepare() !void {
         const ctx = r4os.r4dev.DriverContext.init(&api);
-        var snapshot: @import("identity.zig").Snapshot = .{ .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 }, .pci_revision = 0xc1, .command = 2 };
+        var snapshot: @import("identity.zig").Snapshot = .{ .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 }, .pci_revision = F.store.profile.?.pci_revision, .command = 2 };
         snapshot.bars[5] = .{ .raw = 0xf0000000, .base = 0xf0000000, .kind = .memory32 };
-        try run.prepare(&ctx, &memory, &snapshot, try @import("identity.zig").chip(0x15d8, 0x010015d8), &F.store, expected, 0x100000);
+        try run.prepare(&ctx, &memory, &snapshot, try @import("identity.zig").chip(0x15d8, if (map.profile == .raven2) 0x090015d8 else 0x010015d8), &F.store, expected, 0x100000, .standard);
     }
     fn clock() callconv(.c) u64 { return F.clock; }
     fn resourceQuery(out: *a.DriverResourceApi) callconv(.c) i32 { out.* = .{ .now_ns = @intFromPtr(&clock) }; return 0; }
@@ -250,7 +447,7 @@ const N = struct {
             .buffer_create = @intFromPtr(&create), .buffer_map = @intFromPtr(&mapBuffer), .buffer_unmap = @intFromPtr(&unmapBuffer), .buffer_release = @intFromPtr(&release) }; return 1;
     }
     fn displayQuery(out: *a.GfxDriverDisplayApi) callconv(.c) i32 { out.* = .{ .boot_info = @intFromPtr(&bootInfo), .boot_hold = @intFromPtr(&hold), .boot_finish = @intFromPtr(&finish) }; return 1; }
-    fn config(_: u8, _: u8, _: u8, _: u8, offset: u16) callconv(.c) u32 { return switch (offset) { 0 => 0x15d81002, 4 => command, 8 => 0x030000c1, 0x24 => 0xf0000000, else => 0 }; }
+    fn config(_: u8, _: u8, _: u8, _: u8, offset: u16) callconv(.c) u32 { return switch (offset) { 0 => 0x15d81002, 4 => command, 8 => 0x03000000 | @as(u32, F.store.profile.?.pci_revision), 0x24 => 0xf0000000, else => 0 }; }
     fn configWrite(_: u8, _: u8, _: u8, _: u8, offset: u16, value: u32) callconv(.c) i32 {
         std.debug.assert(offset == 4 and value >> 16 == 0 and held and effects);
         command = value; return if (fail_pci) -1 else 0; // fail after possible PCI mutation
@@ -344,6 +541,24 @@ test "Picasso native owner uses real SDK MMIO, canonical boot hold/recovery and 
     N.fail_unmap = false; N.fail_release = true; try t.expect(!N.close());
     try t.expect(!N.held and !N.mapped and N.memory.start_users == 1 and N.buffer_live and N.recoveries == 1);
     N.fail_release = false; try t.expect(N.close()); try t.expect(N.recoveries == 1 and N.memory.start_users == 0);
+    // Actual Raven2 identity, firmware topology and clock profile stay paired.
+    try N.resetProfile(.raven2); try N.prepare(); try N.ready();
+    engine = .{ .phase = .ready, .cu_mask = 7, .rb_mask = 1, .gb_addr_config = 0x24000041 };
+    var rv = arch;
+    rv.gc_version = amd.gc_9_2_2; rv.sdma_version = amd.sdma_4_1_1;
+    rv.chip_revision = 0x82; rv.gb_addr_config = engine.gb_addr_config;
+    const raven2 = try facts.capture(&N.run, &engine, rv);
+    try t.expect(raven2.pci_revision == 0xc4 and raven2.asic_revision == 9 and raven2.max_cu_per_sh == 3 and raven2.max_rb_per_se == 1);
+    try t.expect(raven2.cu_mask == 7 and raven2.rb_mask == 1 and raven2.architecture.gc_version == amd.gc_9_2_2);
+    rv.sdma_version = amd.sdma_4_1_0;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, rv));
+    rv.sdma_version = amd.sdma_4_1_1; engine.cu_mask = 15;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, rv));
+    engine.cu_mask = 7; engine.rb_mask = 3;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, rv));
+    engine.rb_mask = 1; N.map.profile = .picasso;
+    try t.expectError(error.Unconfirmed, facts.capture(&N.run, &engine, rv));
+    N.map.profile = .raven2; try t.expect(N.close());
     try N.reset(); try N.prepare(); try N.ready();
     F.words[r.dc.primary[0] / 4] += 256;
     try t.expectError(error.Unconfirmed, N.run.advance()); try t.expect(!N.close());

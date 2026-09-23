@@ -25,7 +25,15 @@ SH_MEM_CONFIG SH_MEM_BASES GDS_VMID0_BASE GDS_VMID0_SIZE GDS_GWS_VMID0 GDS_OA_VM
 RLC_SAFE_MODE RLC_CGTT_MGCG_OVERRIDE RLC_MEM_SLP_CNTL CP_MEM_SLP_CNTL RLC_PG_DELAY RLC_PG_DELAY_2 RLC_PG_DELAY_3 RLC_AUTO_PG_CTRL
 RLC_CNTL RLC_CGCG_CGLS_CTRL RLC_CGCG_CGLS_CTRL_3D RLC_SRM_CNTL RLC_CSIB_ADDR_LO RLC_CSIB_ADDR_HI RLC_CSIB_LENGTH
 RLC_JUMP_TABLE_RESTORE RLC_PG_CNTL RLC_LB_CNTL RLC_SPM_MC_CNTL RLC_CP_SCHEDULERS
+RLC_SRM_ARAM_ADDR RLC_SRM_ARAM_DATA RLC_GPM_SCRATCH_ADDR RLC_GPM_SCRATCH_DATA
+RLC_SRM_INDEX_CNTL_ADDR_0 RLC_SRM_INDEX_CNTL_ADDR_1 RLC_SRM_INDEX_CNTL_ADDR_2 RLC_SRM_INDEX_CNTL_ADDR_3
+RLC_SRM_INDEX_CNTL_ADDR_4 RLC_SRM_INDEX_CNTL_ADDR_5 RLC_SRM_INDEX_CNTL_ADDR_6 RLC_SRM_INDEX_CNTL_ADDR_7
+RLC_SRM_INDEX_CNTL_DATA_0 RLC_SRM_INDEX_CNTL_DATA_1 RLC_SRM_INDEX_CNTL_DATA_2 RLC_SRM_INDEX_CNTL_DATA_3
+RLC_SRM_INDEX_CNTL_DATA_4 RLC_SRM_INDEX_CNTL_DATA_5 RLC_SRM_INDEX_CNTL_DATA_6 RLC_SRM_INDEX_CNTL_DATA_7
 CP_ME_CNTL CP_MEC_CNTL CP_MAX_CONTEXT CP_DEVICE_ID CP_RB_WPTR_DELAY CP_RB_VMID
+CP_COHER_SIZE_HI
+CP_STAT CP_STALLED_STAT1 CP_STALLED_STAT2 CP_STALLED_STAT3
+VM_L2_PROTECTION_FAULT_STATUS VM_L2_PROTECTION_FAULT_ADDR_LO32 VM_L2_PROTECTION_FAULT_ADDR_HI32
 CP_RB0_CNTL CP_RB0_WPTR CP_RB0_WPTR_HI CP_RB0_RPTR CP_RB0_RPTR_ADDR CP_RB0_RPTR_ADDR_HI
 CP_RB_WPTR_POLL_ADDR_LO CP_RB_WPTR_POLL_ADDR_HI CP_RB_WPTR_POLL_CNTL CP_RB0_BASE CP_RB0_BASE_HI
 CP_RB_DOORBELL_CONTROL CP_RB_DOORBELL_RANGE_LOWER CP_RB_DOORBELL_RANGE_UPPER
@@ -40,7 +48,7 @@ VGT_INDEX_TYPE COMPUTE_TMPRING_SIZE SPI_TMPRING_SIZE COMPUTE_USER_DATA_0 COMPUTE
 '@ -split '\s+' | Where-Object {$_}
 $source=[IO.File]::ReadAllText((Join-Path $original 'amdgpu/gfx_v9_0.c'))
 $tables=@{}
-foreach($name in @('golden_settings_gc_9_1','golden_settings_gc_9_1_rv1','golden_settings_gc_9_x_common')){
+foreach($name in @('golden_settings_gc_9_1','golden_settings_gc_9_1_rv1','golden_settings_gc_9_1_rv2','golden_settings_gc_9_x_common')){
     $match=[regex]::Match($source,'(?s)static const struct soc15_reg_golden '+$name+'\[\]\s*=\s*\{(.*?)\};')
     if(!$match.Success){throw "Missing original golden table $name"}
     $entries=@([regex]::Matches($match.Groups[1].Value,'SOC15_REG_GOLDEN_VALUE\(GC, 0, mm(\w+), (0x[0-9a-f]+), (0x[0-9a-f]+)\)'))
@@ -62,7 +70,7 @@ foreach($reg in @($registers|Sort-Object -Unique)){
     }
 }
 $lines.Add('pub const Golden = struct { address: u32, clear: u32, set: u32 };')
-foreach($name in @('golden_settings_gc_9_1','golden_settings_gc_9_1_rv1','golden_settings_gc_9_x_common')){
+foreach($name in @('golden_settings_gc_9_1','golden_settings_gc_9_1_rv1','golden_settings_gc_9_1_rv2','golden_settings_gc_9_x_common')){
     $lines.Add('pub const '+$name+' = [_]Golden{')
     foreach($entry in $tables[$name]){
         $lines.Add(('    .{{ .address = {0}, .clear = {1}, .set = {2} }},' -f $entry.Groups[1].Value,$entry.Groups[2].Value,$entry.Groups[3].Value))
@@ -74,6 +82,6 @@ $text=($lines -join "`n")+"`n"
 $target=Join-Path $unit 'src/gc_registers.zig'
 if($Write){[IO.File]::WriteAllText($target,$text,[Text.UTF8Encoding]::new($false))}
 elseif([IO.File]::ReadAllText($target).Replace("`r`n","`n") -cne $text){throw 'GFX9 register drift; regenerate Tools/VerifyGC.ps1 -Write'}
-Write-Host 'AMDGPU GC9.1 runtime offsets, fields and Picasso golden tables verified.'
+Write-Host 'AMDGPU GC9 runtime offsets, fields and Picasso/Raven2 golden tables verified.'
 
 & (Join-Path $PSScriptRoot "VerifyMedia.ps1")

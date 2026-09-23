@@ -9,6 +9,7 @@ const identity = @import("identity.zig");
 const boot = @import("boot_snapshot.zig");
 pub const Error = @import("start_common.zig").Error || boot.Error;
 pub const Owner = struct {
+    prepare_step: enum { empty, admission, storage, hold, guard, identity, latch, flow, pci, ready } = .empty,
     self_address: usize = 0, memory: ?*mem.Owner = null, ctx: ?r4os.r4dev.DriverContext = null,
     snapshot: identity.Snapshot = .{}, chip: ?identity.Chip = null, pci_changed: bool = false, old_command: u16 = 0,
     flow: @import("start_flow.zig").Flow = .{}, storage: @import("start_storage.zig").Owner = .{},
@@ -16,33 +17,45 @@ pub const Owner = struct {
     restored_guard: ?@import("start_guard.zig").Guard = null,
     pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner,
         snapshot: *const identity.Snapshot, chip: identity.Chip, store: *const @import("firmware_store.zig").Store,
-        expected: a.GfxNativeBootInfo, boot_offset: u64) Error!void {
+        expected: a.GfxNativeBootInfo, boot_offset: u64, pitch_policy: @import("boot_pitch.zig").Policy) Error!void {
         if (self.self_address != 0) return error.Busy;
+        self.prepare_step = .admission;
         const profile = @import("firmware.zig").select(snapshot, chip) catch return error.Unsupported;
         if (!memory.prepared or memory.start_users != 0 or memory.engine_users != 0 or memory.mapping_users != 0 or memory.controller.touched or
             !store.valid or store.profile == null or expected.format != a.gfx_buffer_format_xrgb8888) return error.Unconfirmed;
         if (!std.meta.eql(profile, store.profile.?) or memory.registers.window.value.physical_address != snapshot.bars[5].base) return error.Stale;
         const map = memory.layout.?;
+        if (map.profile != try @import("asic_profile.zig").Profile.select(chip)) return error.Stale;
         if (boot_offset >= map.mc.bytes or expected.byte_length > map.mc.bytes - boot_offset) return error.Invalid;
         self.self_address = @intFromPtr(self); self.ctx = ctx.*; self.memory = memory; self.snapshot = snapshot.*; self.chip = chip; memory.start_users += 1;
         // Caller routes every preparation error through close(); uncertain API
         // releases leave this entire resident owner and its callback intact.
+        self.prepare_step = .storage;
         try self.storage.prepare(memory);
+        self.prepare_step = .hold;
         try self.hold.captureHeld(ctx, memory.adapter, expected, @intFromPtr(&restore), @intFromPtr(self));
-        try self.guard.capture(&memory.registers, map.mc.offset + boot_offset, expected.pitch);
+        self.prepare_step = .guard;
+        try self.guard.captureFirmware(&memory.registers, map.mc.offset + boot_offset, expected.pitch, pitch_policy);
+        self.prepare_step = .identity;
         var reader: Reader = .{ .ctx = ctx.*, .pci = snapshot.pci };
         if (!identity.stable(snapshot, &reader)) return error.Stale;
         const command = ctx.pciReadConfig32(snapshot.pci, 4);
         if (command == 0xffffffff or @as(u16, @truncate(command)) != snapshot.command or
             ctx.pciReadConfig32(snapshot.pci, 0) != 0x15d81002) return error.Stale;
         self.old_command = @truncate(command);
+        self.prepare_step = .latch;
         if (!self.hold.latchEffects()) return error.Hold;
+        // CPU-only firmware/RLC preflight must precede PCI bus mastering as
+        // well as the first SMU command. begin() only arms the state machine.
+        self.prepare_step = .flow;
+        try self.flow.begin(&memory.registers, self.storage.view.?, store, memory.epoch, self.hold.effects and self.hold.held_generation != 0);
         // Status bits are W1C: write only the low command word, with zero high
         // bits. Latch before the call and verify the actual PCI readback.
+        self.prepare_step = .pci;
         self.pci_changed = true;
         if (ctx.pciWriteConfig32(snapshot.pci, 4, @as(u32, self.old_command) | 6) != 0 or
             @as(u16, @truncate(ctx.pciReadConfig32(snapshot.pci, 4))) != self.old_command | 6) return error.Unconfirmed;
-        try self.flow.begin(&memory.registers, self.storage.view.?, store, memory.epoch, self.hold.effects and self.hold.held_generation != 0);
+        self.prepare_step = .ready;
     }
     pub fn advance(self: *Owner) Error!void {
         if (self.self_address != @intFromPtr(self)) return error.State;

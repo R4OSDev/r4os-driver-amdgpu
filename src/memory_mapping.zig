@@ -187,7 +187,7 @@ pub const Mapping = struct {
         if (self.dma_only or !self.prepared or self.owner == null or !self.owner.?.controller.enabled or self.owner.?.controller.epoch != self.epoch or (write and !self.write_allowed) or self.self_address != @intFromPtr(self) or self.ready or self.translated or self.cpu.lease.id != 0 or (self.native_owner == 0 and !self.leaseValid(self.dma, 4, 0))) return error.Busy;
         try tables.map(self.address, self.physical, .{ .system = self.native_owner == 0, .write = write, .execute = execute });
         self.translated = true; self.flush_pending = true;
-        try hubs.flush(io, self.vmid); self.flush_pending = false;
+        try self.owner.?.controller.flush(io, self.vmid); self.flush_pending = false;
         if (self.memory.?.deviceAcquire(&self.reference.reference, &.{ .byte_length = self.bytes, .gpu_virtual_address = self.address,
             .adapter_id = self.adapter, .device_generation = self.epoch, .access = 3, .address_space = 1 }, &self.gpu) != 1) return error.Unsupported;
         if (!self.leaseValid(self.gpu, 3, self.address) or self.gpu.driver_owner != (if (self.native_owner != 0) self.native_owner else self.dma.driver_owner)) return error.Invalid;
@@ -218,7 +218,7 @@ pub const Mapping = struct {
             self.translated = false; self.flush_pending = true;
         }
         // PTE removal and both TLB ACKs precede any canonical lease release.
-        if (self.flush_pending) { hubs.flush(io, self.vmid) catch return false; self.flush_pending = false; }
+        if (self.flush_pending) { self.owner.?.controller.flush(io, self.vmid) catch return false; self.flush_pending = false; }
         const memory = self.memory orelse return false;
         if (self.gpu.lease.id != 0) { if (memory.deviceRelease(&self.gpu, 1) != 1) return false; self.gpu = .{}; }
         if (self.dma.lease.id != 0) { if (memory.deviceRelease(&self.dma, 1) != 1) return false; self.dma = .{}; }

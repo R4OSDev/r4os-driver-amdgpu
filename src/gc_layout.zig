@@ -38,6 +38,10 @@ pub const eop_offsets = [_]usize{ 0x62000, 0x63000 };
 pub const cp_table = 0x64000;
 pub const cp_table_bytes = 0x10800; // ALIGN(96 * five firmware jump tables * 4, 2048) + 64KB GDS save area
 pub const scratch_offset = 0x75000; // per-GFX-ring EOP workaround, 256B
+// ZPASS_DONE uses the graphics context's VMID1 after the IB returns, unlike
+// the CP RELEASE_MEM fence's VMID0 MC address. The queue owner retains this
+// complete arena mapping until GC quiescence has been confirmed.
+pub const scratch_va = @import("sdma_jobs.zig").arena_va + scratch_offset;
 pub const sample_offset = s.wb_offset + 0x600;
 pub const sample_bytes = 128;
 pub const sample_tokens = [_]u64{ 0x4746583900000001, 0x4d45433900000002, 0x4b49513900000003 };

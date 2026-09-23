@@ -22,8 +22,8 @@ pub fn route(board: *const bios.Board) Error!Route {
     const ddc = p.i2c_pin orelse return error.Unsupported;
     const hpd = p.hpd_pin orelse return error.Unsupported;
     // Match the pinned DCN1 GPIO masks: one byte per physical HPD pin.
-    if (line >= 4 or ddc.shift != 0 or ddc.mask_shift != 0 or hpd.shift % 8 != 0 or hpd.shift / 8 >= 4 or
-        hpd.mask_shift != hpd.shift or p.hpd_active != 1) return error.Unsupported;
+    if (line >= 4 or !@import("panel.zig").ddcPinPair(ddc) or hpd.shift % 8 != 0 or hpd.shift / 8 >= 4 or
+        hpd.mask_shift != hpd.shift or p.hpd_active > 1) return error.Unsupported;
     const integrated = board.integrated orelse return error.Unsupported;
     if (integrated.external) |external| for (external.paths) |path| {
         if (path.connector != p.connector) continue;

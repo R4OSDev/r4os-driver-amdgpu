@@ -28,10 +28,12 @@ pub const Owner = struct {
     fault_event: ?ih.Event = null,
     binding: a.GfxBackendBinding = .{},
     thread_stop_requested: bool = false, thread_joined: bool = false, worker_result: i32 = 0,
+    call: @import("owned_work.zig").Call = .{},
     pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *@import("memory_owner.zig").Owner,
         snapshot: *const @import("identity.zig").Snapshot, binding: a.GfxBackendBinding, gate: @import("memory_hubs.zig").Gate) Error!void
     {
         if (self.self_address != 0) return error.Busy;
+        if (!@import("owned_work.zig").supported(ctx)) return error.Unsupported;
         const epoch = try q.Epoch.from(binding);
         if (memory.adapter != epoch.adapter or gate.memory_epoch != memory.epoch) return error.Invalid;
         self.self_address = @intFromPtr(self); self.ctx = ctx.*; self.memory = memory;
@@ -139,7 +141,17 @@ pub const Owner = struct {
         const self: *Owner = @ptrFromInt(raw);
         if (self.self_address != raw or !self.prepared or !self.started) return -1;
         while (@atomicLoad(u32, &self.stop, .acquire) == 0) {
-            self.step();
+            const dispatched = self.call.invoke(&self.ctx.?, self.threads.?, self.clock.?, ownedStep, raw) catch {
+                @atomicStore(u32, &self.wake_fault, 1, .release);
+                @atomicStore(u32, &self.stop, 1, .release);
+                self.ctx.?.logError("AMDGPU queue: owner dispatch failed; resources retained for joined recovery");
+                return -1;
+            };
+            if (dispatched != 0) {
+                @atomicStore(u32, &self.wake_fault, 1, .release);
+                @atomicStore(u32, &self.stop, 1, .release);
+                return -1;
+            }
             if (@atomicLoad(u32, &self.stop, .acquire) != 0) break;
             const result = self.semaphores.?.acquire(self.semaphore, self.poll_ticks);
             if (result != 0 and result != a.driver_semaphore_error_timeout) {
@@ -149,12 +161,17 @@ pub const Owner = struct {
                     // Attempt bounded recovery in this owning task before
                     // returning. Unproved DMA/failed release remains retained
                     // for the outer native-init/reset owner's close path.
-                    self.timeline.stopping = true;
-                    self.timeline.fault(@import("queue_ring.zig").all_engines); self.step();
+                    _ = self.call.invoke(&self.ctx.?, self.threads.?, self.clock.?, ownedStep, raw) catch return result;
                 }
                 return result;
             }
         }
+        return 0;
+    }
+    fn ownedStep(raw: usize) callconv(.c) i32 {
+        const self: *Owner = @ptrFromInt(raw);
+        if (self.self_address != raw or !self.prepared or !self.started) return -1;
+        self.step();
         return 0;
     }
     /// Nonblocking shutdown. Stop/join/release retains the task and all arenas
@@ -178,7 +195,9 @@ pub const Owner = struct {
             if (self.threads.?.release(self.thread) != 0) return false;
             self.thread = 0;
         }
-        return true;
+        if (self.call.handle == 0) return true;
+        const ctx = self.ctx orelse return false;
+        return self.call.retired(&ctx);
     }
     pub fn close(self: *Owner, proof: ?q.Quiescence) bool {
         if (!self.stopWorker()) return false;

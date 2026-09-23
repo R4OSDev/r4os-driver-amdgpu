@@ -31,6 +31,13 @@ pub const Route = struct {
     minimum: u16,
     maximum: u16,
 };
+pub fn ddcPinPair(pin: bios.Pin) bool {
+    // ATOM I2C_HW_CAP identifies a hardware pin pair, not a generic GPIO.
+    // DCN1 descriptors may name its CLK (bit 0) or DATA (bit 8) member.
+    // The native binding still validates the exact DDC register and lane.
+    return pin.id & bios.c.I2C_HW_CAP != 0 and pin.shift == pin.mask_shift and
+        (pin.shift == 0 or pin.shift == 8);
+}
 pub fn route(board: *const bios.Board) Error!Route {
     var selected: ?bios.Path = null;
     for (board.paths[0..board.path_count]) |path| if (path.connector & 0xff == 0x14) {
@@ -51,10 +58,9 @@ pub fn route(board: *const bios.Board) Error!Route {
     const ddc = p.i2c_pin orelse return error.Unsupported;
     const hpd = p.hpd_pin orelse return error.Unsupported;
     // DCN1 DC_GPIO_HPD{A,Y}: HPD1..4 occupy bits 0, 8, 16 and 24.
-    // DCN1 HPD1..4 use 4-bit spaced fields. The native boundary also verifies
-    // each register against the original DCN1 tables, including the DDC line.
-    if (aux >= 4 or ddc.shift != 0 or ddc.mask_shift != 0 or hpd.shift % 8 != 0 or hpd.shift / 8 >= 4 or
-        hpd.mask_shift != hpd.shift or p.hpd_active != 1) return error.Unsupported;
+    // The native boundary also verifies each register against the DCN1 tables.
+    if (aux >= 4 or !ddcPinPair(ddc) or hpd.shift % 8 != 0 or hpd.shift / 8 >= 4 or
+        hpd.mask_shift != hpd.shift or p.hpd_active > 1) return error.Unsupported;
     if (integrated.external) |external| for (external.paths) |path| {
         if (path.connector != p.connector) continue;
         // External bridges, PHY permutations and inversion need their own

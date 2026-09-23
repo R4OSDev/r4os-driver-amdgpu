@@ -22,7 +22,7 @@ pub const Owner = struct {
         if (self.self_address != 0) return error.Busy;
         if (adapter == 0 or memory_epoch == 0 or map.native_budget == 0) return error.Invalid;
         const memory = ctx.memory() orelse return error.Unsupported;
-        if (memory.reservedSpan(map.physical.offset, map.physical.bytes) != 1) return error.Unsupported;
+        if (memory.unmanagedSpan(map.physical.offset, map.physical.bytes) != 1) return error.Unsupported;
         self.self_address = @intFromPtr(self); self.memory = memory; self.layout = map; self.adapter = adapter; self.epoch = memory_epoch;
         self.heap = ctx.heap();
         try self.registers.open(ctx, bar);

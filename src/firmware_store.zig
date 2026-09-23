@@ -6,7 +6,7 @@ const a = r4os.abi;
 const fw = @import("firmware.zig");
 const identity = @import("identity.zig");
 pub const Error = fw.Error || error{ Busy, ResourceApi, Missing, Stat, Changed, Deadline, Read, Heap, Allocation };
-pub const count = 16; // lock, original WHENCE/license, thirteen binaries
+pub const count = fw.firmware_first + fw.firmware_count; // lock, original notices for both revisions, both exact families
 const lock_hash = blk: {
     @setEvalBranchQuota(3000000);
     var digest: [32]u8 = undefined; std.crypto.hash.sha2.Sha256.hash(fw.lock_bytes, &digest, .{});
@@ -15,15 +15,15 @@ const lock_hash = blk: {
 pub fn artifact(index: usize) fw.Artifact {
     if (index == 0) return .{ .path = "src/firmware_lock.json", .resource = "AMD-FIRMWARE-LOCK.json", .bytes = fw.lock_bytes.len,
         .sha256 = &lock_hash, .upstream_path = "", .git_blob = "" };
-    if (index < 3) return fw.lock.metadata[index - 1];
-    return fw.lock.firmware[index - 3].artifact();
+    if (index < fw.firmware_first) return fw.lock.metadata[index - 1];
+    return fw.lock.firmware[index - fw.firmware_first].artifact();
 }
 pub const Store = struct {
     heap: ?r4os.r4dev.DriverHeapContext = null,
     allocation: a.DriverHeapAllocation = .{},
     info: [count]a.DriverResourceInfo = .{a.DriverResourceInfo{}} ** count,
     offsets: [count]usize = @splat(0),
-    layouts: [13]fw.Layout = .{fw.Layout{}} ** 13,
+    layouts: [fw.firmware_count]fw.Layout = .{fw.Layout{}} ** fw.firmware_count,
     profile: ?fw.Profile = null,
     valid: bool = false,
     bytes: usize = 0,
@@ -43,7 +43,7 @@ pub const Store = struct {
         self.deadline = std.math.add(u64, self.last_ns, 2 * std.time.ns_per_s) catch return error.Deadline;
         if (self.deadline == std.math.maxInt(u64)) return error.Deadline;
         for (0..count) |i| {
-            if (i >= 3 and !profile.includes(fw.lock.firmware[i - 3].role)) continue;
+            if (i >= fw.firmware_first and !profile.selects(fw.lock.firmware[i - fw.firmware_first])) continue;
             const spec = artifact(i); self.last_resource = spec.resource;
             try self.tick(resources);
             const status = resources.stat(spec.resource, &self.info[i]);
@@ -82,9 +82,9 @@ pub const Store = struct {
                 offset += output.len;
             }
             try self.stable(resources, i);
-            if (i < 3) {
+            if (i < fw.firmware_first) {
                 if (!fw.hashMatches(destination, spec.sha256)) return error.Hash;
-            } else self.layouts[i - 3] = try fw.verify(destination, &fw.lock.firmware[i - 3]);
+            } else self.layouts[i - fw.firmware_first] = try fw.verify(destination, &fw.lock.firmware[i - fw.firmware_first]);
             try self.tick(resources);
         }
         // Recheck the complete package after all reads; no mixed module epoch.
@@ -103,12 +103,19 @@ pub const Store = struct {
         if (resources.stat(artifact(i).resource, &after) != a.driver_resource_ok or !std.meta.eql(after, self.info[i])) return error.Changed;
     }
     pub fn container(self: *const Store, role: fw.Role) ?[]const u8 {
-        if (!self.valid) return null;
+        if (!self.valid or self.profile == null) return null;
         for (&fw.lock.firmware, 0..) |*spec, index| {
-            if (spec.role != role) continue;
-            if (self.info[index + 3].handle == 0) return null;
+            if (spec.role != role or !self.profile.?.selects(spec.*)) continue;
+            if (self.info[index + fw.firmware_first].handle == 0) return null;
             const base: [*]const u8 = @ptrFromInt(self.allocation.cpu_address);
-            return base[self.offsets[index + 3]..][0..spec.bytes];
+            return base[self.offsets[index + fw.firmware_first]..][0..spec.bytes];
+        }
+        return null;
+    }
+    pub fn specification(self: *const Store, role: fw.Role) ?*const fw.Firmware {
+        if (!self.valid or self.profile == null) return null;
+        for (&fw.lock.firmware, 0..) |*spec, i| {
+            if (spec.role == role and self.profile.?.selects(spec.*) and self.info[i + fw.firmware_first].handle != 0) return spec;
         }
         return null;
     }

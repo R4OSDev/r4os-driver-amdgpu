@@ -17,15 +17,56 @@ const Model = struct {
     pub fn doorbell64(self: *@This(), _: store.Engine, value: u64) c.Error!void { self.bell = value; if (self.fail_bell) return error.Unconfirmed; }
 };
 var model: Model = .{};
+const ArenaMapping = struct {
+    const jobs = @import("sdma_jobs.zig");
+    var owner: jobs.Owner = .{};
+    var memory: @import("memory_owner.zig").Owner = .{};
+    var table: [8 * 512]u64 align(4096) = undefined;
+    fn check() !void {
+        var layout = try @import("memory_layout.zig").Layout.create(.raven2,
+            .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
+            .{ .base = 0xf400000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024, null);
+        memory = .{ .layout = &layout };
+        owner = .{ .memory = &memory };
+        try memory.virtual.init(&table, 0x225000000);
+        try owner.mapArena();
+        try t.expect(owner.arena_translated and owner.arena_flush_pending);
+        try t.expectEqual(@as(usize, store.bytes / 4096), memory.virtual.mapped_pages);
+        // Fetch every page of every production IB slot, including the two GC
+        // startup slots 62/63. Correct addresses alone do not allow CP fetch.
+        const physical = try layout.physicalAddress(layout.rings.span);
+        for (0..@import("queue_timeline.zig").capacity) |slot| {
+            for (0..store.ib_bytes / 4096) |page| {
+                const offset = store.ib_offset + slot * store.ib_bytes + page * 4096;
+                const pte = try memory.virtual.lookup(jobs.arena_va + offset);
+                try t.expectEqual(physical + offset, pte & @import("memory_pages.zig").physical_mask);
+                try t.expectEqual(@as(u64, 0x71), pte & 0x77); // valid, read/write/execute, UMA
+            }
+        }
+        try t.expectEqual(@as(u64, 0), try memory.virtual.lookup(jobs.arena_va + store.bytes));
+        // A busy final page must publish no partial arena or flush ownership.
+        memory.virtual = .{};
+        try memory.virtual.init(&table, 0x225000000);
+        owner = .{ .memory = &memory };
+        const last = jobs.arena_va + store.bytes - 4096;
+        try memory.virtual.map(last, &.{0x226000000}, .{ .system = false });
+        try t.expectError(error.Busy, owner.mapArena());
+        try t.expect(!owner.arena_translated and !owner.arena_flush_pending);
+        try t.expectEqual(@as(usize, 1), memory.virtual.mapped_pages);
+        try t.expectEqual(@as(u64, 0), try memory.virtual.lookup(jobs.arena_va));
+    }
+};
 test "SDMA original packet fields ring units stop evidence and uncertain doorbell retention" {
+    try ArenaMapping.check();
     model = .{};
     model.words[s.SDMA0_F32_CNTL / 4] = s.SDMA0_F32_CNTL__HALT_MASK;
     model.words[s.SDMA0_STATUS_REG / 4] = s.SDMA0_STATUS_REG__IDLE_MASK;
     model.words[r.nb.BIF_SDMA0_DOORBELL_RANGE / 4] = 0x100;
     var engine: ring.Engine = .{};
-    try t.expectError(error.Unconfirmed, engine.open(&model, &model, .{ .firmware_ready = false, .boot_held = true, .gmc_enabled = true }));
+    try t.expectError(error.Unconfirmed, engine.open(&model, &model, .{ .profile = .picasso, .firmware_ready = false, .boot_held = true, .gmc_enabled = true }));
     try t.expect(!engine.touched);
-    try engine.open(&model, &model, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+    try engine.open(&model, &model, .{ .profile = .picasso, .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+    try t.expectEqual(@as(u32, 2), model.words[s.SDMA0_GB_ADDR_CONFIG / 4]);
     try t.expectEqual(@as(u32, 14), (model.words[s.SDMA0_GFX_RB_CNTL / 4] & s.SDMA0_GFX_RB_CNTL__RB_SIZE_MASK) >> s.SDMA0_GFX_RB_CNTL__RB_SIZE__SHIFT);
     var commands: [32]u32 = undefined;
     const ib: u64 = 0x8000080000; const fence: u64 = 0x120010100; const token: u64 = 0x123456789;
@@ -58,11 +99,13 @@ test "SDMA original packet fields ring units stop evidence and uncertain doorbel
     try t.expectEqual(@as(u32, 0x100), model.words[r.nb.BIF_SDMA0_DOORBELL_RANGE / 4]);
     try t.expectEqual(@as(u32, 0), model.words[q.nb.RCC_DOORBELL_APER_EN / 4]);
     model = .{}; model.words[s.SDMA0_F32_CNTL / 4] = s.SDMA0_F32_CNTL__HALT_MASK; model.words[s.SDMA0_STATUS_REG / 4] = 1;
-    engine = .{}; try engine.open(&model, &model, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+    engine = .{}; try engine.open(&model, &model, .{ .profile = .raven2, .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+    try t.expectEqual(@as(u32, 0x3001), model.words[s.SDMA0_GB_ADDR_CONFIG / 4]);
+    try t.expectEqual(@as(u32, 0x3001), model.words[s.SDMA0_GB_ADDR_CONFIG_READ / 4]);
     try t.expect(!try engine.stop(&model)); model.clock += 500000001;
     try t.expectError(error.Deadline, engine.stop(&model)); try t.expect(engine.touched and !engine.quiesced);
     model.lost = true; engine = .{};
-    try t.expectError(error.Disconnected, engine.open(&model, &model, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true }));
+    try t.expectError(error.Disconnected, engine.open(&model, &model, .{ .profile = .picasso, .firmware_ready = true, .boot_held = true, .gmc_enabled = true }));
     // Analyze the real native pump, including both prepare/activate branches.
     try t.expectError(error.State, @import("main.zig").advanceNative());
 }

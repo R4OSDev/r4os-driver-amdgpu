@@ -29,6 +29,15 @@ foreach($m in [regex]::Matches($source,'static const struct IP_BASE __maybe_unus
     }
 }
 if($bases['MP1_BASE__INST0_SEG0'] -ne 0x16000){throw 'Unexpected runtime MP1 base'}
+$sdmaSource=[IO.File]::ReadAllText((Join-Path $original 'drivers/gpu/drm/amd/amdgpu/sdma_v4_0.c'))
+$sdmaTables=@{}
+$sdmaNames=@('golden_settings_sdma_4_1','golden_settings_sdma_rv1','golden_settings_sdma_rv2')
+foreach($name in $sdmaNames){
+    $match=[regex]::Match($sdmaSource,'(?s)static const struct soc15_reg_golden '+$name+'\[\]\s*=\s*\{(.*?)\};')
+    if(!$match.Success){throw "Missing original SDMA golden table $name"}
+    $sdmaTables[$name]=@([regex]::Matches($match.Groups[1].Value,'SOC15_REG_GOLDEN_VALUE\(SDMA0, 0, mm(\w+), (0x[0-9a-f]+), (0x[0-9a-f]+)\)'))
+    if($sdmaTables[$name].Count -eq 0){throw "Empty original SDMA golden table $name"}
+}
 $lines=[Collections.Generic.List[string]]::new()
 $lines.Add('// Copyright 2026 R4. SPDX-License-Identifier: Apache-2.0')
 $lines.Add('// Generated from unchanged AMD MIT originals; ThirdParty/Sources.json.')
@@ -46,7 +55,12 @@ foreach($block in @(
     $offsets=Definitions ('include/asic_reg/'+$block[2]+'_offset.h')
     $masks=Definitions ('include/asic_reg/'+$block[2]+'_sh_mask.h')
     $lines.Add('pub const '+$block[0]+' = struct {')
-    foreach($reg in $block[3]){
+    $registers=@($block[3])
+    if($block[0] -eq 'sdma'){
+        foreach($name in $sdmaNames){foreach($entry in $sdmaTables[$name]){$registers+=$entry.Groups[1].Value}}
+        $registers=@($registers | Select-Object -Unique)
+    }
+    foreach($reg in $registers){
         $key='mm'+$reg
         if(!$offsets.ContainsKey($key) -or !$offsets.ContainsKey($key+'_BASE_IDX')){throw "Missing $key"}
         $base=$block[1]+'_BASE__INST0_SEG'+$offsets[$key+'_BASE_IDX']
@@ -58,6 +72,16 @@ foreach($block in @(
             $lines.Add(('    pub const {0}: u32 = 0x{1:x};' -f $name,$masks[$name]))
         }
     }
+    if($block[0] -eq 'sdma'){
+        $lines.Add('    pub const Golden = struct { address: u32, clear: u32, set: u32 };')
+        foreach($name in $sdmaNames){
+            $lines.Add('    pub const '+$name+' = [_]Golden{')
+            foreach($entry in $sdmaTables[$name]){
+                $lines.Add(('        .{{ .address = {0}, .clear = {1}, .set = {2} }},' -f $entry.Groups[1].Value,$entry.Groups[2].Value,$entry.Groups[3].Value))
+            }
+            $lines.Add('    };')
+        }
+    }
     $lines.Add('};')
 }
 $offsets=Definitions 'include/asic_reg/dcn/dcn_1_0_offset.h'
@@ -67,7 +91,7 @@ foreach($pair in @(
     @('hubp_cntl','HUBP{0}_DCHUBP_CNTL'), @('format','HUBP{0}_DCSURF_SURFACE_CONFIG'),
     @('tiling','HUBP{0}_DCSURF_TILING_CONFIG'), @('pitch','HUBPREQ{0}_DCSURF_SURFACE_PITCH'),
     @('primary','HUBPREQ{0}_DCSURF_PRIMARY_SURFACE_ADDRESS'), @('primary_hi','HUBPREQ{0}_DCSURF_PRIMARY_SURFACE_ADDRESS_HIGH'),
-    @('inuse','HUBPREQ{0}_DCSURF_SURFACE_INUSE'), @('inuse_hi','HUBPREQ{0}_DCSURF_SURFACE_INUSE_HIGH'),
+    @('inuse','HUBPREQ{0}_DCSURF_SURFACE_EARLIEST_INUSE'), @('inuse_hi','HUBPREQ{0}_DCSURF_SURFACE_EARLIEST_INUSE_HIGH'),
     @('flip','HUBPREQ{0}_DCSURF_FLIP_CONTROL'), @('surface','HUBPREQ{0}_DCSURF_SURFACE_CONTROL'),
     @('top','MPCC{0}_MPCC_TOP_SEL'), @('bottom','MPCC{0}_MPCC_BOT_SEL'), @('opp','MPCC{0}_MPCC_OPP_ID'),
     @('otg','OTG{0}_OTG_MASTER_EN'), @('control','OTG{0}_OTG_CONTROL'),

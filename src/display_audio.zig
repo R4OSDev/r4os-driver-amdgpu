@@ -39,6 +39,7 @@ pub fn encoding(report: *const edid.Report, port: [8]u8) !edid.eld.Data {
 pub const Owner = struct {
     peer: ?Peer = null,
     outputs: ?r4os.driver_outputs.Context = null,
+    services: ?*@import("display_services.zig").Owner = null,
     source: a.GfxReceiverSource = .{},
     sequence: u64 = 0,
     revision: u64 = 0,
@@ -58,7 +59,8 @@ pub const Owner = struct {
         if (sequence == 0 or sequence <= self.sequence) return error.Stale;
         self.outputs = outputs;
         if (self.source.generation == 0) {
-            if (outputs.registerSource(output.adapter_id, &self.source) != a.gfx_output_ok) return error.Publication;
+            const status = if (self.services) |services| services.registerSource(output.adapter_id, &self.source) else outputs.registerSource(output.adapter_id, &self.source);
+            if (status != a.gfx_output_ok) return error.Publication;
             self.connector = output.connector_id;
             std.mem.writeInt(u32, self.port[0..4], output.adapter_id, .little);
             std.mem.writeInt(u32, self.port[4..8], output.connector_id, .little);
@@ -66,7 +68,8 @@ pub const Owner = struct {
         if (output.adapter_id != self.source.adapter_id or output.connector_id != self.connector) return error.Stale;
         // Native output publication already owns video geometry. This empty
         // receiver batch advances only the copied audio receiver generation.
-        if (outputs.replaceReceivers(&.{ .source = self.source, .sequence = sequence }) != a.gfx_output_ok) return error.Publication;
+        const status = if (self.services) |services| services.advanceReceiver(self.source, sequence) else outputs.replaceReceivers(&.{ .source = self.source, .sequence = sequence });
+        if (status != a.gfx_output_ok) return error.Publication;
         self.sequence = sequence;
         try self.publish(a.gfx_audio_route_pending);
     }
@@ -79,7 +82,8 @@ pub const Owner = struct {
             value.eld_bytes = @intCast(eld.baselineBytes());
             @memcpy(value.eld[0..value.eld_bytes], eld.bytes[0..value.eld_bytes]);
         }
-        if (self.outputs.?.publishAudio(&value) != a.gfx_output_ok) return error.Publication;
+        const status = if (self.services) |services| services.publishAudio(&value) else self.outputs.?.publishAudio(&value);
+        if (status != a.gfx_output_ok) return error.Publication;
         self.revision = value.revision;
         self.state = state;
     }

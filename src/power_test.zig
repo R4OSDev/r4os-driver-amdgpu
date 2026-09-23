@@ -58,7 +58,7 @@ fn drive(gfx: *Gfx, io: *F, want: bool, idle: bool, closing: bool, count: usize)
 pub fn check() !void {
     var io: F = .{};
     F.reset(); var gfx: Gfx = .{};
-    try gfx.begin(&io, true);
+    try gfx.begin(&io, .picasso, true);
     try drive(&gfx, &io, true, false, false, 2); try t.expect(gfx.awake());
     const after_config = F.requests;
     try drive(&gfx, &io, false, false, false, 4);
@@ -75,26 +75,40 @@ pub fn check() !void {
     try t.expect(F.registers[r.RLC_PG_CNTL / 4] & r.RLC_PG_CNTL__GFX_POWER_GATING_ENABLE_MASK == 0);
     try drive(&gfx, &io, true, false, true, 3);
     try t.expect(gfx.phase == .closed and F.registers[r.RLC_PG_CNTL / 4] == 0 and F.lease == 0);
+    // Raven2 additionally advertises 3D CGCG; teardown restores the BIOS value.
+    for ([_]@import("asic_profile.zig").Profile{ .picasso, .raven2 }) |profile| {
+        F.reset(); gfx = .{};
+        const before: u32 = 0x10000000;
+        F.registers[r.RLC_CGCG_CGLS_CTRL_3D / 4] = before;
+        try gfx.begin(&io, profile, true); try drive(&gfx, &io, true, false, false, 2);
+        const configured = F.registers[r.RLC_CGCG_CGLS_CTRL_3D / 4];
+        try t.expect((configured & r.RLC_CGCG_CGLS_CTRL_3D__CGCG_EN_MASK != 0) == (profile == .raven2));
+        try t.expect(configured & r.RLC_CGCG_CGLS_CTRL_3D__CGLS_EN_MASK != 0);
+        if (profile == .raven2) try t.expectEqual(@as(u32, 0x36),
+            (configured & r.RLC_CGCG_CGLS_CTRL_3D__CGCG_GFX_IDLE_THRESHOLD_MASK) >> r.RLC_CGCG_CGLS_CTRL_3D__CGCG_GFX_IDLE_THRESHOLD__SHIFT);
+        try drive(&gfx, &io, true, false, true, 3);
+        try t.expect(gfx.phase == .closed and F.registers[r.RLC_CGCG_CGLS_CTRL_3D / 4] == before);
+    }
     // Unsupported board quirk leaves clock gating but never sends GFXOFF.
-    F.reset(); gfx = .{}; try gfx.begin(&io, false); try drive(&gfx, &io, false, true, false, 12);
+    F.reset(); gfx = .{}; try gfx.begin(&io, .picasso, false); try drive(&gfx, &io, false, true, false, 12);
     try t.expect(gfx.awake() and F.requests == 0);
     var identity: @import("identity.zig").Snapshot = std.mem.zeroes(@import("identity.zig").Snapshot);
     identity.pci.device_id = 0x15d8; identity.subsystem_vendor = 0x19e5; identity.subsystem_device = 0x3e14; identity.pci_revision = 0xc2;
     try t.expect(@import("power_gfx.zig").quirk(identity)); identity.subsystem_vendor = 0x17aa;
     try t.expect(!@import("power_gfx.zig").quirk(identity));
     // Late enable response retains its lease and must be explicitly disabled.
-    F.reset(); gfx = .{}; try gfx.begin(&io, true); try drive(&gfx, &io, true, false, false, 2);
+    F.reset(); gfx = .{}; try gfx.begin(&io, .picasso, true); try drive(&gfx, &io, true, false, false, 2);
     F.smu_ack = 0; try drive(&gfx, &io, false, true, false, 4);
     F.now += 500_000_000; try t.expectError(error.Deadline, gfx.step(&io, true, false, false));
     try t.expect(gfx.mailbox.active and F.lease != 0 and !gfx.awake());
     F.registers[sr.smu.MP1_SMN_C2PMSG_90 / 4] = 1; F.smu_ack = 1;
     try drive(&gfx, &io, true, false, true, 10); try t.expect(gfx.phase == .closed and F.lease == 0);
     // Partial RLC configuration restores the captured values on the same path.
-    F.reset(); gfx = .{}; try gfx.begin(&io, true); F.failed_write = r.CP_MEM_SLP_CNTL;
+    F.reset(); gfx = .{}; try gfx.begin(&io, .picasso, true); F.failed_write = r.CP_MEM_SLP_CNTL;
     try t.expectError(error.Disconnected, gfx.step(&io, true, false, false));
     try drive(&gfx, &io, true, false, true, 3); try t.expect(gfx.phase == .closed);
     // A negative enable ACK never strands the state machine in an inactive wait.
-    F.reset(); gfx = .{}; try gfx.begin(&io, true); try drive(&gfx, &io, true, false, false, 2);
+    F.reset(); gfx = .{}; try gfx.begin(&io, .picasso, true); try drive(&gfx, &io, true, false, false, 2);
     F.smu_ack = 0xff; try drive(&gfx, &io, false, true, false, 4);
     try t.expectError(error.Response, gfx.step(&io, false, true, false));
     F.smu_ack = 1; try drive(&gfx, &io, true, false, true, 10); try t.expect(gfx.phase == .closed);

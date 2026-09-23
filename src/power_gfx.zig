@@ -21,7 +21,7 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 // 
 //  
-//! GC9.1 clock/idle power transitions derived from gfx_v9_0.c. Every RLC and
+//! GC9 clock/idle power transitions derived from gfx_v9_0.c. Every RLC and
 //! SMU acknowledgement is bounded; a pending transition blocks GC access.
 const std = @import("std");
 const c = @import("start_common.zig");
@@ -29,30 +29,32 @@ const l = @import("gc_layout.zig");
 const r = l.r;
 const sr = @import("start_registers.zig");
 const Mailbox = @import("start_smu.zig").Mailbox;
+const Profile = @import("asic_profile.zig").Profile;
 const saved_registers = [_]u32{ r.RLC_CGTT_MGCG_OVERRIDE, r.RLC_MEM_SLP_CNTL, r.CP_MEM_SLP_CNTL,
     r.RLC_CGCG_CGLS_CTRL_3D, r.RLC_CGCG_CGLS_CTRL, r.CP_RB_WPTR_POLL_CNTL, r.RLC_PG_DELAY,
     r.RLC_PG_DELAY_2, r.RLC_PG_DELAY_3, r.RLC_AUTO_PG_CTRL, r.RLC_PG_CNTL };
 pub fn quirk(snapshot: @import("identity.zig").Snapshot) bool {
-    // Only admitted Picasso is considered. Other upstream Raven/Vega quirks
-    // cannot accidentally admit a different ASIC into this driver.
+    // Exact upstream board quirk; ASIC admission belongs to the native owner.
     return snapshot.pci.device_id == 0x15d8 and snapshot.subsystem_vendor == 0x19e5 and
         snapshot.subsystem_device == 0x3e14 and snapshot.pci_revision == 0xc2;
 }
 pub const Phase = enum { empty, safe_enter, safe_leave, awake, allow_send, allow_wait, allowed, wake_send, wake_wait, wake_status, closed };
 const Change = enum { configure, allow, wake, restore };
 pub const Owner = struct {
+    profile: Profile = .picasso,
     phase: Phase = .empty, change: Change = .configure,
     mailbox: Mailbox = .{}, deadline: c.Deadline = .{},
     saved: [saved_registers.len]u32 = undefined, saved_pwr: u32 = 0,
     touched: bool = false, allowed: bool = false, stopping: bool = false,
     faulted: bool = false, gfxoff_supported: bool = false,
-    pub fn begin(self: *Owner, io: anytype, support: bool) c.Error!void {
+    pub fn begin(self: *Owner, io: anytype, profile: Profile, support: bool) c.Error!void {
         if (self.phase != .empty) return error.State;
         if (try c.read(io, r.RLC_CNTL) & r.RLC_CNTL__RLC_ENABLE_F32_MASK == 0 or
             try c.read(io, r.RLC_SRM_CNTL) & r.RLC_SRM_CNTL__SRM_ENABLE_MASK == 0) return error.Unconfirmed;
         for (saved_registers, &self.saved) |reg, *value| value.* = try c.read(io, reg);
         self.saved_pwr = try c.read(io, sr.pwr.PWR_MISC_CNTL_STATUS);
         self.gfxoff_supported = support;
+        self.profile = profile;
         self.touched = true;
         try self.safe(io, .configure);
     }
@@ -159,9 +161,11 @@ pub const Owner = struct {
             r.RLC_CGTT_MGCG_OVERRIDE__GFXIP_MGCG_OVERRIDE_MASK | r.RLC_CGTT_MGCG_OVERRIDE__GFXIP_MGLS_OVERRIDE_MASK |
             r.RLC_CGTT_MGCG_OVERRIDE__GFXIP_GFX3D_CG_OVERRIDE_MASK | r.RLC_CGTT_MGCG_OVERRIDE__GFXIP_CGCG_OVERRIDE_MASK | r.RLC_CGTT_MGCG_OVERRIDE__GFXIP_CGLS_OVERRIDE_MASK;
         try c.set(io, r.RLC_CGTT_MGCG_OVERRIDE, clear | r.RLC_CGTT_MGCG_OVERRIDE__RLC_CGTT_SCLK_OVERRIDE_MASK, r.RLC_CGTT_MGCG_OVERRIDE__RLC_CGTT_SCLK_OVERRIDE_MASK);
-        // Picasso does not advertise RLC memory light-sleep (soc15.c).
+        // Neither admitted family advertises RLC memory light-sleep (soc15.c).
         try c.set(io, r.CP_MEM_SLP_CNTL, r.CP_MEM_SLP_CNTL__CP_MEM_LS_EN_MASK, r.CP_MEM_SLP_CNTL__CP_MEM_LS_EN_MASK);
-        try io.write(r.RLC_CGCG_CGLS_CTRL_3D, l.field("RLC_CGCG_CGLS_CTRL_3D", "CGLS_REP_COMPANSAT_DELAY", 0xf) | r.RLC_CGCG_CGLS_CTRL_3D__CGLS_EN_MASK);
+        const cg3d: u32 = if (self.profile == .raven2)
+            l.field("RLC_CGCG_CGLS_CTRL_3D", "CGCG_GFX_IDLE_THRESHOLD", 0x36) | r.RLC_CGCG_CGLS_CTRL_3D__CGCG_EN_MASK else 0;
+        try io.write(r.RLC_CGCG_CGLS_CTRL_3D, cg3d | l.field("RLC_CGCG_CGLS_CTRL_3D", "CGLS_REP_COMPANSAT_DELAY", 0xf) | r.RLC_CGCG_CGLS_CTRL_3D__CGLS_EN_MASK);
         try io.write(r.RLC_CGCG_CGLS_CTRL, l.field("RLC_CGCG_CGLS_CTRL", "CGCG_GFX_IDLE_THRESHOLD", 0x36) |
             l.field("RLC_CGCG_CGLS_CTRL", "CGLS_REP_COMPANSAT_DELAY", 0xf) | r.RLC_CGCG_CGLS_CTRL__CGCG_EN_MASK | r.RLC_CGCG_CGLS_CTRL__CGLS_EN_MASK);
         try io.write(r.CP_RB_WPTR_POLL_CNTL, l.field("CP_RB_WPTR_POLL_CNTL", "POLL_FREQUENCY", 0x100) | l.field("CP_RB_WPTR_POLL_CNTL", "IDLE_POLL_COUNT", 0x90));

@@ -91,6 +91,7 @@ pub const Owner = struct {
     selftest_submitted: bool = false,
     verified: bool = false,
     deadline: c.Deadline = .{},
+    prepare_step: enum { admission, arena, page_map, tlb_flush, engine, selftest, ready } = .admission,
     pub fn prepare(self: *Owner, memory: *mem.Owner, runtime: *@import("queue_runtime.zig").Owner, native: *const @import("start_runtime.zig").Owner) Error!void {
         if (self.self_address != 0 or native.memory != memory or native.self_address != @intFromPtr(native) or
             !native.flow.firmwareReady() or native.hold.held_generation == 0 or !native.hold.effects or
@@ -102,18 +103,31 @@ pub const Owner = struct {
         const virtual_span: @import("memory_layout.zig").Span = .{ .offset = resource_va, .bytes = capacity * 0x10000000 };
         const arena_span: @import("memory_layout.zig").Span = .{ .offset = arena_va, .bytes = storage.bytes };
         if (virtual_span.overlaps(layout.mc) or virtual_span.overlaps(layout.gart) or arena_span.overlaps(layout.mc) or arena_span.overlaps(layout.gart)) return error.Invalid;
+        self.prepare_step = .arena;
         try runtime.arena.prepare(memory, native.snapshot.bars[2], .{ .memory_epoch = memory.epoch, .boot_held = true, .engines_quiesced = true });
+        try self.mapArena();
+        self.prepare_step = .tlb_flush;
+        try memory.controller.flush(&memory.registers, 1);
+        self.arena_flush_pending = false;
+        self.prepare_step = .engine;
+        try self.engine.open(&memory.registers, &runtime.arena, .{ .profile = memory.layout.?.profile, .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+        self.prepare_step = .selftest;
+        try self.selftest();
+        self.prepare_step = .ready;
+    }
+    /// Publish the shared SDMA/GFX/compute command arena in VMID1. The caller
+    /// keeps the UMA hold and must confirm both hub flushes before execution.
+    pub fn mapArena(self: *Owner) Error!void {
+        const memory = self.memory orelse return error.Unconfirmed;
+        const layout = memory.layout orelse return error.Unconfirmed;
         const physical = try layout.physicalAddress(layout.rings.span);
         for (&self.arena_pages, 0..) |*page, i| page.* = physical + i * 4096;
-        // The outer ring addresses UMA directly in VMID0. Its indirect buffers
-        // execute in VMID1, so that entire retained arena needs explicit PTEs.
-        try memory.virtual.map(arena_va, &self.arena_pages, .{ .system = false, .write = true, .execute = false });
+        self.prepare_step = .page_map;
+        // Outer rings use VMID0; their indirect command buffers use VMID1.
+        // CP fetch requires an executable PTE, as for native IB/shader BOs.
+        try memory.virtual.map(arena_va, &self.arena_pages, .{ .system = false, .write = true, .execute = true });
         self.arena_translated = true;
         self.arena_flush_pending = true;
-        try @import("memory_hubs.zig").flush(&memory.registers, 1);
-        self.arena_flush_pending = false;
-        try self.engine.open(&memory.registers, &runtime.arena, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
-        try self.selftest();
     }
     const test_offset = storage.wb_offset + 0x400;
     const test_token: u64 = 0x52414d4453444d41;
@@ -161,15 +175,16 @@ pub const Owner = struct {
         const queue = ctx.graphicsQueue() orelse return error.Unsupported;
         self.queue = queue;
         const amd = @import("r4amd");
-        const details: amd.R4AmdDriverProfile = .{ .version = 1, .size = @sizeOf(amd.R4AmdDriverProfile), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0, .command_abi = amd.command_abi, .reserved = 0 };
+        const chip = native.chip orelse return error.Unconfirmed;
+        if (self.memory.?.layout.?.profile != try @import("asic_profile.zig").Profile.select(chip)) return error.Unconfirmed;
+        const details: amd.R4AmdDriverProfile = .{ .version = 1, .size = @sizeOf(amd.R4AmdDriverProfile), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = chip.gc, .sdma_version = chip.sdma, .command_abi = amd.command_abi, .reserved = 0 };
         var profile: a.GfxBackendProfile = .{ .interface_id_lo = amd.backend_v1_header.interface_id_lo, .interface_id_hi = amd.backend_v1_header.interface_id_hi, .revision = 1, .data_bytes = @sizeOf(amd.R4AmdDriverProfile) };
         @memcpy(profile.data[0..@sizeOf(amd.R4AmdDriverProfile)], std.mem.asBytes(&details));
         if (queue.registerProfile(&.{ .adapter_id = self.memory.?.adapter, .memory_generation = self.memory.?.epoch, .milestone = a.gfx_queue_milestone_device_execution, .operations = (@as(u64, 1) << a.gfx_queue_operation_copy) | (@as(u64, 1) << a.gfx_queue_operation_copy_rows), .notify_callback = @intFromPtr(&@import("queue_runtime.zig").Owner.notify), .context = @intFromPtr(self.runtime.?) }, &profile, &self.binding) != 1) return error.Unsupported;
         self.registered = true;
         const graphics = self.graphics orelse return error.Unconfirmed;
-        const chip = native.chip orelse return error.Unconfirmed;
         if (graphics.engine.phase != .ready or graphics.engine.gb_addr_config == 0) return error.Unconfirmed;
-        const architecture: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = amd.gc_9_1_0, .sdma_version = amd.sdma_4_1_0, .gb_addr_config = graphics.engine.gb_addr_config, .chip_revision = chip.external_revision, .bind_alignment = 4096, .memory_generation = self.memory.?.epoch, .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
+        const architecture: amd.R4AmdArchitecture = .{ .version = 1, .size = @sizeOf(amd.R4AmdArchitecture), .vendor_id = amd.vendor_id, .device_id = 0x15d8, .gc_version = chip.gc, .sdma_version = chip.sdma, .gb_addr_config = graphics.engine.gb_addr_config, .chip_revision = chip.external_revision, .bind_alignment = 4096, .memory_generation = self.memory.?.epoch, .flags = 0, .reserved = 0, .max_image_bytes = 64 * 1024 * 1024 };
         graphics.architecture = architecture;
         var facts = try @import("device_facts.zig").profile(native, &graphics.engine, architecture, board);
         if (self.media) |media| {
@@ -232,7 +247,7 @@ pub const Owner = struct {
             self.arena_flush_pending = true;
         }
         if (self.arena_flush_pending) {
-            @import("memory_hubs.zig").flush(&memory.registers, 1) catch return false;
+            memory.controller.flush(&memory.registers, 1) catch return false;
             self.arena_flush_pending = false;
         }
         if (self.registered) {

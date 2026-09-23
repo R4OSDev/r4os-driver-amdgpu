@@ -146,7 +146,7 @@ const Native = struct {
         @memset(&reply, 0);
         reply_count = 1;
         reply_at = 0;
-        const limits: c.struct_r4dcn_limits = .{ .channels = 2, .dcf_khz = 600000, .disp_khz = 960000, .dpp_khz = 626000, .fabric_khz = 1066666, .soc_khz = 626000, .ref_khz = 48000, .gb_addr_config = 0x24000042, .reserved = 0 };
+        const limits: c.struct_r4dcn_limits = .{ .channels = 2, .dcf_khz = 600000, .disp_khz = 960000, .dpp_khz = 626000, .fabric_khz = 1066666, .soc_khz = 626000, .ref_khz = 48000, .gb_addr_config = 0x24000042, .reserved = 0, .pipe_count = 4 };
         try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&bytes, c.r4dcn_size(), &io, &limits));
     }
     const route: c.struct_r4dcn_route = .{ .connector = 0x310c, .encoder = 0x211e, .phy = 0, .aux = 0, .hpd = 0, .caps = 0xa, .ddc_a = reg("DC_GPIO_DDC1_A"), .hpd_a = reg("DC_GPIO_HPD_A"), .hpd_shift = 0, .hpd_active = 1 };
@@ -365,6 +365,19 @@ test "HDMI admits only complete receiver timings and the direct HDMI1.4 board ro
     board.tables[@offsetOf(b.c.struct_atom_master_list_of_data_tables_v2_1, "dce_info") / 2] = .{ .offset = 0xb00, .bytes = &info };
     try t.expectEqual(@as(u32, 48000), (try p.route(&board)).crystal_khz);
     try t.expectEqual(@as(u32, 1), (try p.route(&board)).native.hpd);
+    const original_route = try p.route(&board);
+    for (0..32) |shift| for (0..32) |mask| {
+        board.paths[0].i2c_pin.?.shift = @intCast(shift);
+        board.paths[0].i2c_pin.?.mask_shift = @intCast(mask);
+        if (shift == mask and (shift == 0 or shift == 8)) {
+            try t.expect(std.meta.eql(original_route.native, (try p.route(&board)).native));
+        } else try t.expectError(error.Unsupported, p.route(&board));
+    };
+    board.paths[0].i2c_pin.?.shift = 0; board.paths[0].i2c_pin.?.mask_shift = 0;
+    board.paths[0].hpd_active = 0;
+    try t.expectEqual(@as(u32, 0), (try p.route(&board)).native.hpd_active);
+    board.paths[0].hpd_active = 2;
+    try t.expectError(error.Unsupported, p.route(&board)); board.paths[0].hpd_active = 1;
     board.paths[0].hpd_pin.?.shift = 4; board.paths[0].hpd_pin.?.mask_shift = 4;
     try t.expectError(error.Unsupported, p.route(&board));
     board.paths[0].hpd_pin.?.shift = 8; board.paths[0].hpd_pin.?.mask_shift = 8;

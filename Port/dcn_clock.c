@@ -67,7 +67,7 @@ int r4dcn_reference_clock_get(void *storage,uint32_t *actual_khz) {
 int r4dcn_reference_clock_program(void *storage,uint32_t index,uint32_t *actual_khz) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(index>=4 || !d->links[index].bound || !actual_khz || d->fault)result=R4DCN_STATE;
- for(unsigned i=0;!result && i<4;i++)
+ for(unsigned i=0;!result && i<d->limits.pipe_count;i++)
   if(dm_read_reg(&d->ctx,tg_regs[i].OTG_CONTROL)&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE))result=R4DCN_STATE;
  if(!result && !d->fault) {
   /* dce112_set_dprefclk / command_table2:set_dce_clock_v2_1. Firmware
@@ -106,7 +106,7 @@ int r4dcn_pixel_clock_bind(void *storage,uint32_t index,uint32_t crystal_khz) {
 }
 int r4dcn_pixel_clock_program(void *storage,uint32_t index,uint32_t pipe) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
- if(index>=4 || pipe>=4 || !d->links[index].clock_bound || !d->dprefclk_khz || !d->prepared || !(d->mask&(1u<<pipe)) || d->fault)
+ if(index>=4 || pipe>=d->limits.pipe_count || !d->links[index].clock_bound || !d->dprefclk_khz || !d->prepared || !(d->mask&(1u<<pipe)) || d->fault)
   result=R4DCN_STATE;
  else {
   struct r4dcn_link *l=&d->links[index];struct dc_stream_state *s=&d->streams[pipe];

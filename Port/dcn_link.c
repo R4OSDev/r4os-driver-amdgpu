@@ -70,7 +70,7 @@ static const struct dc_vbios_funcs bios_functions={.transmitter_control=transmit
 static const struct link_encoder_funcs link_functions={.is_dig_enabled=dcn10_is_dig_enabled};
 int r4dcn_link_bind(void *storage,uint32_t index,const struct r4dcn_route *route,const struct r4dcn_atom *atom) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
- if(!route || !atom || !atom->execute || index>=4 || route->phy>=4 || route->aux>=4 || route->hpd>=4 ||
+ if(!route || !atom || !atom->execute || index>=4 || route->phy>=d->limits.pipe_count || route->aux>=4 || route->hpd>=4 ||
     route->ddc_a!=ddc_a[route->aux] || route->hpd_a!=ADDR(DC_GPIO_HPD_A) || route->hpd_shift!=hpd_shift[route->hpd] ||
     route->hpd_active>1 || route->connector>65535 || (route->connector&0x7000)!=0x3000 ||
     route->encoder>65535 || (route->encoder&0x7000)!=0x2000 || d->links[index].bound || d->fault) result=R4DCN_INVALID;
@@ -198,7 +198,7 @@ int r4dcn_link_video(void *storage,uint32_t index,uint32_t pipe,uint32_t *active
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  struct r4dcn_link *l=link_at(d,index);
  static const uint32_t video_regs[]={ADDR(DP0_DP_VID_STREAM_CNTL),ADDR(DP1_DP_VID_STREAM_CNTL),ADDR(DP2_DP_VID_STREAM_CNTL),ADDR(DP3_DP_VID_STREAM_CNTL)};
- if(!l || !active || pipe>=4 || d->fault)result=R4DCN_STATE;
+ if(!l || !active || pipe>=d->limits.pipe_count || d->fault)result=R4DCN_STATE;
  else {
   uint32_t tg=rd(d,tg_regs[pipe].OTG_CONTROL),video=rd(d,video_regs[l->route.phy]);
   *active=!!(tg&OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK) &&

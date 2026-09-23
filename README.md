@@ -1,14 +1,59 @@
 ﻿# AMDGPU
 
-Version 0.1.18 adds generation-bound RADV device facts and validated native
-graphics/compute IB submissions for R4OS 0.80.23. DCN1 HDMI audio and display
-behavior from 0.80.22 are retained.
-The target is PCI 1002:15D8; Raven2 revisions are rejected.
+Version 0.1.64 retains the Picasso display, rendering, compute, video,
+power and recovery integration prepared through R4OS 0.80.38.
+The target is PCI1002:15D8. Raven2 passive discovery is implemented. Native
+qualification is now admitted only for the measured Lenovo17AA:3808,PCI C4,
+ASIC9; other Raven2 boards remain passive pending their DCN/board audit.
+The measured Raven2 path includes its three-pipe DCN1.01 register map,
+ATOM clock/panel fixes and bounded native cleanup diagnostics. The latest
+physical trial passes inherited scanout admission and GC fence prerequisites,
+then stops at the pixel-clock transition; display-close still retains native
+resources. Native output and successful native shutdown remain unqualified.
+R4OS 0.80.39 is an interim prerelease with AMDGPU explicitly passive by
+default. Its hardware roadmap remains open.
+Version 0.1.26 reports the failing VBIOS source stage, specific length
+checks and bounded ROM/table prefixes for OEM format diagnosis.
+Diagnostics now identify the failing ATOM stage, table index and offset;
+board clock parsing accepts complete DCE4.1 and DCE4.2 reference-clock tables.
+ATOM sizes and field offsets now come from C-evaluated constants over the
+original packed definitions. This avoids padding added by Zig's translated
+structs, which incorrectly rejected the Lenovo's 1024-byte integrated table
+and displaced the capability field in six-byte encoder records.
+Failed-table diagnostics include at most 256 bytes of the failing table and
+display-path directory, preserving the actual rejected data for inspection.
+The measured Lenovo 17AA:3808 VFCT leaves its populated external-connection
+GUID/checksum zero. This exact OEM case requires a verified VFCT transport,
+retains every wiring check and reports the nested checksum as unavailable.
+Other invalid checksums remain errors. Disabled connector slots are omitted,
+single-byte FF record terminators are bounded correctly, and the MXM OPM
+object supplies shared AUX/HPD lookup tables. Both declared HPD levels are
+preserved for the native GPIO boundary.
+The VFCT parser handles empty descriptors and omitted subsystem IDs while
+retaining exact BDF/GPU selection. The associated ROM may use AMD's shared
+1002:1002 subsystem header; explicit other conflicts remain rejected.
+Kernel 0.1.211 supplies the optional `unmanaged_span` proof used before UMA
+partitioning: a complete boot map must exclude system-memory overlap, while
+hardware measurements establish the actual storage. UEFI need not describe
+the stolen extent as a separate reserved entry. Mapping and cache checks
+remain independent, and the driver never adds physical RAM.
+The immutable ASIC profile now follows memory, GC, SDMA and logical contexts.
+Raven2 uses the original aperture-high workaround, rv2 golden tables, 3-CU/1-RB
+maxima before fuse harvesting and GDS wave limit 0x77. Its verified RLC store
+is parsed completely before hardware effects; bounded ARAM/scratch writes
+precede SRM enable. Existing host cases exercise both profiles, malformed
+lists and teardown. Raven2 additionally uses retained MMHUB invalidation
+semaphore ownership,3D-CGCG, gfx909 shaders and real GC/SDMA device facts.
+Compiler/render/Vulkan/media consumers and the selected board profile are
+host/SMP4 checked; physical execution and output qualification remain open.
 AMDGPU.R4D is the external hardware owner. Kernel graphics/memory/queue APIs,
 WINSVC and R4GFX retain their common device and resource contracts.
 
-Normal `auto`/`passive` binding only captures PCI, UMA, board, firmware and
-boot-framebuffer evidence. `mode=native` starts an asynchronous owner with real firmware, engine and
+Normal `auto`/`passive` binding captures PCI, UMA, board and boot-framebuffer
+evidence, plus the exact packaged firmware for the measured family.
+Raven2 selects eleven Raven2 files and the original shared Raven DMCU;
+Picasso selects its own twelve-file profile.
+`mode=native` on an admitted board starts an asynchronous owner with real firmware, engine and
 display prerequisites and bounded restoration. `IMAGE_SCOPE=none` keeps the
 in-progress driver out of normal profiles until package integration. Physical laptop validation belongs exclusively to 0.80.39.
 Host fixtures verify source formats and ownership, not execution on Picasso.
@@ -38,7 +83,7 @@ The fixed renderer supplies genuine ACO programs and full GFX9 state.
 Arbitrary Vulkan pipelines and scratch relocations retain their later owners.
 
 `render_jobs.zig` shares R4AMD's genuine AddrLib/render archive with the R4L.
-It uploads six immutable shaders to a separate 64 KB UMA arena, maps their
+It uploads twelve immutable shaders (six per ASIC profile) to a separate 64 KB UMA arena, maps their
 executable pages and keeps eight 4 KB parameter slots until exact retirement.
 Normal fill/sample/list/grid/color work uses separate retained BO mappings;
 text masks and NV12/P010/YUV420P use the same GC ring and timeline. Pipeline
@@ -75,9 +120,9 @@ restarted after replacing their firmware.
 
 Build with `./Build.sh` on Linux or `Build.bat` on Windows, using PowerShell 7.
 The normal build verifies pinned originals/generated registers, runs the
-component tests and audits all sixteen unchanged firmware resources in the
-R4D container. The DCN1 archive links 29 original Linux 7.2.4 AMD DC/DML units
-and eight private bridges into the R4D. The source closure contains frontend
+component tests and audits all twenty-seven firmware and provenance resources in the
+R4D container. The DCN1 archive links 30 original Linux 7.2.4 AMD DC/DML units
+and nine private bridges into the R4D. The source closure contains frontend
 resources, HUBP/HUBBUB/DPP/OPP/MPC/timing, request/deadline registers and
 watermarks. A heap-owned DC context runs only in a dedicated SIMD-capable
 driver Task. Planning performs no MMIO. Commit requires confirmed clocks
@@ -87,6 +132,50 @@ programs the original ATOM pixel-clock and SST paths, and waits for an actual
 frame-counter/address receipt before common commit. Abort reconstructs the
 boot mode before releasing that hold. A passive probe installs no activation hook. The grouped host tests execute the real archive
 against explicit register/Task/heap responses; they do not emulate a GPU.
+
+Native qualification with 0.1.36 requires DriverApi36/Kernel0.1.212.
+The dedicated native and queue tasks own pacing and submit bounded steps
+through `driver_work_submit_owned`; legacy BO/MMIO/display admission stays
+on the existing BSP lifecycle owner. DCN keeps its abortable SIMD task and
+submits copied brightness, hotplug and audio metadata through the same
+bridge. No common Work callback waits for that DCN task. Busy completion
+means no callback ran. Failed waits retain callback storage until terminal
+completion and release; late receiver registrations are explicitly closed.
+An atomic queue-dispatch failure also wakes the native recovery pump.
+The preceding physical 0.1.35 attempt was rejected before native memory
+admission and restored bootfb. It is not a native hardware pass.
+The physical 0.1.36 trial passed that boundary but returned `Unconfirmed`
+at a later checkpoint and confirmed bootfb restoration. Version 0.1.37
+logs the exact start/preparation phase and resident boot-plane snapshot
+before recovery, without changing admission checks or reading extra MMIO.
+That trial identified the initial boot guard, before firmware/PCI effects.
+Version 0.1.38 reads `EARLIEST_INUSE`, as the original DCN1 flip-pending
+and read-state routines do, instead of the separate `SURFACE_INUSE`
+register. The physical 0.1.38 run confirmed that address; the remaining
+initial guard failure is firmware PITCH=1920 for GOP pitch=7680 bytes.
+The local 0.1.39 candidate recognizes that exact initial plane only on
+17AA:3808/C4/Raven2 with the recorded ROM SHA-256 and 1920x1080 XRGB8888.
+All address, format, tiling, pending-flip and unchanged-register checks
+remain active. Reconstructed/native planes still require AMD's minus-one
+pitch convention. The user confirmed the original firmware image, and
+the physical 0.1.39 trial passed this guard. It then timed out in engine
+parking, before PSP ring creation or firmware uploads; recovery retained
+resources without confirming restored scanout. Version 0.1.40 records the
+existing park samples/checkpoint and SMU receipts without changing MMIO
+order, masks or deadlines. Its physical trial recorded CP_ME_CNTL=0x15150000
+after the original 0x153f0150 write: every HALT bit was set, while invalidate
+and PIPE1 reset bits read zero. Only CP was sampled before that timeout;
+MEC and subsequent idle status are not yet hardware-confirmed. Version
+0.1.41 keeps the original write masks but confirms persistent CP/MEC HALT
+bits, followed by the existing RLC/SDMA/GRBM/SERDES checks. GC admission and
+partial-start cleanup use the same contract. Existing fixtures cover the
+measured CP receipt, clearing command bits, missing HALT bits and busy
+rejection. The physical41 trial passes the full park proof, PSP ring/TMR
+setup and eight firmware parts, then rejects the first RLC restore-list
+response. Same-boot recovery confirms the original scanout. Version0.1.42
+logs the resident PSP response/token/address and failed firmware entry
+before cleanup; command bytes/order/checks/deadlines are unchanged.
+Native qualification remains open.
 
 See workspace `Docs/Drivers/AMDGFXQueues08011.txt` and its JSON evidence,
 plus the earlier AMD board, firmware, memory, queue, startup and SDMA records.
@@ -284,3 +373,73 @@ point. MMHUB power gating, voltage/overdrive and arbitrary laptop limits are
 not enabled. Source/model tests do not establish real temperature, battery
 life or firmware/session retention; laptop qualification is 0.80.39.
 See Docs/Drivers/AMDEnergie08034.txt/.json.
+
+## Raven2 RLC comparison candidate (0.1.43)
+
+After eight confirmed PSP uploads, the Lenovo returns 0xffff300f for
+RLC_RESTORE_LIST_SRM_CNTL in original raven2_rlc.bin v73. This candidate
+changes only that firmware file to the unchanged v107 from linux-firmware
+07cb4ff48d204890e9c8384d2dae47318b5df268 (2019-02-21). Other binaries retain
+baseline 2b8daaf611fbade74f26a5b58ec1defe6a02f5e0. Schema3 records each file's
+source revision; both original licenses and WHENCE files are packaged and
+exported. The mixed bundle is named explicitly. PSP success checks, command
+order and cleanup remain unchanged; hardware success is not yet established.
+
+## Oldest original RLC comparison (0.1.44)
+
+The v107 physical comparison also returned PSP0xffff300f at restore-list
+index8. Version0.1.44 now compares original v101 from linux-firmware
+bc656509a3cfb60fcdfc905d7e23c18873e4e7b9 (2019-01-14). The other23 binary
+files, acknowledgement checks and engine sequence remain unchanged. Both
+current source revisions and original notices are pinned in schema3.
+
+## Baseline restored after comparison (0.1.45)
+
+Published RLC73 and107 both return PSP0xffff300f at the first restore-list
+upload; original101 returns0xffff000f there. None enabled native startup.
+Version0.1.45 restores all24 original baseline binaries and27 package
+resources. Schema3 retains explicit per-file source revisions. Native
+admission still requires every acknowledgement; no error is ignored.
+The physical comparison, original firmware files and original licenses remain
+recorded under ExFiles/Reference/AMD and Temp/AMD08039 in the workspace.
+
+## Lenovo restore-list qualification (0.1.46-48)
+
+Physical47 completed all13 firmware submissions. The ten core images,
+including main RLC_G andVCN, return success. Restore-CNTL returnsFFFF300F;
+restore-GPM and restore-SRM returnFFFF000F. Recovery and passive return
+are confirmed remotely; this does not prove native graphics or sleep.
+
+Version48 permits a qualification start only for the measured Lenovo
+board/ASIC, exact ROM hash, SMU0x251f00/interface7 and baseline RLC73.
+Each restore rejection stays recorded and unconfirmed. Every core image
+andASD must succeed; timeouts, unknown statuses, other firmware and other
+boards remain blocked. The GC owner keeps SRM/PG off, and the power owner
+does not enable GC clock gating orGFXOFF while restore is unavailable.
+Normal engine self-tests and display commit receipts remain mandatory.
+The existing43 host groups cover the status, identity, essential-image,
+missing-receipt and disabled-SRM boundaries; all27 resources remain exact
+baseline originals. Physical48 confirms core firmware andASD, then stops at SDMA preparation withBusy; cleanup retains resources. No native engine or output is qualified.
+
+Version49 acquires the exclusive queue arena before the independent DPM
+table lease. The existing queue test covers the earlier-lease Busy boundary
+and preserves that reference during partial cleanup. Resident wait-stage
+logs identify retained native cleanup; degraded telemetry reports limited.
+All43 groups and27 resources passed. Physical49 confirms the queue lease and
+reaches SDMA preparation, which returns Unconfirmed. Queue and GMC cleanup
+complete, but firmware cleanup retains resources. SSH remains available while
+the user sees the boot screen; native output is not qualified.
+
+Version50 records the existing SDMA admission reads, the preparation substage
+and firmware cleanup phase changes. Register writes and acceptance criteria
+are unchanged. All 43 existing groups and 27 original resources pass.
+Physical50 measures SDMA HALT=0 after firmware/ASD, before any SDMA ring
+programming. Outer engine stop and GMC cleanup succeed, but the repeated
+firmware cleanup park times out at RLC busy. Native output remains unqualified.
+
+Version51 re-establishes all engine stops after PSP firmware/ASD and before
+GMC programming. After a completed outer engine stop and GMC restoration,
+cleanup rechecks every HALT/idle condition without repeating CP reset writes.
+The existing startup group covers post-upload HALT loss, RLC busy, and a
+missing HALT during readback-only cleanup; no missing receipt admits release.
+All 43 groups and 27 resources pass. Package51 was transferred, verified and staged as batch55; COMMIT was requested, but SSH has not returned. Postboot installation and physical51 qualification remain unconfirmed. The package includes passive CONFIG for the next boot. Resume evidence: Temp/AMD08039/Native51/Pending-Boot-Proof.json.

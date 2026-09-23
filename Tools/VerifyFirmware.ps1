@@ -4,7 +4,12 @@ Set-StrictMode -Version Latest
 $unit=[IO.Path]::GetFullPath('..',$PSScriptRoot)
 $lockPath=Join-Path $unit 'src/firmware_lock.json'
 $pin=Get-Content -Raw -LiteralPath $lockPath|ConvertFrom-Json
-if($pin.schema -ne 1 -or $pin.firmware.Count -ne 13 -or $pin.metadata.Count -ne 2 -or $pin.revision -cne '2b8daaf611fbade74f26a5b58ec1defe6a02f5e0'){throw 'Unsupported AMD firmware lock'}
+if($pin.schema -ne 3 -or $pin.firmware.Count -ne 24 -or $pin.metadata.Count -ne 2 -or $pin.revision -cne '2b8daaf611fbade74f26a5b58ec1defe6a02f5e0' -or $pin.raven2_rlc_revision -cne $pin.revision){throw 'Unsupported AMD firmware lock'}
+foreach($entry in $pin.firmware){
+    if($entry.family -cnotin @('picasso','raven2','shared') -or (($entry.family -ceq 'shared') -ne ($entry.role -ceq 'dmcu'))){throw 'Invalid AMD firmware family'}
+    $revision=if($entry.family -ceq 'raven2' -and $entry.role -ceq 'rlc'){$pin.raven2_rlc_revision}else{$pin.revision}
+    if($entry.upstream_revision -cne $revision){throw 'Firmware source revision differs from pinned bundle'}
+}
 $manifest=Get-Content -LiteralPath (Join-Path $unit 'module.R4MF')
 $resources=@($manifest|Where-Object {$_.StartsWith('RESOURCE=')})
 $expected=@('RESOURCE=AMD-FIRMWARE-LOCK.json:src/firmware_lock.json')
@@ -17,15 +22,22 @@ foreach($entry in @($pin.metadata)+@($pin.firmware)){
     if((Get-Item $path).Length -ne $entry.bytes -or (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $entry.sha256){throw "AMD firmware size/hash mismatch: $($entry.path)"}
     $bytes+=[long]([Math]::Ceiling($entry.bytes/16.0)*16)
     $expected+='RESOURCE='+$entry.resource+':'+$entry.path
-    if($entry.resource.EndsWith('.bin') -and !$whence.Contains('File: '+$entry.upstream_path)){throw "AMD WHENCE omits $($entry.upstream_path)"}
+    $sourceWhence=$whence
+    if($entry.resource.EndsWith('.bin') -and !$sourceWhence.Contains('File: '+$entry.upstream_path)){throw "AMD WHENCE omits $($entry.upstream_path)"}
 }
-if($bytes -gt 2MB -or @($resources).Count -ne $expected.Count -or @(Compare-Object $resources $expected).Count){throw 'AMD resource set differs from the package lock'}
+if($bytes -gt 4MB -or @($resources).Count -ne $expected.Count -or @(Compare-Object $resources $expected).Count){throw 'AMD resource set differs from the package lock'}
 $version=@($manifest|Where-Object {$_.StartsWith('META=firmware.revision=')})
 if($version.Count -ne 1 -or $version[0] -cne ('META=firmware.revision='+$pin.revision)){throw 'AMD firmware revision metadata mismatch'}
 $label=@($manifest|Where-Object {$_.StartsWith('META=firmware.version=')})
 if($label.Count -ne 1 -or $label[0] -cne ('META=firmware.version=linux-firmware-'+$pin.revision.Substring(0,12))){throw 'AMD firmware display label mismatch'}
-if(!$whence.Contains('Licence: Redistributable. See LICENSE.amdgpu for details.')){throw 'AMD WHENCE license reference absent'}
-Write-Host "AMDGPU firmware package: 13 original binaries, WHENCE and AMD license verified; pinned $($pin.revision); no GPU execution."
+$rlcVersion=@($manifest|Where-Object {$_.StartsWith('META=firmware.raven2_rlc_revision=')})
+if($rlcVersion.Count -ne 1 -or $rlcVersion[0] -cne ('META=firmware.raven2_rlc_revision='+$pin.raven2_rlc_revision)){throw 'AMD RLC revision metadata mismatch'}
+foreach($text in @($whence)){if(!$text.Contains('Licence: Redistributable. See LICENSE.amdgpu for details.')){throw 'AMD WHENCE license reference absent'}}
+foreach($entry in $pin.metadata){
+    $revision=$pin.revision
+    if($entry.upstream_revision -cne $revision){throw 'Notice source revision differs from pinned bundle'}
+}
+Write-Host "AMDGPU firmware bundle: 24 original binaries, baseline WHENCE/license verified; baseline $($pin.revision), Raven2 RLC $($pin.raven2_rlc_revision); no GPU execution."
 
 if($ContainerPath){
     # This is an exact-content audit after the canonical R4M0 builder/inspector.
@@ -48,15 +60,16 @@ if($ContainerPath){
         $resourceOffset=[long](U32 ($row+12));$resourceBytes=[long](U32 ($row+16))
         Assert-Span $resourceOffset $resourceBytes
     }
-    if($resourceOffset -lt 0 -or (U32 $resourceOffset) -ne 16){throw 'AMD package needs exactly sixteen R4M0 resources'}
+    if($resourceOffset -lt 0 -or (U32 $resourceOffset) -ne $expected.Count){throw 'AMD R4M0 resource count differs from exact bundle'}
     $bound=@([pscustomobject]@{resource='AMD-FIRMWARE-LOCK.json';bytes=(Get-Item $lockPath).Length;sha256=(Get-FileHash $lockPath).Hash.ToLowerInvariant()})+@($pin.metadata)+@($pin.firmware)
     $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $ranges=[Collections.Generic.List[object]]::new()
-    for($i=0;$i -lt 16;$i++){
+    $directoryEnd=4+$expected.Count*16
+    for($i=0;$i -lt $expected.Count;$i++){
         $row=$resourceOffset+4+$i*16
         if((U16 $row) -ne 3 -or (U16 ($row+2)) -ne 0){throw 'Unexpected non-file AMD resource'}
         $nameOffset=[long](U32 ($row+4));$dataOffset=[long](U32 ($row+8));$length=[long](U32 ($row+12))
-        if($nameOffset -lt 260 -or $nameOffset -ge $resourceBytes -or $dataOffset -lt 260 -or $dataOffset%16 -ne 0 -or
+        if($nameOffset -lt $directoryEnd -or $nameOffset -ge $resourceBytes -or $dataOffset -lt $directoryEnd -or $dataOffset%16 -ne 0 -or
             $length -le 0 -or $dataOffset -gt $resourceBytes -or $length -gt $resourceBytes-$dataOffset){throw 'Bad AMD resource bounds'}
         $nameLength=0
         while($nameLength -lt 64 -and $nameOffset+$nameLength -lt $resourceBytes -and $image[$resourceOffset+$nameOffset+$nameLength] -ne 0){$nameLength++}
@@ -69,5 +82,5 @@ if($ContainerPath){
         $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($data)).ToLowerInvariant()
         if($digest -cne $bound[$i].sha256){throw "Packed AMD resource hash mismatch: $name"}
     }
-    Write-Host 'AMDGPU R4M0 content audit: all sixteen non-allocated resources match their exact original bytes and package lock.'
+    Write-Host "AMDGPU R4M0 content audit: all $($expected.Count) non-allocated resources match their exact original bytes and package lock."
 }

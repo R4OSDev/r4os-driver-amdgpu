@@ -70,8 +70,8 @@ pub fn build(b: *std.Build) void {
     const fw = @import("src/firmware.zig");
     var sample_source: std.ArrayList(u8) = .empty;
     sample_source.appendSlice(b.allocator, "pub const files = [_][]const u8{\n") catch @panic("OOM");
-    for (0..16) |i| {
-        const entry = if (i == 0) fw.Artifact{ .path = "src/firmware_lock.json", .resource = "AMD-FIRMWARE-LOCK.json", .bytes = 0, .sha256 = "", .upstream_path = "", .git_blob = "" } else if (i < 3) fw.lock.metadata[i - 1] else fw.lock.firmware[i - 3].artifact();
+    for (0..fw.firmware_first + fw.firmware_count) |i| {
+        const entry = if (i == 0) fw.Artifact{ .path = "src/firmware_lock.json", .resource = "AMD-FIRMWARE-LOCK.json", .bytes = 0, .sha256 = "", .upstream_path = "", .git_blob = "" } else if (i < fw.firmware_first) fw.lock.metadata[i - 1] else fw.lock.firmware[i - fw.firmware_first].artifact();
         _ = samples.addCopyFile(b.path(entry.path), entry.resource);
         sample_source.appendSlice(b.allocator, b.fmt("    @embedFile(\"{s}\"),\n", .{entry.resource})) catch @panic("OOM");
     }

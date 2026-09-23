@@ -10,14 +10,14 @@ size_t r4dcn_size(void) { return sizeof(struct r4dcn); }
 int r4dcn_init(void *storage,size_t bytes,const struct r4dcn_io *io,const struct r4dcn_limits *limits) {
  if (!storage || (uintptr_t)storage%16 || bytes!=sizeof(struct r4dcn) || !io || !limits ||
   !io->worker || !io->read || !io->write || !io->now_ns || !io->delay_us || !io->log || !io->fatal ||
-  !io->worker(io->context) || limits->reserved || limits->channels<1 || limits->channels>2 ||
+  !io->worker(io->context) || limits->reserved || (limits->pipe_count!=3 && limits->pipe_count!=4) || limits->channels<1 || limits->channels>2 ||
   limits->ref_khz<24000 || limits->ref_khz>100000 || limits->ref_khz%1000 ||
   limits->dcf_khz<100000 || limits->dcf_khz>655000 || limits->disp_khz<100000 || limits->disp_khz>1108000 ||
   limits->dpp_khz<100000 || limits->dpp_khz>720000 || limits->fabric_khz<100000 || limits->fabric_khz>1200000 ||
   limits->soc_khz<100000 || limits->soc_khz>1200000 || limits->gb_addr_config==UINT32_MAX) return R4DCN_INVALID;
  struct r4dcn *d=storage; memset(d,0,sizeof(*d));d->io=*io;d->limits=*limits;d->self=(uintptr_t)d;
  int result=r4dcn_enter(d); if(result) return result;
- d->ctx.dc=&d->dc;d->ctx.driver_context=d;d->ctx.dce_version=DCN_VERSION_1_0;
+ d->ctx.dc=&d->dc;d->ctx.driver_context=d;d->ctx.dce_version=limits->pipe_count==3?DCN_VERSION_1_01:DCN_VERSION_1_0;
  d->ctx.asic_id.vram_width=limits->channels*64;
  d->dc.ctx=&d->ctx;d->dc.res_pool=&d->pool;d->dc.current_state=&d->state;
  d->soc=dcn10_soc_defaults;d->ip=dcn10_ip_defaults;d->dc.dcn_soc=&d->soc;d->dc.dcn_ip=&d->ip;
@@ -32,12 +32,13 @@ int r4dcn_init(void *storage,size_t bytes,const struct r4dcn_io *io,const struct
  d->soc.socclk=limits->soc_khz/1000.0f;
  d->dc.debug.min_disp_clk_khz=100000;d->dc.debug.optimized_watermark=true;
  d->dc.debug.pipe_split_policy=MPC_SPLIT_AVOID;d->dc.debug.disable_dmcu=true;
- d->pool.pipe_count=R4DCN_PIPES;d->pool.timing_generator_count=R4DCN_PIPES;
+ d->pool.pipe_count=d->limits.pipe_count;d->pool.timing_generator_count=d->limits.pipe_count;
  d->pool.ref_clocks.dchub_ref_clock_inKhz=limits->ref_khz;
  d->pool.hubbub=&d->hubbub.base;d->pool.mpc=&d->mpc.base;
  hubbub1_construct(&d->hubbub.base,&d->ctx,&hubbub_reg,&hubbub_shift,&hubbub_mask);
+ /* The shared MPC still has four slots in the original Raven2 constructor. */
  dcn10_mpc_construct(&d->mpc,&d->ctx,&mpc_regs,&mpc_shift,&mpc_mask,R4DCN_PIPES);
- for(unsigned i=0;i<R4DCN_PIPES;i++) {
+ for(unsigned i=0;i<d->limits.pipe_count;i++) {
   dcn10_hubp_construct(&d->hubps[i],&d->ctx,i,&hubp_regs[i],&hubp_shift,&hubp_mask);
   dpp1_construct(&d->dpps[i],&d->ctx,i,&tf_regs[i],&tf_shift,&tf_mask);
   dcn10_opp_construct(&d->opps[i],&d->ctx,i,&opp_regs[i],&opp_shift,&opp_mask);
@@ -51,7 +52,7 @@ int r4dcn_init(void *storage,size_t bytes,const struct r4dcn_io *io,const struct
  r4dcn_leave(d);return d->fault;
 }
 static int mode(struct r4dcn *d,const struct r4dcn_mode *m) {
- if(m->pipe>=R4DCN_PIPES || m->flags&~31u || (m->flags&9u)==9u || ((m->flags&16u) && (!(m->flags&1u) || (m->flags&8u))) || m->width<16 || m->height<16 || m->width>4096 || m->height>4096 ||
+ if(m->pipe>=d->limits.pipe_count || m->flags&~31u || (m->flags&9u)==9u || ((m->flags&16u) && (!(m->flags&1u) || (m->flags&8u))) || m->width<16 || m->height<16 || m->width>4096 || m->height>4096 ||
   m->h_total>8192 || m->v_total>8192 || m->h_total<=m->width || m->v_total<=m->height ||
   !m->h_sync || !m->v_sync || !m->h_front || !m->v_front ||
   (uint64_t)m->h_front+m->h_sync>m->h_total-m->width || (uint64_t)m->v_front+m->v_sync>m->v_total-m->height ||
@@ -93,7 +94,7 @@ static int mode(struct r4dcn *d,const struct r4dcn_mode *m) {
 }
 int r4dcn_prepare(void *storage,const struct r4dcn_mode *modes,uint32_t count,struct r4dcn_plan *out) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
- if(d->fault || d->programmed || !modes || !out || !count || count>R4DCN_PIPES) { r4dcn_leave(d);return R4DCN_STATE; }
+ if(d->fault || d->programmed || !modes || !out || !count || count>d->limits.pipe_count) { r4dcn_leave(d);return R4DCN_STATE; }
  d->prepared=0;d->count=d->mask=0;memset(&d->state,0,sizeof(d->state));memset(d->streams,0,sizeof(d->streams));memset(d->planes,0,sizeof(d->planes));
  d->state.bw_ctx.dml=d->dc.dml;
  for(unsigned i=0;i<count && !result;i++)result=mode(d,&modes[i]);
@@ -114,8 +115,7 @@ int r4dcn_prepare(void *storage,const struct r4dcn_mode *modes,uint32_t count,st
  r4dcn_leave(d);return result;
 }
 static bool frontend_quiet(struct r4dcn *d,unsigned i) {
- uint32_t control=dm_read_reg(&d->ctx,tg_regs[i].OTG_CONTROL);
- return !(control&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE)) && hubp1_in_blank(&d->hubps[i].base);
+ return r4dcn_frontend_quiet(d,i,!(d->mask&(1u<<i)),NULL);
 }
 static void program_pipe(struct r4dcn *d,unsigned i) {
   struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct hubp *h=&d->hubps[i].base;
@@ -150,17 +150,17 @@ static void program_pipe(struct r4dcn *d,unsigned i) {
 int r4dcn_program(void *storage) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(!d->prepared || d->programmed || d->fault) { r4dcn_leave(d);return R4DCN_STATE; }
- /* Watermarks and MPC are shared. The outer transition owner must blank all
-  * four frontends, including pipes absent from this new plan. */
- for(unsigned i=0;i<R4DCN_PIPES;i++) {
+ /* Watermarks and MPC are shared. Selected pipes must be stopped and blank;
+  * unused pipes may instead be confirmed fully power-gated. */
+ for(unsigned i=0;i<d->limits.pipe_count;i++) {
   if(!frontend_quiet(d,i))result=R4DCN_STATE;
  }
  if(result || d->fault) { r4dcn_leave(d);return d->fault?d->fault:result; }
  d->programmed=1;
  mpc1_mpc_init(&d->mpc.base);
- for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)mpc1_assert_idle_mpcc(&d->mpc.base,i);
+ for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)mpc1_assert_idle_mpcc(&d->mpc.base,i);
  hubbub1_program_watermarks(&d->hubbub.base,&d->state.bw_ctx.bw.dcn.watermarks,d->limits.ref_khz/1000,false);
- for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)if(d->mask&(1u<<i))program_pipe(d,i);
+ for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(d->mask&(1u<<i))program_pipe(d,i);
  r4dcn_leave(d);return d->fault;
 }
 /* No clock change while a peer is scanning. Fixed full-rate DPP is a
@@ -168,7 +168,7 @@ int r4dcn_program(void *storage) {
 int r4dcn_fixed_clock(void *storage,uint32_t khz) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(d->fault || khz<100000 || khz>d->limits.disp_khz || khz>d->limits.dpp_khz)result=R4DCN_INVALID;
- for(unsigned i=0;!result && i<R4DCN_PIPES;i++)if(!frontend_quiet(d,i))result=R4DCN_STATE;
+ for(unsigned i=0;!result && i<d->limits.pipe_count;i++)if(!frontend_quiet(d,i))result=R4DCN_STATE;
  if(!result && !d->fault)d->fixed_disp_khz=khz;
  r4dcn_leave(d);return d->fault?d->fault:result;
 }
@@ -179,14 +179,14 @@ static void unlink_pipe(struct r4dcn *d,unsigned i) {
 }
 int r4dcn_remove(void *storage,uint32_t pipe) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
- if(pipe>=R4DCN_PIPES || !d->programmed || d->fault || !(d->mask&(1u<<pipe)) ||
+ if(pipe>=d->limits.pipe_count || !d->programmed || d->fault || !(d->mask&(1u<<pipe)) ||
   (d->running&(1u<<pipe)) || !frontend_quiet(d,pipe))result=R4DCN_STATE;
  if(!result && !d->fault) {
   unlink_pipe(d,pipe);
   if(!d->fault) {
    d->mask&=~(1u<<pipe);d->count=0;
    memset(d->state.streams,0,sizeof(d->state.streams));
-   for(unsigned i=0;i<R4DCN_PIPES;i++)if(d->mask&(1u<<i))d->state.streams[d->count++]=&d->streams[i];
+   for(unsigned i=0;i<d->limits.pipe_count;i++)if(d->mask&(1u<<i))d->state.streams[d->count++]=&d->streams[i];
    d->state.stream_count=d->count;
   }
  }
@@ -196,7 +196,7 @@ int r4dcn_update(void *storage,const void *candidate,uint32_t pipe) {
  struct r4dcn *d=storage;const struct r4dcn *n=candidate;
  int result=r4dcn_enter(d);if(result)return result;
  if(!n || n==d || n->self!=(uintptr_t)n || !n->prepared || n->programmed || n->fault ||
-  !d->prepared || !d->programmed || d->fault || !d->fixed_disp_khz || pipe>=R4DCN_PIPES ||
+  !d->prepared || !d->programmed || d->fault || !d->fixed_disp_khz || pipe>=d->limits.pipe_count ||
   !(n->mask&(1u<<pipe)) || (d->running&(1u<<pipe)) ||
   (n->mask&~(1u<<pipe))!=(d->mask&~(1u<<pipe)) || memcmp(&d->limits,&n->limits,sizeof(d->limits)))result=R4DCN_STATE;
  if(!result && (n->state.bw_ctx.bw.dcn.clk.dispclk_khz>d->fixed_disp_khz ||
@@ -204,7 +204,7 @@ int r4dcn_update(void *storage,const void *candidate,uint32_t pipe) {
  if(!result && !frontend_quiet(d,pipe))result=R4DCN_STATE;
  /* An unrelated timing/address change must never ride along this update.
   * Pending peer flips keep their own request address and receipt. */
- for(unsigned i=0;!result && i<R4DCN_PIPES;i++)if(i!=pipe && (d->mask&(1u<<i))) {
+ for(unsigned i=0;!result && i<d->limits.pipe_count;i++)if(i!=pipe && (d->mask&(1u<<i))) {
   if(memcmp(&d->modes[i],&n->modes[i],sizeof(struct r4dcn_mode)))result=R4DCN_STATE;
   uint32_t lock=dm_read_reg(&d->ctx,tg_regs[i].OTG_MASTER_UPDATE_LOCK);
   if(lock&(tg_mask.OTG_MASTER_UPDATE_LOCK|tg_mask.UPDATE_LOCK_STATUS) ||
@@ -219,14 +219,14 @@ int r4dcn_update(void *storage,const void *candidate,uint32_t pipe) {
  memset(&d->state.res_ctx.pipe_ctx[pipe],0,sizeof(struct pipe_ctx));
  result=mode(d,&n->modes[pipe]);
  d->count=0;
- for(unsigned i=0;i<R4DCN_PIPES;i++)if(d->mask&(1u<<i)) {
+ for(unsigned i=0;i<d->limits.pipe_count;i++)if(d->mask&(1u<<i)) {
   d->state.streams[d->count++]=&d->streams[i];
   struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];const struct pipe_ctx *q=&n->state.res_ctx.pipe_ctx[i];
   p->rq_regs=q->rq_regs;p->dlg_regs=q->dlg_regs;p->ttu_regs=q->ttu_regs;p->pipe_dlg_param=q->pipe_dlg_param;
  }
  d->state.stream_count=d->count;d->state.bw_ctx.bw.dcn=n->state.bw_ctx.bw.dcn;
  hubbub1_program_watermarks(&d->hubbub.base,&d->state.bw_ctx.bw.dcn.watermarks,d->limits.ref_khz/1000,false);
- for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)if(i!=pipe && (d->running&(1u<<i))) {
+ for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(i!=pipe && (d->running&(1u<<i))) {
   struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct timing_generator *tg=&d->tgs[i].base;
   d->tg_locked|=1u<<i;optc1_lock(tg);
   hubp1_program_requestor(&d->hubps[i].base,&p->rq_regs);
@@ -242,7 +242,7 @@ int r4dcn_quiesce(void *storage) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  /* A retry can observe late idle, but never silently acknowledge a timeout. */
  d->fault=0;
- for(unsigned i=0;i<R4DCN_PIPES;i++) {
+ for(unsigned i=0;i<d->limits.pipe_count;i++) {
   if(!frontend_quiet(d,i))result=R4DCN_STATE;
  }
  if(!result && !d->fault) { d->programmed=0;d->running=0; }

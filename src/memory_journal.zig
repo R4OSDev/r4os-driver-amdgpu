@@ -9,7 +9,7 @@ pub const Journal = struct {
     records: [256]Record = @splat(.{}), count: usize = 0, restored: bool = false,
     fn transient(address: u32) bool {
         return address == r.nb.HDP_MEM_COHERENCY_FLUSH_CNTL or address == r.gfx.VM_INVALIDATE_ENG17_REQ or
-            address == r.mm.VM_INVALIDATE_ENG17_REQ or address == r.gfx.VM_L2_CNTL2 or address == r.mm.VM_L2_CNTL2;
+            address == r.mm.VM_INVALIDATE_ENG17_REQ or address == r.mm.VM_INVALIDATE_ENG17_SEM or address == r.gfx.VM_L2_CNTL2 or address == r.mm.VM_L2_CNTL2;
     }
     fn control(address: u32) bool {
         inline for (.{ r.gfx, r.mm }) |R| {
@@ -24,10 +24,10 @@ pub const Journal = struct {
         if (self.count == self.records.len or self.restored) return error.Capacity;
         self.records[self.count] = .{ .address = address, .value = try io.read(address) }; self.count += 1;
     }
-    pub fn restore(self: *Journal, io: anytype) Error!void {
+    pub fn restore(self: *Journal, io: anytype, invalidator: *@import("memory_hubs.zig").Invalidator) Error!void {
         if (self.restored) return;
         for (self.records[0..self.count]) |record| if (!control(record.address)) try io.write(record.address, record.value);
-        try @import("memory_hubs.zig").flush(io, 0); try @import("memory_hubs.zig").flush(io, 1);
+        try invalidator.flush(io, 0); try invalidator.flush(io, 1);
         for (self.records[0..self.count]) |record| if (control(record.address)) try io.write(record.address, record.value);
         try io.barrier();
         for (self.records[0..self.count]) |record| if (try io.read(record.address) != record.value) return error.Unconfirmed;

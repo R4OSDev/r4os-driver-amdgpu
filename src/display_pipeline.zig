@@ -35,6 +35,13 @@ pub const Owner = struct {
     sleep_brightness: ?u16 = null,
     fingerprint: ?[32]u8 = null,
     failure: ?anyerror = null,
+    prepare_step: enum { empty, entry, storage, panel, commands, boot_guard, boot_video, panel_state, original_plan, candidate_plan, inherited_admit, stop, discover, select_original, select_native, replan, clocks, pixel_clock, stream, train, ready } = .empty,
+    prepare_native_result: c_int = 0,
+    prepare_command: u32 = std.math.maxInt(u32),
+    prepare_revision: [2]u8 = .{ 0, 0 },
+    prepare_boot_video: u32 = 0,
+    prepare_panel_state: c.struct_r4dcn_panel_state = std.mem.zeroes(c.struct_r4dcn_panel_state),
+    prepare_inherited: c.struct_r4dcn_inherited_probe = std.mem.zeroes(c.struct_r4dcn_inherited_probe),
     restore_frame: u32 = 0,
     restore_observed_ns: u64 = 0,
     restored: bool = false,
@@ -236,11 +243,18 @@ pub const Owner = struct {
         }
         return error.Timeout;
     }
-    fn validateCommands(runtime: *@import("panel_runtime.zig").Runtime) !void {
+    fn validateCommands(self: *Owner, runtime: *@import("panel_runtime.zig").Runtime) !void {
         inline for (.{ .{ "setpixelclock", 1, 7 }, .{ "setdceclock", 2, 1 }, .{ "dig1transmittercontrol", 1, 6 } }) |entry| {
-            const revision = try runtime.vm.revision(@offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, entry[0]) / 2);
+            self.prepare_command = @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, entry[0]) / 2;
+            self.prepare_revision = .{ 0, 0 };
+            const revision = try runtime.vm.revision(self.prepare_command);
+            self.prepare_revision = revision;
             if (revision[0] != entry[1] or revision[1] != entry[2]) return error.Unsupported;
         }
+    }
+    fn prepareChecked(self: *Owner, result: c_int) !void {
+        self.prepare_native_result = result;
+        try checked(result);
     }
     fn selectMode(self: *Owner, p: *panel.Panel, mode: *c.struct_r4dcn_mode) !void {
         const wanted: edid.timing.Timing = .{ .width = mode.width, .height = mode.height, .h_total = mode.h_total, .v_total = mode.v_total,
@@ -259,35 +273,59 @@ pub const Owner = struct {
         return error.Unsupported;
     }
     fn prepareHardware(self: *Owner) !void {
+        self.prepare_step = .entry;
         const core = try self.enter();
+        self.prepare_step = .storage;
         const storage = try core.workerStorage();
+        self.prepare_step = .panel;
         const runtime = try core.workerPanel();
-        try validateCommands(runtime);
+        self.prepare_step = .commands;
+        try self.validateCommands(runtime);
+        self.prepare_step = .boot_guard;
         if (!core.native.?.bootMatches()) return error.Unconfirmed;
+        self.prepare_step = .boot_video;
         var active: u32 = 0;
-        try checked(c.r4dcn_link_video(storage, 0, self.boot_mode.pipe, &active));
+        const video_result = c.r4dcn_link_video(storage, 0, self.boot_mode.pipe, &active);
+        self.prepare_boot_video = active;
+        try self.prepareChecked(video_result);
         if (active != 1) return error.Unsupported; // Boot must actually use this eDP route.
-        var initial: c.struct_r4dcn_panel_state = undefined;
-        try checked(c.r4dcn_panel_read(storage, &initial));
+        self.prepare_step = .panel_state;
+        var initial: c.struct_r4dcn_panel_state = std.mem.zeroes(c.struct_r4dcn_panel_state);
+        const panel_result = c.r4dcn_panel_read(storage, &initial);
+        self.prepare_panel_state = initial;
+        try self.prepareChecked(panel_result);
         if (initial.powered != 1) return error.Unconfirmed;
         self.boot_lit = initial.lit != 0;
         // Validate both original backing and candidate before the first write.
+        self.prepare_step = .original_plan;
         var original_plan: c.struct_r4dcn_plan = undefined;
-        try checked(c.r4dcn_prepare(storage, &self.boot_mode, 1, &original_plan));
-        try checked(c.r4dcn_prepare(storage, &core.mode, 1, &core.plan));
-        try checked(c.r4dcn_inherited_admit(storage));
+        try self.prepareChecked(c.r4dcn_prepare(storage, &self.boot_mode, 1, &original_plan));
+        self.prepare_step = .candidate_plan;
+        try self.prepareChecked(c.r4dcn_prepare(storage, &core.mode, 1, &core.plan));
+        self.prepare_step = .inherited_admit;
+        try self.prepareChecked(c.r4dcn_inherited_admit(storage, &self.prepare_inherited));
         self.touched = true; self.restored = false;
+        self.prepare_step = .stop;
         try self.stopHardware();
+        self.prepare_step = .discover;
         try runtime.run(.discover, 0);
         const p = &runtime.protocol.?;
         if (p.brightness_known) self.boot_brightness = p.brightness;
+        self.prepare_step = .select_original;
         try self.selectMode(p, &self.boot_mode);
+        self.prepare_step = .select_native;
         try self.selectMode(p, &core.mode);
-        try checked(c.r4dcn_prepare(storage, &core.mode, 1, &core.plan));
+        self.prepare_step = .replan;
+        try self.prepareChecked(c.r4dcn_prepare(storage, &core.mode, 1, &core.plan));
+        self.prepare_step = .clocks;
         try self.applyClocks(core.plan);
+        self.prepare_step = .pixel_clock;
         try runtime.run(.clock, 0);
+        self.prepare_step = .stream;
         try runtime.run(.stream_configure, 0);
+        self.prepare_step = .train;
         try runtime.run(.train, 0);
+        self.prepare_step = .ready;
         // Core programs HUBBUB/MPC/frontend after this hook. The outer worker
         // enables TG, enables DP video and waits for the actual scanout receipt.
     }

@@ -30,7 +30,9 @@ pub const Owner = struct {
         const map = memory.layout.?;
         if (map.media.span.bytes != 1024 * 1024 or !map.pool.owns(map.media)) return error.Invalid;
         const entry = native.flow.plan.entries[12];
-        if (entry.role != .vcn or !entry.confirmed or entry.address == 0 or entry.version != @import("firmware.zig").specification(.vcn).ucode_version) return error.Firmware;
+        const store = native.flow.store orelse return error.Firmware;
+        const firmware = store.specification(.vcn) orelse return error.Firmware;
+        if (entry.role != .vcn or !entry.confirmed or entry.address == 0 or entry.version != firmware.ucode_version) return error.Firmware;
         // Linux's firmware cache includes the original header + one dword,
         // rounded to a GPU page. PSP returns the authenticated code location.
         const container = native.flow.store.?.container(.vcn) orelse return error.Firmware;

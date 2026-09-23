@@ -25,7 +25,22 @@ const fw = @import("firmware.zig");
 const c = @import("start_common.zig");
 const w = c.wire;
 pub const Error = c.Error;
-pub const Entry = struct { role: fw.Role, span: fw.Range, fw_type: u32, version: u32, confirmed: bool = false, address: u64 = 0 };
+/// Qualification exception for the measured Lenovo ROM only. Rejected restore
+/// microcode remains unavailable; callers must disable SRM/GC power saving.
+pub fn restoreQuirk(snapshot: @import("identity.zig").Snapshot, chip: @import("identity.zig").Chip, digest: [32]u8) bool {
+    return chip.family == .raven2 and @import("asic_profile.zig").Profile.nativeBoard(snapshot, chip) and
+        @import("std").mem.eql(u8, &digest, &@import("boot_pitch.zig").rom_sha256);
+}
+pub const Entry = struct {
+    role: fw.Role, span: fw.Range, fw_type: u32, version: u32,
+    confirmed: bool = false, address: u64 = 0,
+    receipt: bool = false, response: u32 = 0,
+    pub fn restoreList(self: *const Entry) bool {
+        return self.fw_type == w.GFX_FW_TYPE_RLC_RESTORE_LIST_SRM_CNTL or
+            self.fw_type == w.GFX_FW_TYPE_RLC_RESTORE_LIST_GPM_MEM or
+            self.fw_type == w.GFX_FW_TYPE_RLC_RESTORE_LIST_SRM_MEM;
+    }
+};
 pub const Plan = struct {
     entries: [13]Entry = undefined, count: usize = 0, asd: fw.Range = .{}, generation: u64 = 0,
     pub fn prepare(self: *Plan, store: *const @import("firmware_store.zig").Store) Error!void {
@@ -48,7 +63,7 @@ pub const Plan = struct {
         try self.add(store, rlc, w.GFX_FW_TYPE_RLC_G, .payload);
         try self.add(store, .vcn, w.GFX_FW_TYPE_VCN, .payload);
         const blob = store.container(.asd) orelse return error.Firmware;
-        self.asd = (fw.inspect(blob, fw.specification(.asd)) catch return error.Firmware).payload;
+        self.asd = (fw.inspect(blob, store.specification(.asd) orelse return error.Firmware) catch return error.Firmware).payload;
         // VCN is authenticated into the retained PSP TMR; its IP owner starts
         // the VCPU only after the media work arena and ring ownership exist.
         // DMCU and optional TAs remain CPU-admitted. No SMU/SOS image exists for Picasso.
@@ -56,7 +71,7 @@ pub const Plan = struct {
     const Part = enum { payload, mec_code, jump_table, cntl, gpm, srm };
     fn add(self: *Plan, store: *const @import("firmware_store.zig").Store, role: fw.Role, kind: u32, part: Part) Error!void {
         const blob = store.container(role) orelse return error.Firmware;
-        const spec = fw.specification(role);
+        const spec = store.specification(role) orelse return error.Firmware;
         const layout = fw.inspect(blob, spec) catch return error.Firmware;
         var span = switch (part) {
             .payload, .mec_code => layout.payload, .jump_table => layout.jump_table,
@@ -72,6 +87,20 @@ pub const Plan = struct {
     pub fn confirmed(self: *const Plan) bool {
         if (self.count != self.entries.len) return false;
         for (&self.entries) |*entry| if (!entry.confirmed) return false;
+        return true;
+    }
+    pub fn executionConfirmed(self: *const Plan, restore_optional: bool) bool {
+        if (self.count != self.entries.len) return false;
+        for (&self.entries) |*entry| {
+            if (entry.confirmed) continue;
+            if (!restore_optional or !entry.restoreList() or entry.role != .rlc or entry.version != 73 or !entry.receipt or
+                (entry.response != 0xffff300f and entry.response != 0xffff000f)) return false;
+        }
+        return true;
+    }
+    pub fn restoreConfirmed(self: *const Plan) bool {
+        if (self.count != self.entries.len) return false;
+        for (&self.entries) |*entry| if (entry.restoreList() and !entry.confirmed) return false;
         return true;
     }
 };

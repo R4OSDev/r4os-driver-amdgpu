@@ -17,7 +17,7 @@ pub const Phase = enum { empty, preparing, planned, programming, programmed, ret
 pub const Hooks = struct {
     context: usize,
     // Runs in the display task. Must confirm the planned DISPCLK and its DPP
-    // divider, the fixed DCF/SOC/fabric point, all four pipes blank/disabled,
+    // divider, the fixed DCF/SOC/fabric point, all present pipes quiet,
     // and preparation of the selected board links.
     prepare: *const fn (usize, *const c.struct_r4dcn_plan, *const c.struct_r4dcn_limits) bool,
     // Restores all changed frontend/link/clock state, including HUBBUB. The
@@ -51,6 +51,7 @@ pub const Owner = struct {
     heap: ?r4os.r4dev.DriverHeapContext = null,
     threads: ?r4os.r4dev.DriverThreadContext = null,
     clock: ?r4os.r4dev.DriverResourceContext = null,
+    services: ?@import("display_services.zig").Owner = null,
     allocation: a.DriverHeapAllocation = .{},
     panel_allocation: a.DriverHeapAllocation = .{},
     hdmi_allocation: a.DriverHeapAllocation = .{},
@@ -77,6 +78,11 @@ pub const Owner = struct {
     board: ?*const @import("bios.zig").Board = null,
     panel_operation: panel.Operation = .discover,
     panel_value: u16 = 0,
+    // Written by the panel-bind task, observed only after its confirmed join.
+    panel_bind_diagnostic: panel.BindDiagnostic = .{},
+    panel_bind_error: ?anyerror = null,
+    panel_bind_commands: usize = 0,
+    panel_bind_data: usize = 0,
     panel_identity: a.GfxOutputId = .{},
     initialized: bool = false,
     thread: u64 = 0,
@@ -125,10 +131,11 @@ pub const Owner = struct {
     fn prepareImpl(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
         if (self.self_address != 0) return error.Busy;
         const integrated = board.integrated orelse return error.Unsupported;
+        const layout = memory.layout orelse return error.Stale;
         const held = &native.hold;
         if (!native.firmwareReady() or native.memory != memory or !memory.prepared or memory.engine_users == 0 or
             memory.engine_users == std.math.maxInt(u32) or !native.guard.valid or held.held_generation == 0 or !held.effects or
-            limits.channels != integrated.uma_channels or memory.self_address != @intFromPtr(memory)) return error.Stale;
+            limits.channels != integrated.uma_channels or limits.pipe_count != layout.profile.displayPipes() or mode.pipe >= limits.pipe_count or memory.self_address != @intFromPtr(memory)) return error.Stale;
         const threads = ctx.threads() orelse return error.Unsupported;
         if (!threads.canAbort() or !threads.hasCurrentRequest()) return error.Unsupported;
         const heap = ctx.heap() orelse return error.Unsupported;
@@ -144,6 +151,7 @@ pub const Owner = struct {
         self.threads = threads;
         self.heap = heap;
         self.clock = clock;
+        if (ctx.graphicsOutputs()) |outputs| self.services = .{ .ctx = ctx.*, .threads = threads, .clock = clock, .outputs = outputs };
         self.frequency = frequency;
         self.limits = limits;
         self.mode = mode;
@@ -295,6 +303,7 @@ pub const Owner = struct {
     }
     fn launch(self: *Owner, action: @FieldType(Owner, "action")) Error!void {
         if (self.thread != 0 or self.self_address != @intFromPtr(self)) return error.Busy;
+        if (self.services) |*services| if (services.call.handle != 0) return error.Busy;
         self.action = action;
         self.joined = false;
         self.worker_result = 0;
@@ -306,7 +315,7 @@ pub const Owner = struct {
     pub fn poll(self: *Owner) bool {
         if (self.self_address == 0) return true;
         if (self.self_address != @intFromPtr(self)) return false;
-        if (self.thread == 0) return true;
+        if (self.thread == 0) return self.servicesRetired();
         if (!self.joined) {
             if (self.threads.?.join(self.thread, 0, &self.worker_result) != 0) return false;
             self.joined = true;
@@ -317,6 +326,10 @@ pub const Owner = struct {
         }
         if (self.threads.?.release(self.thread) != 0) return false;
         self.thread = 0;
+        return self.servicesRetired();
+    }
+    fn servicesRetired(self: *Owner) bool {
+        if (self.services) |*services| return services.retired();
         return true;
     }
     pub fn close(self: *Owner) bool {
@@ -447,10 +460,17 @@ pub const Owner = struct {
                     allocation.cpu_address > std.math.maxInt(u64) - bytes or allocation.alignment < 16 or allocation.reserved != 0) return c.R4DCN_INVALID;
                 const runtime: *panel.Runtime = @ptrFromInt(allocation.cpu_address);
                 runtime.* = .{};
-                runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }, self.mode.pipe) catch {
+                runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }, self.mode.pipe) catch |err| {
+                    self.panel_bind_error = err;
+                    self.panel_bind_diagnostic = runtime.bind_diagnostic;
+                    self.panel_bind_commands = runtime.vm.commands.len;
+                    self.panel_bind_data = runtime.vm.data.len;
                     self.result = c.R4DCN_UNSUPPORTED;
                     return 0;
                 };
+                self.panel_bind_diagnostic = runtime.bind_diagnostic;
+                self.panel_bind_commands = runtime.vm.commands.len;
+                self.panel_bind_data = runtime.vm.data.len;
                 self.result = 0;
             },
             .hdmi_bind => {
@@ -465,6 +485,7 @@ pub const Owner = struct {
                 runtime.* = .{};
                 self.hdmi_storage_valid = true;
                 runtime.audio.peer = self.audio_peer;
+                if (self.services) |*services| { runtime.services = services; runtime.audio.services = services; }
                 runtime.bind(self.storage().?, self.board.?, .{ .context = raw, .read = atomRead, .write = atomWrite, .now = atomNow, .delay = atomDelay, .worker = atomWorker }) catch |err| {
                     runtime.last_bind_error = err;
                     self.result = c.R4DCN_UNSUPPORTED;
@@ -482,7 +503,8 @@ pub const Owner = struct {
             .hdmi_publish => {
                 const runtime: *hdmi.Runtime = @ptrFromInt(self.hdmi_allocation.cpu_address);
                 self.result = 0;
-                runtime.published(self.hdmi_publish_token, self.hdmi_output, self.ctx.?.graphicsOutputs() orelse return c.R4DCN_UNSUPPORTED,
+                const services = if (self.services) |*value| value else return c.R4DCN_UNSUPPORTED;
+                runtime.published(self.hdmi_publish_token, self.hdmi_output, services.outputs,
                     self.hdmi_retirement.?) catch { self.result = c.R4DCN_IO; };
                 if (c.r4dcn_fault(self.storage()) != 0) self.phase = .retained;
             },
@@ -497,10 +519,10 @@ pub const Owner = struct {
                 self.result = 0;
                 const runtime: *panel.Runtime = @ptrFromInt(self.panel_allocation.cpu_address);
                 if (runtime.self_address != @intFromPtr(runtime) or runtime.protocol == null) return c.R4DCN_STATE;
-                const outputs = self.ctx.?.graphicsOutputs() orelse return c.R4DCN_UNSUPPORTED;
+                const outputs = if (self.services) |*value| value else return c.R4DCN_UNSUPPORTED;
                 if (!outputs.supportsBrightness()) return c.R4DCN_UNSUPPORTED;
                 self.effects = true; self.frontend_attempted = true; self.quiet = false;
-                runtime.brightness.service(&runtime.protocol.?, &outputs, self.panel_identity, atomNow(@intFromPtr(self))) catch {
+                runtime.brightness.service(&runtime.protocol.?, outputs, self.panel_identity, atomNow(@intFromPtr(self))) catch {
                     self.result = c.R4DCN_IO;
                 };
                 if (runtime.protocol.?.phase == .retained) self.phase = .retained;

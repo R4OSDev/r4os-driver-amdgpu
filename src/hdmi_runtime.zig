@@ -29,6 +29,7 @@ pub const Runtime = struct {
     last_bind_error: ?anyerror = null,
     output: a.GfxOutputId = .{},
     outputs: ?r4os.driver_outputs.Context = null,
+    services: ?*@import("display_services.zig").Owner = null,
     retirement: ?hotplug.Io = null,
     reset_detached: bool = false,
     // Index0 is reserved for the internal eDP panel. /20 generalizes to the
@@ -179,11 +180,16 @@ pub const Runtime = struct {
         var receipt: hotplug.Receipt = .{ .generation = token };
         if (token != self.connection.generation or self.outputs == null or self.retirement == null or !self.worker()) return receipt;
         switch (step) {
-            .pause => { receipt.done = self.outputs.?.pauseOutput(&self.output, true) == a.gfx_output_ok; },
+            .pause => {
+                const status = if (self.services) |services| services.pauseOutput(&self.output, true) else self.outputs.?.pauseOutput(&self.output, true);
+                receipt.done = status == a.gfx_output_ok;
+            },
             .withdraw => {
                 receipt = self.retirement.?.retire(self.retirement.?.context, token, .withdraw);
-                if (receipt.generation == token and receipt.done and receipt.scanout_stopped and receipt.pending_jobs == 0 and receipt.live_leases == 0)
-                    receipt.done = self.outputs.?.withdraw(&self.output) == a.gfx_output_ok;
+                if (receipt.generation == token and receipt.done and receipt.scanout_stopped and receipt.pending_jobs == 0 and receipt.live_leases == 0) {
+                    const status = if (self.services) |services| services.withdraw(&self.output) else self.outputs.?.withdraw(&self.output);
+                    receipt.done = status == a.gfx_output_ok;
+                }
             },
             else => {
                 receipt = self.retirement.?.retire(self.retirement.?.context, token, step);

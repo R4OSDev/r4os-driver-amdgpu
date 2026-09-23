@@ -34,18 +34,43 @@ const Ring = @import("queue_ring.zig").Ring;
 const set = l.set;
 pub const Error = c.Error;
 pub const Phase = enum { empty, rlc_delay, ring_delay, map_wait, test_wait, ready, unmap_wait, kiq_wait, park, closed };
-pub const Gate = struct { firmware_ready: bool, boot_held: bool, gmc_enabled: bool };
+pub const CompletionSample = struct {
+    // GFXHUB fault status/page address, CP status/stalls, GRBM. Valid bits report
+    // successful reads only; zero or pre-existing faults are not diagnoses.
+    values: [8]u32 = @splat(0), valid: u8 = 0,
+};
+fn captureCompletion(io: anytype) CompletionSample {
+    var sample: CompletionSample = .{};
+    inline for (.{ r.VM_L2_PROTECTION_FAULT_STATUS, r.VM_L2_PROTECTION_FAULT_ADDR_LO32,
+        r.VM_L2_PROTECTION_FAULT_ADDR_HI32, r.CP_STAT, r.CP_STALLED_STAT1,
+        r.CP_STALLED_STAT2, r.CP_STALLED_STAT3, r.GRBM_STATUS }, 0..) |address, i| {
+        if (c.read(io, address)) |value| {
+            sample.values[i] = value; sample.valid |= @as(u8, 1) << i;
+        } else |_| {}
+    }
+    return sample;
+}
+pub const Gate = struct { profile: @import("asic_profile.zig").Profile, rlc: ?*const @import("gc_rlc.zig").Plan = null,
+    firmware_ready: bool, boot_held: bool, gmc_enabled: bool, restore_ready: bool = true };
 pub const Owner = struct {
     phase: Phase = .empty, touched: bool = false, faulted: bool = false, selftest_round: u8 = 0,
     rings: [3]Ring = @splat(.{}), deadline: c.Deadline = .{}, park: @import("start_engines.zig").Park = .{},
     saved_bank: u32 = 0, saved_index: u32 = 0, saved_gfx_lower: u32 = 0, saved_gfx_upper: u32 = 0,
     saved_mec_lower: u32 = 0, saved_mec_upper: u32 = 0, cu_mask: u32 = 0, rb_mask: u32 = 0, gb_addr_config: u32 = 0,
     kiq_live: bool = false, compute_mapped: bool = false, stop_started: bool = false, kiq_dequeue: bool = false,
+    // Resident completion observations. Read-only pipeline snapshots bracket
+    // the first selftest while this owner retains its arena and register window.
+    sampled_rptr: [3]u32 = @splat(0), sampled_fence: [3][2]u64 = @splat(.{ 0, 0 }),
+    sampled_marker: [3]u32 = @splat(0), sampled_mask: u8 = 0, completion_status: u32 = 0,
+    completion_before: CompletionSample = .{}, completion_failure: CompletionSample = .{},
+    sampled_hqd: u32 = 0, hqd_sampled: bool = false, stop_failure: ?Error = null,
     commands: [1024]u32 = undefined,
     pub fn begin(self: *Owner, io: anytype, arena: anytype, gate: Gate) Error!void {
         if (self.touched or self.phase != .empty or !arena.ready or !gate.firmware_ready or !gate.boot_held or !gate.gmc_enabled) return error.Unconfirmed;
+        if (gate.profile == .raven2 and (gate.rlc == null or !gate.rlc.?.ready)) return error.Unconfirmed;
+        if (!gate.restore_ready and gate.profile != .raven2) return error.Unconfirmed;
         const park = @import("start_engines.zig");
-        if (try c.read(io, r.CP_ME_CNTL) & park.cp_mask != park.cp_mask or try c.read(io, r.CP_MEC_CNTL) & park.mec_mask != park.mec_mask or
+        if (try c.read(io, r.CP_ME_CNTL) & park.cp_halt_mask != park.cp_halt_mask or try c.read(io, r.CP_MEC_CNTL) & park.mec_halt_mask != park.mec_halt_mask or
             try c.read(io, r.RLC_CNTL) & r.RLC_CNTL__RLC_ENABLE_F32_MASK != 0 or try c.read(io, r.GRBM_STATUS) & r.GRBM_STATUS__GUI_ACTIVE_MASK != 0) return error.Unconfirmed;
         self.saved_bank = try c.read(io, r.GRBM_GFX_CNTL); self.saved_index = try c.read(io, r.GRBM_GFX_INDEX);
         self.saved_gfx_lower = try c.read(io, r.CP_RB_DOORBELL_RANGE_LOWER); self.saved_gfx_upper = try c.read(io, r.CP_RB_DOORBELL_RANGE_UPPER);
@@ -62,19 +87,21 @@ pub const Owner = struct {
         for (try arena.words32(l.sample_offset, l.sample_bytes)) |*word| word.* = 0xffffffff;
         const count = try l.clearState(&self.commands);
         for (self.commands[0..count], (try arena.words32(l.csb, l.csb_bytes))[0..count]) |word, *dest| dest.* = word;
-        try self.constants(io);
+        try self.constants(io, gate.profile);
         // Bring-up policy keeps CG/PG/GFXOFF and load balancing disabled until
         // the dedicated power milestone; no RLC power-save access can outlive
-        // this arena. PSP already confirmed all PFP/ME/CE/MEC1/MEC2/RLC images.
+        // this arena. PSP confirmed PFP/ME/CE/MEC1/MEC2 and the main RLC image.
         try io.write(r.RLC_CGCG_CGLS_CTRL, 0); try io.write(r.RLC_CGCG_CGLS_CTRL_3D, 0);
         const pg = r.RLC_PG_CNTL__GFX_POWER_GATING_ENABLE_MASK | r.RLC_PG_CNTL__GFX_PIPELINE_PG_ENABLE_MASK |
             r.RLC_PG_CNTL__STATIC_PER_CU_PG_ENABLE_MASK | r.RLC_PG_CNTL__DYN_PER_CU_PG_ENABLE_MASK | r.RLC_PG_CNTL__CP_PG_DISABLE_MASK;
         try c.set(io, r.RLC_PG_CNTL, pg, r.RLC_PG_CNTL__CP_PG_DISABLE_MASK);
         try set(io, "RLC_LB_CNTL", "LOAD_BALANCE_ENABLE", 0);
-        try set(io, "RLC_SRM_CNTL", "SRM_ENABLE", 1);
         const csb = try arena.address(l.csb, count * 4);
         try io.write(r.RLC_CSIB_ADDR_HI, @truncate(csb >> 32)); try io.write(r.RLC_CSIB_ADDR_LO, @truncate(csb));
         try io.write(r.RLC_CSIB_LENGTH, @intCast(count));
+        if (gate.profile == .raven2 and gate.restore_ready) try gate.rlc.?.apply(io);
+        // Missing restore microcode must not arm the save/restore machine.
+        try set(io, "RLC_SRM_CNTL", "SRM_ENABLE", @intFromBool(gate.restore_ready));
         const table = try arena.address(l.cp_table, l.cp_table_bytes);
         if (table >> 40 != 0) return error.Unsupported;
         try io.write(r.RLC_JUMP_TABLE_RESTORE, @truncate(table >> 8));
@@ -82,11 +109,12 @@ pub const Owner = struct {
         try c.hdpFlush(io); try set(io, "RLC_CNTL", "RLC_ENABLE_F32", 1);
         try self.deadline.start(io.nowNs(), 500_000_000, 50_000); self.phase = .rlc_delay;
     }
-    fn constants(self: *Owner, io: anytype) Error!void {
+    fn constants(self: *Owner, io: anytype, profile: @import("asic_profile.zig").Profile) Error!void {
         try io.write(r.GRBM_GFX_CNTL, 0);
         try io.write(r.GRBM_GFX_INDEX, r.GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK |
             r.GRBM_GFX_INDEX__SE_BROADCAST_WRITES_MASK | r.GRBM_GFX_INDEX__SH_BROADCAST_WRITES_MASK);
-        inline for (.{ r.golden_settings_gc_9_1, r.golden_settings_gc_9_1_rv1, r.golden_settings_gc_9_x_common }) |table| {
+        const variant: []const r.Golden = if (profile == .raven2) &r.golden_settings_gc_9_1_rv2 else &r.golden_settings_gc_9_1_rv1;
+        for ([_][]const r.Golden{ &r.golden_settings_gc_9_1, variant, &r.golden_settings_gc_9_x_common }) |table| {
             for (table) |entry| {
                 const old = if (entry.clear == 0xffffffff) 0 else try c.read(io, entry.address);
                 try io.write(entry.address, (old & ~entry.clear) | entry.set);
@@ -97,8 +125,8 @@ pub const Owner = struct {
         if (self.gb_addr_config == 0 or ((self.gb_addr_config ^ try c.read(io, r.GB_ADDR_CONFIG_READ)) & 0xffff77ff) != 0) return error.Unconfirmed;
         try set(io, "GRBM_CNTL", "READ_TIMEOUT", 0xff);
         try io.write(r.GRBM_GFX_INDEX, r.GRBM_GFX_INDEX__INSTANCE_BROADCAST_WRITES_MASK);
-        self.cu_mask = (~((try c.read(io, r.CC_GC_SHADER_ARRAY_CONFIG) | try c.read(io, r.GC_USER_SHADER_ARRAY_CONFIG)) >> r.CC_GC_SHADER_ARRAY_CONFIG__INACTIVE_CUS__SHIFT)) & 0x7ff;
-        self.rb_mask = (~((try c.read(io, r.CC_RB_BACKEND_DISABLE) | try c.read(io, r.GC_USER_RB_BACKEND_DISABLE)) >> r.CC_RB_BACKEND_DISABLE__BACKEND_DISABLE__SHIFT)) & 3;
+        self.cu_mask = (~((try c.read(io, r.CC_GC_SHADER_ARRAY_CONFIG) | try c.read(io, r.GC_USER_SHADER_ARRAY_CONFIG)) >> r.CC_GC_SHADER_ARRAY_CONFIG__INACTIVE_CUS__SHIFT)) & profile.cuMask();
+        self.rb_mask = (~((try c.read(io, r.CC_RB_BACKEND_DISABLE) | try c.read(io, r.GC_USER_RB_BACKEND_DISABLE)) >> r.CC_RB_BACKEND_DISABLE__BACKEND_DISABLE__SHIFT)) & profile.rbMask();
         try io.write(r.GRBM_GFX_INDEX, self.saved_index);
         if (self.cu_mask == 0 or self.rb_mask == 0) return error.Unsupported;
         for (0..2) |vmid| {
@@ -179,6 +207,7 @@ pub const Owner = struct {
         try c.hdpInvalidate(io);
         inline for (.{ Queue.gfx, Queue.compute, Queue.kiq }) |queue| {
             const rp = (try arena.words32(queue.readback(), 4))[0];
+            self.sampled_rptr[@intFromEnum(queue)] = rp;
             const ring = &self.rings[@intFromEnum(queue)];
             if (ring.words.len == 0) return error.State;
             // The upstream CP path returns a 32-bit DW readback and masks to
@@ -191,20 +220,37 @@ pub const Owner = struct {
         if (!try self.sample(io, arena, 2, l.sample_tokens[2])) return false;
         try io.write(r.GRBM_GFX_CNTL, Queue.compute.bank());
         const active = try c.read(io, r.CP_HQD_ACTIVE);
+        self.sampled_hqd = active; self.hqd_sampled = true;
         try io.write(r.GRBM_GFX_CNTL, self.saved_bank);
         return active & 1 != 0;
     }
     fn sample(self: *Owner, io: anytype, arena: anytype, index: usize, token: u64) Error!bool {
-        _ = self;
         const words = try arena.words32(l.sample_offset + index * 32, 16);
         const first = (@as(u64, words[1]) << 32) | words[0]; try io.barrier();
         const second = (@as(u64, words[1]) << 32) | words[0];
+        self.sampled_fence[index] = .{ first, second };
+        self.sampled_marker[index] = words[2];
+        self.sampled_mask |= @as(u8, 1) << @intCast(index);
         return first == token and second == token;
     }
     pub fn advance(self: *Owner, io: anytype, arena: anytype) Error!bool {
         if (self.faulted or !self.touched or self.stop_started) return error.State;
         if (self.phase == .ready) return true;
-        errdefer self.faulted = true;
+        errdefer |failure| {
+            self.faulted = true;
+            if (failure == error.Deadline and self.phase == .test_wait) {
+                // Preserve the original failure; absent/invalid diagnostic
+                // observations never become a completion or release receipt.
+                inline for (.{ Queue.gfx, Queue.compute }) |queue| {
+                    const index: usize = @intFromEnum(queue);
+                    _ = self.sample(io, arena, index, l.sample_tokens[index] + @as(u64, self.selftest_round) * 16) catch false;
+                }
+                self.completion_failure = captureCompletion(io);
+                if (self.completion_failure.valid & 128 != 0) {
+                    self.completion_status = self.completion_failure.values[7]; self.sampled_mask |= 8;
+                }
+            }
+        }
         if (!try self.deadline.check(io.nowNs())) return false;
         switch (self.phase) {
             .rlc_delay => {
@@ -243,6 +289,7 @@ pub const Owner = struct {
         return false;
     }
     fn submitTests(self: *Owner, io: anytype, arena: anytype) Error!void {
+        if (self.selftest_round == 0) self.completion_before = captureCompletion(io);
         inline for (.{ Queue.gfx, Queue.compute }) |queue| {
             const index: usize = @intFromEnum(queue); const slot = 62 + index;
             const marker: u32 = 0x4100 + @as(u32, self.selftest_round) * 16 + @as(u32, @intCast(index));
@@ -257,7 +304,7 @@ pub const Owner = struct {
             const n = p.encodeFrame(&self.commands, .{ .engine = if (queue == .gfx) .gfx else .compute,
                 .ib = @import("sdma_jobs.zig").arena_va + s.ib_offset + slot * s.ib_bytes, .words = 16,
                 .fence = try arena.address(l.sample_offset + index * 32, 8), .sequence = l.sample_tokens[index] + @as(u64, self.selftest_round) * 16,
-                .eop_scratch = if (queue == .gfx) try arena.address(l.scratch_offset, 256) else 0 }) catch return error.Invalid;
+                .eop_scratch = if (queue == .gfx) l.scratch_va else 0 }) catch return error.Invalid;
             try self.send(io, arena, queue, self.commands[0..n]);
         }
         try self.deadline.start(io.nowNs(), 2_000_000_000, 0);
@@ -270,6 +317,7 @@ pub const Owner = struct {
         try set(io, "CP_ME1_PIPE0_INT_CNTL", "PRIV_REG_INT_ENABLE", 1);
     }
     pub fn stop(self: *Owner, io: anytype, arena: anytype) Error!bool {
+        errdefer |failure| { self.stop_failure = failure; }
         if (!self.touched or self.phase == .closed) return true;
         if (!self.stop_started) {
             self.stop_started = true;
@@ -292,9 +340,9 @@ pub const Owner = struct {
             if (self.kiq_live) {
                 try io.write(r.GRBM_GFX_CNTL, Queue.kiq.bank());
                 // Preparation may fail before MEC ever leaves the original
-                // confirmed HALT/reset state. In that case proceed directly
+                // confirmed HALT state. In that case proceed directly
                 // to the idle proof; no instruction could dequeue the HQD.
-                const halted = try c.read(io, r.CP_MEC_CNTL) & @import("start_engines.zig").mec_mask == @import("start_engines.zig").mec_mask;
+                const halted = try c.read(io, r.CP_MEC_CNTL) & @import("start_engines.zig").mec_halt_mask == @import("start_engines.zig").mec_halt_mask;
                 if (!halted and !self.kiq_dequeue) { self.kiq_dequeue = true; try io.write(r.CP_HQD_DEQUEUE_REQUEST, 1); }
                 const active = try c.read(io, r.CP_HQD_ACTIVE); try io.write(r.GRBM_GFX_CNTL, self.saved_bank);
                 if (!halted and active & 1 != 0) return false;

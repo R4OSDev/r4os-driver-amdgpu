@@ -31,7 +31,7 @@
 static uint32_t rd(struct r4dcn *d,uint32_t reg) { return dm_read_reg(&d->ctx,reg); }
 static unsigned field(uint32_t v,uint32_t mask,unsigned shift) { return (v&mask)>>shift; }
 static int admitted(struct r4dcn *d,unsigned pipe) {
- return pipe<R4DCN_PIPES && d->prepared && d->programmed && (d->mask&(1u<<pipe)) && !d->fault;
+ return pipe<d->limits.pipe_count && d->prepared && d->programmed && (d->mask&(1u<<pipe)) && !d->fault;
 }
 static int finish(struct r4dcn *d,int result) { int fault=d->fault;r4dcn_leave(d);return fault?fault:result; }
 static bool running(struct r4dcn *d,unsigned pipe) {
@@ -64,7 +64,7 @@ static int stop_pipes(struct r4dcn *d,uint32_t mask) {
  /* Recovery may retry failed writes. It never clears fault and frees memory
   * without observing stopped TG, blank HUBP and no outstanding memory reads. */
  d->fault=0;
- for(unsigned i=0;i<R4DCN_PIPES && !d->fault;i++)if(mask&(1u<<i)) {
+ for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(mask&(1u<<i)) {
   struct timing_generator *tg=&d->tgs[i].base;
   if(d->tg_locked&(1u<<i)) { optc1_unlock(tg);if(!d->fault)d->tg_locked&=~(1u<<i); }
   if(d->cursor_locked&(1u<<i)) { mpc1_cursor_lock(&d->mpc.base,i,false);if(!d->fault)d->cursor_locked&=~(1u<<i); }
@@ -88,23 +88,49 @@ int r4dcn_scanout_stop(void *storage,uint32_t mask) {
  if(!d->programmed || !mask || (mask&~d->mask))return finish(d,R4DCN_STATE);
  return stop_pipes(d,mask);
 }
+bool r4dcn_frontend_quiet(struct r4dcn *d,unsigned i,bool allow_gated,struct r4dcn_inherited_probe *probe) {
+ static const uint32_t pg_status[]={
+  BASE(mmDOMAIN0_PG_STATUS_BASE_IDX)+mmDOMAIN0_PG_STATUS,
+  BASE(mmDOMAIN2_PG_STATUS_BASE_IDX)+mmDOMAIN2_PG_STATUS,
+  BASE(mmDOMAIN4_PG_STATUS_BASE_IDX)+mmDOMAIN4_PG_STATUS,
+  BASE(mmDOMAIN6_PG_STATUS_BASE_IDX)+mmDOMAIN6_PG_STATUS};
+ if(i>=d->limits.pipe_count || d->fault)return false;
+ uint32_t ctl=rd(d,tg_regs[i].OTG_CONTROL);
+ if(probe) { probe->checked_mask|=1u<<i;probe->control[i]=ctl; }
+ if(d->fault || (ctl&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE)))return false;
+ uint32_t hub=rd(d,hubp_regs[i].DCHUBP_CNTL);
+ if(probe)probe->hubp[i]=hub;
+ if(d->fault)return false;
+ if(hub&hubp_mask.HUBP_IN_BLANK)return true;
+ if(!allow_gated)return false;
+ /* dcn10_hubp_pg_control: HUBP0..3 are domains0/2/4/6 and PGFSM_POWER_OFF
+  * is exactly2. A powered-off unused domain need not assert IN_BLANK.
+  * Never infer idle from a stopped TG alone, reset/disable, or a transition.
+  * Selected pipes still require the original blank receipt before writes. */
+ uint32_t power=rd(d,pg_status[i]);
+ if(probe) { probe->power_mask|=1u<<i;probe->power[i]=power; }
+ return !d->fault && field(power,DOMAIN0_PG_STATUS__DOMAIN0_PGFSM_PWR_STATUS_MASK,
+  DOMAIN0_PG_STATUS__DOMAIN0_PGFSM_PWR_STATUS__SHIFT)==2;
+}
 int r4dcn_inherited_stop(void *storage) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(!d->prepared)return finish(d,R4DCN_STATE);
  /* Unused frontends were admitted as already quiet. Do not write into
   * unrelated, potentially power-gated HUBP/DPP instances. */
- for(unsigned i=0;i<4 && !d->fault;i++)if(!(d->mask&(1u<<i))) {
-  if((rd(d,tg_regs[i].OTG_CONTROL)&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE)) ||
-    !hubp1_in_blank(&d->hubps[i].base))return finish(d,R4DCN_STATE);
+ for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(!(d->mask&(1u<<i))) {
+  if(!r4dcn_frontend_quiet(d,i,true,NULL))return finish(d,R4DCN_STATE);
  }
  return stop_pipes(d,d->mask);
 }
-int r4dcn_inherited_admit(void *storage) {
+int r4dcn_inherited_admit(void *storage,struct r4dcn_inherited_probe *probe) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
+ if(probe) { memset(probe,0,sizeof(*probe));probe->rejected_pipe=UINT32_MAX; }
  if(!d->prepared || d->programmed || d->fault)return finish(d,R4DCN_STATE);
- for(unsigned i=0;i<4 && !d->fault;i++)if(!(d->mask&(1u<<i))) {
-  if((rd(d,tg_regs[i].OTG_CONTROL)&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE)) ||
-    !hubp1_in_blank(&d->hubps[i].base))return finish(d,R4DCN_UNSUPPORTED);
+ for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(!(d->mask&(1u<<i))) {
+  if(!r4dcn_frontend_quiet(d,i,true,probe)) {
+   if(probe)probe->rejected_pipe=i;
+   return finish(d,R4DCN_UNSUPPORTED);
+  }
  }
  return finish(d,0);
 }

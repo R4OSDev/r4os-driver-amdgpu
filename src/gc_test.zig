@@ -11,6 +11,16 @@ const s = @import("queue_storage.zig");
 const q = @import("queue_timeline.zig");
 const contexts = @import("gc_contexts.zig");
 const core = @import("gc_engine.zig");
+fn expectGfxAddresses(fence_offset: usize) !void {
+    // Inspect the actual published ring frame from both production paths.
+    // DB EVENT_WRITE inherits VMID1; CP RELEASE_MEM still uses the MC fence.
+    const start = @as(usize, @intCast(F.engine.rings[0].write - 48));
+    const words = try F.rt.arena.words32(l.Queue.gfx.offset() + start * 4, 48 * 4);
+    try t.expectEqual(p.packet(0x46, 2), words[31]);
+    try t.expectEqual(@as(u32, 0x115), words[32]);
+    try t.expectEqual(@as(u64, 0x8000075000), (@as(u64, words[34]) << 32) | words[33]);
+    try t.expectEqual(try F.rt.arena.address(fence_offset, 8), (@as(u64, words[39]) << 32) | words[38]);
+}
 const F = struct {
     var engine: core.Owner = .{};
     var owner: contexts.Owner = .{};
@@ -31,26 +41,35 @@ const F = struct {
     var release_fail: usize = 64;
     var complete_fail: usize = 64;
     var fixture: F = .{};
+    var rlc_aram_writes: usize = 0;
+    var rlc_scratch_writes: usize = 0;
+    var rlc_aram_before_enable: usize = 0;
     pub fn nowNs(_: *F) u64 { return time; }
     fn now() callconv(.c) u64 { return time; }
     fn bank() usize { return if (regs[r.GRBM_GFX_CNTL / 4] == l.Queue.kiq.bank()) 1 else 0; }
     pub fn read(_: *F, address: u32) c.Error!u32 { return if (address == r.CP_HQD_ACTIVE) active[bank()] else regs[address / 4]; }
     pub fn write(_: *F, address: u32, value: u32) c.Error!void {
         writes += 1;
+        if (address == r.RLC_SRM_ARAM_DATA) rlc_aram_writes += 1;
+        if (address == r.RLC_GPM_SCRATCH_DATA) rlc_scratch_writes += 1;
+        if (address == r.RLC_SRM_CNTL and value & r.RLC_SRM_CNTL__SRM_ENABLE_MASK != 0) rlc_aram_before_enable = rlc_aram_writes;
         const sdma = @import("start_registers.zig").sdma;
         if (address == sdma.SDMA0_GFX_RB_CNTL or address == sdma.SDMA0_GFX_IB_CNTL or address == sdma.SDMA0_F32_CNTL) sdma_writes += 1;
         if (address == fail_write) { fail_write = 0; return error.Disconnected; }
         if (address == r.CP_HQD_ACTIVE) active[bank()] = value;
         if (address == r.CP_HQD_DEQUEUE_REQUEST and value == 1 and auto_dequeue) active[bank()] = 0;
         regs[address / 4] = value;
+        if (address == r.CP_ME_CNTL) regs[address / 4] &= 0x15150000;
+        if (address == r.CP_MEC_CNTL) regs[address / 4] &= 0x50000000;
     }
     pub fn barrier(_: *F) c.Error!void {}
     fn reset() !void {
+        rlc_aram_writes = 0; rlc_scratch_writes = 0; rlc_aram_before_enable = 0;
         engine = .{}; owner = .{}; memory = .{}; rt = .{}; regs = @splat(0); data = @splat(0); bells = @splat(0);
         resource_live = @splat(false); release_calls = @splat(0); completions = @splat(0);
         time = 1000; active = .{ 0, 0 }; writes = 0; sdma_writes = 0; fail_write = 0; auto_dequeue = true; release_fail = 64; complete_fail = 64;
-        regs[r.CP_ME_CNTL / 4] = @import("start_engines.zig").cp_mask;
-        regs[r.CP_MEC_CNTL / 4] = @import("start_engines.zig").mec_mask;
+        regs[r.CP_ME_CNTL / 4] = 0x15150000; // measured Raven2 CP halt receipt
+        regs[r.CP_MEC_CNTL / 4] = 0x50000000; // fixture: HALT with command bits cleared
         regs[r.CC_GC_SHADER_ARRAY_CONFIG / 4] = 0x700 << r.CC_GC_SHADER_ARRAY_CONFIG__INACTIVE_CUS__SHIFT;
         const sdma = @import("start_registers.zig").sdma;
         regs[sdma.SDMA0_GFX_RB_CNTL / 4] = 1; regs[sdma.SDMA0_GFX_IB_CNTL / 4] = 1;
@@ -62,7 +81,7 @@ const F = struct {
             .arena = .{ .value = .{ .handle = .{ .id = 2, .generation = 1 }, .cpu_address = @intFromPtr(&data), .byte_length = s.bytes } },
             .doorbell = .{ .value = .{ .handle = .{ .id = 3, .generation = 1 }, .cpu_address = @intFromPtr(&bells), .byte_length = 4096 } } };
         try rt.timeline.init(.{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 }, try rt.arena.fences(), time);
-        try owner.init(rt.timeline.epoch);
+        try owner.init(rt.timeline.epoch, .picasso);
     }
     fn fence(index: usize) a.GfxFence { return .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 3, .point = index + 1, .slot = @intCast(index) }; }
     fn resources(index: usize) q.Resources { resource_live[index] = true; return .{ .context = index + 1, .retire = retire }; }
@@ -88,7 +107,7 @@ const F = struct {
             data[queue.readback() / 4] = @truncate(engine.rings[@intFromEnum(queue)].write);
     }
     fn start() !void {
-        try engine.begin(&fixture, &rt.arena, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+        try engine.begin(&fixture, &rt.arena, .{ .profile = .picasso, .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
         time += 50_000; _ = try engine.advance(&fixture, &rt.arena);
         time += 1_000_000; _ = try engine.advance(&fixture, &rt.arena);
         // Explicit fixture responses, not a Picasso emulator or hardware test.
@@ -138,6 +157,7 @@ test "AMD GFX9 packet sizes, cache actions, clear state and MQD match the pinned
     const nb = @import("start_registers.zig").nb;
     try t.expectEqual(nb.GPU_HDP_FLUSH_REQ / 4, words[2]); try t.expectEqual(nb.GPU_HDP_FLUSH_DONE / 4, words[3]);
     try t.expectEqual(@as(u32, w.r4amd_pm4_packet(w.PACKET3_ACQUIRE_MEM, 5)), words[13]);
+    try t.expectEqual(r.CP_COHER_SIZE_HI__COHER_SIZE_HI_256B_MASK, words[16]);
     try t.expectEqual(@as(u32, w.PACKET3_ACQUIRE_MEM_CP_COHER_CNTL_SH_ICACHE_ACTION_ENA(1) | w.PACKET3_ACQUIRE_MEM_CP_COHER_CNTL_SH_KCACHE_ACTION_ENA(1) |
         w.PACKET3_ACQUIRE_MEM_CP_COHER_CNTL_TC_ACTION_ENA(1) | w.PACKET3_ACQUIRE_MEM_CP_COHER_CNTL_TCL1_ACTION_ENA(1) | w.PACKET3_ACQUIRE_MEM_CP_COHER_CNTL_TC_WB_ACTION_ENA(1)), words[14]);
     try t.expectEqual(@as(u32, w.r4amd_pm4_packet(w.PACKET3_INDIRECT_BUFFER, 2)), words[27]);
@@ -154,6 +174,7 @@ test "AMD GFX9 packet sizes, cache actions, clear state and MQD match the pinned
     try t.expectError(error.Capacity, p.encodeFrame(words[0..47], request));
     var compute = request; compute.engine = .compute; compute.eop_scratch = 0;
     try t.expectEqual(@as(usize, 32), try p.encodeFrame(&words, compute)); try p.packetBoundaries(words[0..32]);
+    try t.expectEqual(r.CP_COHER_SIZE_HI__COHER_SIZE_HI_256B_MASK, words[12]);
     try t.expectEqual(@as(u32, w.INDIRECT_BUFFER_VALID | 16 | (1 << 24)), words[19]);
     try t.expectEqual(@as(u32, 4), words[4]);
     try t.expectError(error.Invalid, p.packetBoundaries(&.{p.packet(0x3f, 2), 0, 0}));
@@ -178,10 +199,52 @@ test "AMD GFX9 packet sizes, cache actions, clear state and MQD match the pinned
 }
 
 test "AMD GFX9 real owner requires ordered startup, exact context fences and GC-only quiescence" {
+    inline for (.{ .{ r.CP_ME_CNTL, 0x01000000 }, .{ r.CP_ME_CNTL, 0x04000000 }, .{ r.CP_ME_CNTL, 0x10000000 },
+        .{ r.CP_MEC_CNTL, 0x40000000 }, .{ r.CP_MEC_CNTL, 0x10000000 } }) |missing| {
+        try F.reset(); F.regs[missing[0] / 4] &= ~@as(u32, missing[1]);
+        try t.expectError(error.Unconfirmed, F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .picasso, .firmware_ready = true, .boot_held = true, .gmc_enabled = true }));
+        try t.expectEqual(@as(usize, 0), F.writes);
+    }
     try F.reset();
-    try t.expectError(error.Unconfirmed, F.engine.begin(&F.fixture, &F.rt.arena, .{ .firmware_ready = false, .boot_held = true, .gmc_enabled = true }));
+    try t.expectError(error.Unconfirmed, F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .raven2, .firmware_ready = true, .boot_held = true, .gmc_enabled = true }));
     try t.expectEqual(@as(usize, 0), F.writes);
-    try F.engine.begin(&F.fixture, &F.rt.arena, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+    var rlc: @import("gc_rlc.zig").Plan = .{};
+    const fw = @import("firmware.zig");
+    for (&fw.lock.firmware, 0..) |*entry, i| if (entry.family == .raven2 and entry.role == .rlc) {
+        try rlc.parse(@import("firmware_samples").files[i + fw.firmware_first], entry);
+    };
+    try F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .raven2, .rlc = &rlc, .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
+    try t.expectEqual(@as(usize, 2310), F.rlc_aram_writes);
+    try t.expectEqual(@as(usize, 2310), F.rlc_aram_before_enable);
+    try t.expectEqual(@as(usize, 76), F.rlc_scratch_writes);
+    try t.expectEqual(@as(u32, 0x3280), F.regs[r.RLC_SRM_INDEX_CNTL_ADDR_5 / 4]);
+    try t.expectEqual(@as(u32, 0xb0), F.regs[r.RLC_SRM_INDEX_CNTL_DATA_5 / 4]);
+    try t.expectEqual(@as(u32, 7), F.engine.cu_mask);
+    try t.expectEqual(@as(u32, 1), F.engine.rb_mask);
+    try t.expectEqual(@as(u32, 0x26013041), F.engine.gb_addr_config);
+    // A core-only Raven2 start keeps restore RAM untouched and SRM/PG off.
+    try F.reset();
+    F.regs[r.RLC_SRM_CNTL / 4] = r.RLC_SRM_CNTL__SRM_ENABLE_MASK;
+    try F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .raven2, .rlc = &rlc,
+        .firmware_ready = true, .boot_held = true, .gmc_enabled = true, .restore_ready = false });
+    try t.expect(F.rlc_aram_writes == 0 and F.rlc_scratch_writes == 0);
+    try t.expect(F.regs[r.RLC_SRM_CNTL / 4] & r.RLC_SRM_CNTL__SRM_ENABLE_MASK == 0);
+    try t.expect(F.regs[r.RLC_PG_CNTL / 4] & r.RLC_PG_CNTL__GFX_POWER_GATING_ENABLE_MASK == 0);
+    try t.expect(F.regs[r.RLC_CNTL / 4] & r.RLC_CNTL__RLC_ENABLE_F32_MASK != 0);
+    try F.reset();
+    try t.expectError(error.Unconfirmed, F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .picasso,
+        .firmware_ready = true, .boot_held = true, .gmc_enabled = true, .restore_ready = false }));
+    try t.expectEqual(@as(usize, 0), F.writes);
+    var prefix: [32]u32 = undefined;
+    const Contexts = @import("gc_contexts.zig").Owner;
+    const raven_count = try Contexts.preamble(&prefix, .compute, .{ .gds_bytes = 256 }, .raven2);
+    try t.expectEqual(@as(u32, 0x77), prefix[raven_count - 1]);
+    const picasso_count = try Contexts.preamble(&prefix, .compute, .{ .gds_bytes = 256 }, .picasso);
+    try t.expectEqual(@as(u32, 0x15f), prefix[picasso_count - 1]);
+    try F.reset();
+    try t.expectError(error.Unconfirmed, F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .picasso, .firmware_ready = false, .boot_held = true, .gmc_enabled = true }));
+    try t.expectEqual(@as(usize, 0), F.writes);
+    try F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .picasso, .firmware_ready = true, .boot_held = true, .gmc_enabled = true });
     try t.expectEqual(@as(u32, 0xff), F.engine.cu_mask); try t.expectEqual(@as(u32, 3), F.engine.rb_mask);
     try t.expect(!try F.engine.advance(&F.fixture, &F.rt.arena)); try t.expectEqual(core.Phase.rlc_delay, F.engine.phase);
     F.time += 50_000; _ = try F.engine.advance(&F.fixture, &F.rt.arena);
@@ -193,6 +256,8 @@ test "AMD GFX9 real owner requires ordered startup, exact context fences and GC-
     try t.expect(!try F.engine.advance(&F.fixture, &F.rt.arena));
     F.sample(2, l.sample_tokens[2], 0); _ = try F.engine.advance(&F.fixture, &F.rt.arena);
     try t.expectEqual(core.Phase.test_wait, F.engine.phase);
+    try t.expectEqual(@as(u8, 0xff), F.engine.completion_before.valid);
+    try expectGfxAddresses(l.sample_offset);
     F.sample(0, l.sample_tokens[0], 0x4100); F.sample(1, l.sample_tokens[1], 0x4101);
     try t.expect(!try F.engine.advance(&F.fixture, &F.rt.arena)); // fence alone cannot recycle an unread ring
     F.pointers(); _ = try F.engine.advance(&F.fixture, &F.rt.arena);
@@ -213,11 +278,39 @@ test "AMD GFX9 real owner requires ordered startup, exact context fences and GC-
     try F.reset(); try F.start(); F.auto_dequeue = false;
     _ = try F.engine.stop(&F.fixture, &F.rt.arena); F.time += 500_000_000;
     try t.expectError(error.Deadline, F.engine.stop(&F.fixture, &F.rt.arena)); try t.expect(F.engine.phase != .closed and F.rt.arena.ready);
+    // A graphics timeout must preserve an independent compute observation,
+    // without turning a late fence into success or releasing the arena.
+    try F.reset();
+    F.engine = .{ .touched = true, .phase = .test_wait };
+    try F.engine.deadline.start(F.time, 2_000_000_000, 0);
+    F.sample(0, 0xffffffffffffffff, 0x4100);
+    F.sample(1, l.sample_tokens[1], 0x4101);
+    F.regs[r.GRBM_STATUS / 4] = 0xe5002028;
+    F.regs[r.VM_L2_PROTECTION_FAULT_STATUS / 4] = 0x00140010;
+    F.regs[r.VM_L2_PROTECTION_FAULT_ADDR_LO32 / 4] = 0x12345678;
+    F.regs[r.VM_L2_PROTECTION_FAULT_ADDR_HI32 / 4] = 0x9;
+    F.regs[r.CP_STAT / 4] = 0x01234567;
+    F.regs[r.CP_STALLED_STAT2 / 4] = 0xffffffff; // unavailable diagnostic read
+    F.time += 2_000_000_000;
+    const writes_before_timeout = F.writes;
+    try t.expectError(error.Deadline, F.engine.advance(&F.fixture, &F.rt.arena));
+    try t.expect(F.engine.faulted and F.rt.arena.ready and F.engine.phase == .test_wait);
+    try t.expectEqual(@as(u8, 11), F.engine.sampled_mask);
+    try t.expectEqual(@as(u64, 0xffffffffffffffff), F.engine.sampled_fence[0][1]);
+    try t.expectEqual(l.sample_tokens[1], F.engine.sampled_fence[1][1]);
+    try t.expectEqual(@as(u32, 0x4101), F.engine.sampled_marker[1]);
+    try t.expectEqual(@as(u32, 0xe5002028), F.engine.completion_status);
+    try t.expectEqual(@as(u8, 0xdf), F.engine.completion_failure.valid);
+    try t.expectEqual(@as(u32, 0x00140010), F.engine.completion_failure.values[0]);
+    try t.expectEqual(@as(u32, 0x12345678), F.engine.completion_failure.values[1]);
+    try t.expectEqual(@as(u32, 9), F.engine.completion_failure.values[2]);
+    try t.expectEqual(@as(u32, 0x01234567), F.engine.completion_failure.values[3]);
+    try t.expectEqual(writes_before_timeout, F.writes);
     // A partial start, including failure before MEC unhalt, must remain
     // closable from the actual halted/idle state without issuing a fake reset.
     inline for (.{ r.CB_HW_CONTROL, r.RLC_CSIB_LENGTH, r.CP_MQD_BASE_ADDR, r.CP_DEVICE_ID }) |address| {
         try F.reset(); F.fail_write = address;
-        F.engine.begin(&F.fixture, &F.rt.arena, .{ .firmware_ready = true, .boot_held = true, .gmc_enabled = true }) catch {};
+        F.engine.begin(&F.fixture, &F.rt.arena, .{ .profile = .picasso, .firmware_ready = true, .boot_held = true, .gmc_enabled = true }) catch {};
         for (0..3) |_| { F.time += 1_000_000; _ = F.engine.advance(&F.fixture, &F.rt.arena) catch false; }
         try t.expect(F.engine.faulted);
         _ = try F.engine.stop(&F.fixture, &F.rt.arena); F.time += 50_000;
@@ -237,6 +330,7 @@ test "AMD GFX9 contexts preserve priorities, generations and resource ownership 
     try F.owner.enqueue(compute, F.fence(2), F.time, F.time + 100_000_000, &commands, F.resources(2));
     try t.expectError(error.Busy, F.owner.destroy(high));
     F.owner.step(&F.rt, &F.engine);
+    try expectGfxAddresses(s.fence_offset);
     try t.expectEqual(@as(u64, 2), F.rt.timeline.entries[0].fence.point); // high before older low
     try t.expectEqual(q.Engine.compute, F.rt.timeline.entries[1].engine);
     F.rt.timeline.poll(F.time); try t.expect(F.rt.timeline.publish(F.rt.queue.?));

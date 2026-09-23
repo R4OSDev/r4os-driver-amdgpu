@@ -100,7 +100,7 @@ const Native = struct {
         @memset(&reply, 0);
         reply_count = 1;
         reply_at = 0;
-        const limits: c.struct_r4dcn_limits = .{ .channels = 2, .dcf_khz = 600000, .disp_khz = 960000, .dpp_khz = 626000, .fabric_khz = 1066666, .soc_khz = 626000, .ref_khz = 48000, .gb_addr_config = 0x24000042, .reserved = 0 };
+        const limits: c.struct_r4dcn_limits = .{ .channels = 2, .dcf_khz = 600000, .disp_khz = 960000, .dpp_khz = 626000, .fabric_khz = 1066666, .soc_khz = 626000, .ref_khz = 48000, .gb_addr_config = 0x24000042, .reserved = 0, .pipe_count = 4 };
         try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&bytes, c.r4dcn_size(), &io, &limits));
     }
     const route: c.struct_r4dcn_route = .{ .connector = 0x3114, .encoder = 0x211e, .phy = 0, .aux = 0, .hpd = 0, .caps = 0xa, .ddc_a = reg("DC_GPIO_DDC1_A"), .hpd_a = reg("DC_GPIO_HPD_A"), .hpd_shift = 0, .hpd_active = 1 };
@@ -316,6 +316,19 @@ const Receiver = struct {
 test "eDP discovery training fallback and brightness preserve ordered effects across failures" {
     const r = Receiver;
     try r.reset(true);
+    // DCN1 DDC pairs may be described by CLK bit0 or DATA bit8. Every
+    // other field or mismatched MASK/A description remains unsupported.
+    try t.expectEqual(@as(u32, 0), hw.DC_GPIO_DDC1_A__DC_GPIO_DDC1CLK_A__SHIFT);
+    try t.expectEqual(@as(u32, 8), hw.DC_GPIO_DDC1_A__DC_GPIO_DDC1DATA_A__SHIFT);
+    const original_route = try p.route(&r.board);
+    for (0..32) |shift| for (0..32) |mask| {
+        r.board.paths[0].i2c_pin.?.shift = @intCast(shift);
+        r.board.paths[0].i2c_pin.?.mask_shift = @intCast(mask);
+        if (shift == mask and (shift == 0 or shift == 8)) {
+            try t.expect(std.meta.eql(original_route.native, (try p.route(&r.board)).native));
+        } else try t.expectError(error.Unsupported, p.route(&r.board));
+    };
+    try r.reset(true);
     r.fail_rate20 = true;
     try r.panel.discover();
     try t.expectEqual(@as(u64, 500_000_000), r.power_on_at);
@@ -364,6 +377,11 @@ test "eDP discovery training fallback and brightness preserve ordered effects ac
     try t.expect(!r.lit and r.panel.phase == .retained);
     try r.reset(true);
     r.board.paths[0].external_encoder = 0x2101;
+    try t.expectError(error.Unsupported, p.route(&r.board));
+    r.board.paths[0].external_encoder = 0;
+    r.board.paths[0].hpd_active = 0;
+    try t.expectEqual(@as(u32, 0), (try p.route(&r.board)).native.hpd_active);
+    r.board.paths[0].hpd_active = 2;
     try t.expectError(error.Unsupported, p.route(&r.board));
     try brightnessContractCheck();
     std.debug.print("[amd-panel] bounded AUX/EDID, HBR2-to-HBR fallback, native mode, AUX/PWM brightness, power timing and retained partial failure; no physical device\n", .{});

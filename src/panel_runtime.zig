@@ -6,6 +6,14 @@ const atom = @import("atom_vm.zig");
 pub const panel = @import("panel.zig");
 pub const c = panel.c;
 pub const Operation = enum(u32) { discover = 1, train = 2, show = 3, brightness = 4, hide = 5, clock = 6, stream_configure = 7, stream_on = 8, stream_off = 9 };
+pub const BindDiagnostic = struct {
+    step: enum { empty, gate, route, scratch, vm, command, revision, link, stream, ready } = .empty,
+    scratch_bytes: u64 = 0,
+    revision: [2]u8 = .{ 0, 0 },
+    native_result: c_int = 0,
+    route_valid: bool = false,
+    route: c.struct_r4dcn_route = std.mem.zeroes(c.struct_r4dcn_route),
+};
 pub const Runtime = struct {
     self_address: usize = 0,
     storage: ?*anyopaque = null,
@@ -19,15 +27,26 @@ pub const Runtime = struct {
     last_atom_error: ?atom.Error = null,
     last_panel_error: ?panel.Error = null,
     brightness: @import("panel_brightness.zig").Bridge = .{},
+    bind_diagnostic: BindDiagnostic = .{},
     pub fn bind(self: *Runtime, storage: *anyopaque, board: *const bios.Board, io: atom.Io, pipe: u32) !void {
+        self.bind_diagnostic.step = .gate;
         if (self.self_address != 0 or pipe >= 4) return error.State;
+        self.bind_diagnostic.step = .route;
         const route = try panel.route(board);
+        self.bind_diagnostic.route = route.native;
+        self.bind_diagnostic.route_valid = true;
+        self.bind_diagnostic.step = .scratch;
         const declared = if (board.reservation) |r| r.driver_scratch_bytes else 0;
         const scratch_bytes = if (declared == 0) 20 * 1024 else declared;
+        self.bind_diagnostic.scratch_bytes = scratch_bytes;
         if (scratch_bytes > self.scratch.len * 4 or scratch_bytes % 4 != 0) return error.Capacity;
+        self.bind_diagnostic.step = .vm;
         try self.vm.initialize(board, self.scratch[0..@intCast(scratch_bytes / 4)], io);
+        self.bind_diagnostic.step = .command;
         const command = @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "dig1transmittercontrol") / 2;
         const revision = try self.vm.revision(command);
+        self.bind_diagnostic.revision = revision;
+        self.bind_diagnostic.step = .revision;
         if (!std.mem.eql(u8, &revision, &.{ 1, 6 })) return error.Unsupported;
         self.storage = storage;
         self.pipe = pipe;
@@ -35,8 +54,13 @@ pub const Runtime = struct {
         self.self_address = @intFromPtr(self);
         self.protocol = .{ .route = route, .io = .{ .context = self.self_address, .transfer = transfer, .action = action, .enable = enable, .train = train, .status = status, .pwm = pwm, .hpd = hpd, .video = video, .now = now, .delay = delay } };
         const callback: c.struct_r4dcn_atom = .{ .context = self, .execute = execute };
-        try checked(c.r4dcn_link_bind(storage, 0, &route.native, &callback));
-        try checked(c.r4dcn_dp_stream_bind(storage, 0));
+        self.bind_diagnostic.step = .link;
+        self.bind_diagnostic.native_result = c.r4dcn_link_bind(storage, 0, &route.native, &callback);
+        try checked(self.bind_diagnostic.native_result);
+        self.bind_diagnostic.step = .stream;
+        self.bind_diagnostic.native_result = c.r4dcn_dp_stream_bind(storage, 0);
+        try checked(self.bind_diagnostic.native_result);
+        self.bind_diagnostic.step = .ready;
     }
     pub fn run(self: *Runtime, operation: Operation, value: u16) panel.Error!void {
         if (self.self_address != @intFromPtr(self) or self.protocol == null or !self.vm.io.?.worker(self.vm.io.?.context)) return error.State;

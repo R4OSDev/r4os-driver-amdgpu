@@ -8,7 +8,7 @@ const s = r.sdma;
 const storage = @import("queue_storage.zig");
 const q = @import("queue_registers.zig");
 pub const Error = c.Error;
-pub const Gate = struct { firmware_ready: bool, boot_held: bool, gmc_enabled: bool };
+pub const Gate = struct { profile: @import("asic_profile.zig").Profile, firmware_ready: bool, boot_held: bool, gmc_enabled: bool };
 pub const rptr_offset = storage.wb_offset + 0x10;
 pub const wptr_offset = storage.wb_offset + 0x18;
 fn field(comptime reg: []const u8, comptime name: []const u8, setting: u32) u32 {
@@ -39,12 +39,19 @@ pub const Engine = struct {
     ring: @import("queue_ring.zig").Ring = .{}, touched: bool = false, running: bool = false,
     stopping: bool = false, quiesced: bool = false, saved_doorbell: u32 = 0, saved_aperture: u32 = 0, routing_restored: bool = false,
     deadline: c.Deadline = .{},
+    admission: enum { gate, halt, idle, ring_disabled, ib_disabled, storage, programming, halt_cleared, ring_enabled, ib_enabled, ready } = .gate,
+    samples: [7]u32 = @splat(0), sampled: u8 = 0,
     pub fn open(self: *Engine, io: anytype, arena: anytype, gate: Gate) Error!void {
         if (self.touched or !gate.firmware_ready or !gate.boot_held or !gate.gmc_enabled or !arena.ready) return error.Unconfirmed;
-        if (try c.read(io, s.SDMA0_F32_CNTL) & s.SDMA0_F32_CNTL__HALT_MASK == 0 or
-            try c.read(io, s.SDMA0_STATUS_REG) & s.SDMA0_STATUS_REG__IDLE_MASK == 0 or
-            try c.read(io, s.SDMA0_GFX_RB_CNTL) & s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK != 0 or
-            try c.read(io, s.SDMA0_GFX_IB_CNTL) & s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK != 0) return error.Unconfirmed;
+        self.admission = .halt;
+        if (try self.sample(io, 0, s.SDMA0_F32_CNTL) & s.SDMA0_F32_CNTL__HALT_MASK == 0) return error.Unconfirmed;
+        self.admission = .idle;
+        if (try self.sample(io, 1, s.SDMA0_STATUS_REG) & s.SDMA0_STATUS_REG__IDLE_MASK == 0) return error.Unconfirmed;
+        self.admission = .ring_disabled;
+        if (try self.sample(io, 2, s.SDMA0_GFX_RB_CNTL) & s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK != 0) return error.Unconfirmed;
+        self.admission = .ib_disabled;
+        if (try self.sample(io, 3, s.SDMA0_GFX_IB_CNTL) & s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK != 0) return error.Unconfirmed;
+        self.admission = .storage;
         const words = try arena.words32(storage.ringOffset(.sdma), storage.ring_bytes);
         self.ring = try @import("queue_ring.zig").Ring.init(words, 8, 0);
         const base = try arena.address(storage.ringOffset(.sdma), storage.ring_bytes);
@@ -53,6 +60,12 @@ pub const Engine = struct {
         self.saved_doorbell = try c.read(io, r.nb.BIF_SDMA0_DOORBELL_RANGE);
         self.saved_aperture = try c.read(io, q.nb.RCC_DOORBELL_APER_EN);
         self.touched = true;
+        self.admission = .programming;
+        const variant: []const s.Golden = if (gate.profile == .raven2) &s.golden_settings_sdma_rv2 else &s.golden_settings_sdma_rv1;
+        for ([_][]const s.Golden{ &s.golden_settings_sdma_4_1, variant }) |table| for (table) |entry| {
+            const old = if (entry.clear == 0xffffffff) 0 else try c.read(io, entry.address);
+            try io.write(entry.address, (old & ~entry.clear) | entry.set);
+        };
         try c.set(io, q.nb.RCC_DOORBELL_APER_EN, q.nb.RCC_DOORBELL_APER_EN__BIF_DOORBELL_APER_EN_MASK, q.nb.RCC_DOORBELL_APER_EN__BIF_DOORBELL_APER_EN_MASK);
         for (words) |*word| word.* = 0;
         for (try arena.words32(rptr_offset, 16)) |*word| word.* = 0;
@@ -82,10 +95,18 @@ pub const Engine = struct {
         try set(io, "SDMA0_CNTL", "TRAP_ENABLE", 0);
         try set(io, "SDMA0_GFX_RB_CNTL", "RB_ENABLE", 1); try set(io, "SDMA0_GFX_IB_CNTL", "IB_ENABLE", 1);
         try set(io, "SDMA0_F32_CNTL", "HALT", 0);
-        if (try c.read(io, s.SDMA0_F32_CNTL) & s.SDMA0_F32_CNTL__HALT_MASK != 0 or
-            try c.read(io, s.SDMA0_GFX_RB_CNTL) & s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK == 0 or
-            try c.read(io, s.SDMA0_GFX_IB_CNTL) & s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK == 0) return error.Unconfirmed;
-        self.running = true;
+        self.admission = .halt_cleared;
+        if (try self.sample(io, 4, s.SDMA0_F32_CNTL) & s.SDMA0_F32_CNTL__HALT_MASK != 0) return error.Unconfirmed;
+        self.admission = .ring_enabled;
+        if (try self.sample(io, 5, s.SDMA0_GFX_RB_CNTL) & s.SDMA0_GFX_RB_CNTL__RB_ENABLE_MASK == 0) return error.Unconfirmed;
+        self.admission = .ib_enabled;
+        if (try self.sample(io, 6, s.SDMA0_GFX_IB_CNTL) & s.SDMA0_GFX_IB_CNTL__IB_ENABLE_MASK == 0) return error.Unconfirmed;
+        self.running = true; self.admission = .ready;
+    }
+    fn sample(self: *Engine, io: anytype, comptime index: usize, address: u32) Error!u32 {
+        const value = try c.read(io, address);
+        self.samples[index] = value; self.sampled |= @as(u8, 1) << index;
+        return value;
     }
     pub fn observe(self: *Engine, io: anytype) Error!void {
         if (!self.running or self.stopping) return error.State;

@@ -131,7 +131,7 @@ pub const Owner = struct {
         try memory.virtual.map(program_va, &self.pages, .{ .system = false, .write = false, .execute = true });
         self.translated = true;
         self.flush_pending = true;
-        try @import("memory_hubs.zig").flush(&memory.registers, 1);
+        try memory.controller.flush(&memory.registers, 1);
         self.flush_pending = false;
         try @import("start_common.zig").hdpFlush(&memory.registers);
         self.context = try contexts.create(.gfx, .normal, .{});
@@ -382,7 +382,7 @@ pub const Owner = struct {
             self.flush_pending = true;
         }
         if (self.flush_pending) {
-            @import("memory_hubs.zig").flush(&memory.registers, 1) catch return false;
+            memory.controller.flush(&memory.registers, 1) catch return false;
             self.flush_pending = false;
         }
         if (!self.window.close()) return false;

@@ -29,12 +29,13 @@ const Job = struct {
     fn reset(self: *Job) void { self.owner = null; self.resources = null; self.ticket = null; self.retired = false; self.failed = false; }
 };
 pub const Owner = struct {
+    profile: ?@import("asic_profile.zig").Profile = null,
     self_address: usize = 0, epoch: q.Epoch = .{ .adapter = 0, .device = 0, .reset = 0 },
     contexts: [8]Context = @splat(.{}), jobs: [8]Job = @splat(.{}), gds: u16 = 0,
     generation: u64 = 0, serial: u64 = 0, dispatches: u64 = 0, stopping: bool = false,
-    pub fn init(self: *Owner, epoch: q.Epoch) c.Error!void {
+    pub fn init(self: *Owner, epoch: q.Epoch, profile: @import("asic_profile.zig").Profile) c.Error!void {
         if (self.self_address != 0 or epoch.adapter == 0 or epoch.device == 0 or epoch.reset == 0) return error.Invalid;
-        self.self_address = @intFromPtr(self); self.epoch = epoch;
+        self.self_address = @intFromPtr(self); self.epoch = epoch; self.profile = profile;
     }
     pub fn create(self: *Owner, engine: p.Engine, priority: Priority, resources: p.Resources) c.Error!Handle {
         if (self.self_address != @intFromPtr(self) or self.stopping) return error.State;
@@ -81,7 +82,7 @@ pub const Owner = struct {
         p.packetBoundaries(commands) catch return error.Invalid;
         for (&self.jobs) |*job| if (job.owner != null and std.meta.eql(job.fence, fence)) return error.Busy;
         for (&self.jobs) |*job| if (job.owner == null) {
-            var prefix: [32]u32 = undefined; const count = try preamble(&prefix, ctx.engine, ctx.resources);
+            var prefix: [32]u32 = undefined; const count = try preamble(&prefix, ctx.engine, ctx.resources, self.profile.?);
             @memcpy(job.words[0..count], prefix[0..count]); @memcpy(job.words[count..][0..commands.len], commands);
             const total = count + commands.len; const aligned = (total + 7) & ~@as(usize, 7);
             @memset(job.words[total..aligned], p.nop);
@@ -93,7 +94,7 @@ pub const Owner = struct {
         };
         return error.Capacity;
     }
-    pub fn preamble(output: []u32, engine: p.Engine, resources: p.Resources) c.Error!usize {
+    pub fn preamble(output: []u32, engine: p.Engine, resources: p.Resources, profile: @import("asic_profile.zig").Profile) c.Error!usize {
         const size = resources.ringSize() catch return error.Invalid;
         if (output.len < 12) return error.Capacity;
         var b: p.Builder = .{ .words = output };
@@ -105,7 +106,7 @@ pub const Owner = struct {
             b.add(&.{ p.packet(0x76, 2) | 2, l.r.COMPUTE_USER_DATA_0 / 4 - 0x2c00, @truncate(resources.scratch),
                 @as(u32, @truncate(resources.scratch >> 32)) | (if (resources.scratch_bytes != 0) @as(u32, 1 << 31) else 0),
                 p.packet(0x76, 1) | 2, l.r.COMPUTE_TMPRING_SIZE / 4 - 0x2c00, size });
-            if (resources.gds_bytes != 0) b.add(&.{ p.packet(0x68, 1), l.r.GDS_COMPUTE_MAX_WAVE_ID / 4 - 0x2000, 0x15f });
+            if (resources.gds_bytes != 0) b.add(&.{ p.packet(0x68, 1), l.r.GDS_COMPUTE_MAX_WAVE_ID / 4 - 0x2000, profile.gdsMaxWave() });
         }
         return b.used;
     }
@@ -171,7 +172,7 @@ pub const Owner = struct {
         var frame: [48]u32 = undefined;
         const count = p.encodeFrame(&frame, .{ .engine = kind, .ib = @import("sdma_jobs.zig").arena_va + storage.ib_offset + @as(u64, ticket.slot) * storage.ib_bytes,
             .words = @intCast(job.count), .fence = try rt.arena.address(storage.fence_offset + @as(usize, ticket.slot) * 8, 8), .sequence = ticket.token,
-            .eop_scratch = if (kind == .gfx) try rt.arena.address(l.scratch_offset, 256) else 0, .interrupt = true }) catch return error.Invalid;
+            .eop_scratch = if (kind == .gfx) l.scratch_va else 0, .interrupt = true }) catch return error.Invalid;
         const ring = &engine.rings[@intFromEnum(kind)];
         const staged = try ring.stage(frame[0..count]);
         rt.timeline.arm(ticket) catch |err| { try ring.cancel(staged); return err; };

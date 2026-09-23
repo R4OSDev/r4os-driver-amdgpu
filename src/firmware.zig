@@ -7,17 +7,21 @@ const identity = @import("identity.zig");
 pub const Kind = enum { psp_asd, psp_ta, gfx, rlc, sdma, vcn, gpu_info, dmcu };
 pub const Role = enum { asd, ta, pfp, me, ce, mec, mec2, rlc, rlc_am4, sdma, vcn, gpu_info, dmcu };
 pub const Requirement = enum { boot, trusted_applications, second_compute_engine, video, topology_reference, display_abm };
-pub const Artifact = struct { path: []const u8, resource: []const u8, bytes: usize, sha256: []const u8, upstream_path: []const u8, git_blob: []const u8 };
+pub const Family = enum { picasso, raven2, shared };
+pub const firmware_count = 24;
+pub const metadata_count = 2;
+pub const firmware_first = 1 + metadata_count;
+pub const Artifact = struct { path: []const u8, resource: []const u8, bytes: usize, sha256: []const u8, upstream_path: []const u8, upstream_revision: []const u8 = "", git_blob: []const u8 };
 pub const Firmware = struct {
-    path: []const u8, resource: []const u8, bytes: usize, sha256: []const u8, upstream_path: []const u8, git_blob: []const u8,
-    role: Role, kind: Kind, requirement: Requirement,
+    path: []const u8, resource: []const u8, bytes: usize, sha256: []const u8, upstream_path: []const u8, upstream_revision: []const u8 = "", git_blob: []const u8,
+    role: Role, kind: Kind, requirement: Requirement, family: Family,
     header_bytes: u32, header_major: u16, header_minor: u16, ip_major: u16, ip_minor: u16,
     ucode_version: u32, payload_offset: u32, payload_bytes: u32, crc32: u32,
     pub fn artifact(self: *const Firmware) Artifact {
-        return .{ .path = self.path, .resource = self.resource, .bytes = self.bytes, .sha256 = self.sha256, .upstream_path = self.upstream_path, .git_blob = self.git_blob };
+        return .{ .path = self.path, .resource = self.resource, .bytes = self.bytes, .sha256 = self.sha256, .upstream_path = self.upstream_path, .upstream_revision = self.upstream_revision, .git_blob = self.git_blob };
     }
 };
-pub const Lock = struct { schema: u32, revision: []const u8, upstream: []const u8, driver_source: []const u8, firmware: [13]Firmware, metadata: [2]Artifact };
+pub const Lock = struct { schema: u32, revision: []const u8, raven2_rlc_revision: []const u8, upstream: []const u8, driver_source: []const u8, firmware: [firmware_count]Firmware, metadata: [metadata_count]Artifact };
 pub const lock_bytes = @embedFile("firmware_lock.json");
 pub const lock: Lock = blk: {
     @setEvalBranchQuota(2000000);
@@ -27,28 +31,42 @@ pub const lock: Lock = blk: {
 };
 pub const max_blob_bytes = 512 * 1024;
 pub const max_package_bytes = 2 * 1024 * 1024;
+pub const max_bundle_bytes = 4 * 1024 * 1024;
 pub const Error = error{ Target, Profile, Size, Header, Revision, Version, Range, Overlap, Hash, Topology };
 pub const Socket = enum { fp5, am4 };
 pub const Profile = struct {
+    family: Family = .picasso,
     socket: Socket,
     pci_revision: u8,
     pub fn includes(self: Profile, role: Role) bool {
         return switch (role) { .rlc => self.socket == .fp5, .rlc_am4 => self.socket == .am4, else => true };
     }
+    pub fn selects(self: Profile, entry: Firmware) bool {
+        return (entry.family == self.family or entry.family == .shared) and self.includes(entry.role);
+    }
     pub fn secureDisplayAllowed(self: Profile, version: u32) bool {
-        return self.pci_revision != 0xa1 or version < 0x27000008;
+        return self.family != .picasso or self.pci_revision != 0xa1 or version < 0x27000008;
     }
 };
 pub fn select(snapshot: *const identity.Snapshot, chip: identity.Chip) Error!Profile {
     if (!identity.target(snapshot.pci)) return error.Target;
-    if (chip.family != .picasso or chip.asic_revision >= 8 or chip.external_revision != @as(u8, chip.asic_revision) + 0x41 or
-        chip.gc != 0x090100 or chip.sdma != 0x040100 or chip.dcn != 0x010000 or chip.nbio != 0x070000 or
-        chip.psp != 0x0a0000 or chip.smu != 0x0a0000 or chip.vcn != 0x010000 or !std.mem.eql(u8, chip.compiler, "gfx902")) return error.Profile;
+    const raven2 = chip.family == .raven2;
+    if ((!raven2 and chip.family != .picasso) or (chip.asic_revision >= 8) != raven2 or
+        chip.external_revision != @as(u8, chip.asic_revision) + @as(u8, if (raven2) 0x79 else 0x41) or
+        chip.gc != (if (raven2) @as(u32, 0x090202) else 0x090100) or
+        chip.sdma != (if (raven2) @as(u32, 0x040101) else 0x040100) or
+        chip.dcn != (if (raven2) @as(u32, 0x010001) else 0x010000) or
+        chip.nbio != (if (raven2) @as(u32, 0x070001) else 0x070000) or
+        chip.psp != (if (raven2) @as(u32, 0x0a0001) else 0x0a0000) or
+        chip.smu != (if (raven2) @as(u32, 0x0a0001) else 0x0a0000) or
+        chip.vcn != (if (raven2) @as(u32, 0x010001) else 0x010000) or
+        !std.mem.eql(u8, chip.compiler, if (raven2) "gfx909" else "gfx902")) return error.Profile;
     const revision = snapshot.pci_revision;
-    return .{ .pci_revision = revision, .socket = if ((revision >= 0xc8 and revision <= 0xcf) or (revision >= 0xd8 and revision <= 0xdf)) .am4 else .fp5 };
+    return .{ .family = if (raven2) .raven2 else .picasso, .pci_revision = revision,
+        .socket = if (!raven2 and ((revision >= 0xc8 and revision <= 0xcf) or (revision >= 0xd8 and revision <= 0xdf))) .am4 else .fp5 };
 }
-pub fn specification(role: Role) *const Firmware {
-    for (&lock.firmware) |*entry| if (entry.role == role) return entry;
+pub fn specification(family: Family, role: Role) *const Firmware {
+    for (&lock.firmware) |*entry| if (entry.role == role and (entry.family == family or entry.family == .shared)) return entry;
     unreachable;
 }
 pub fn hashMatches(bytes: []const u8, expected: []const u8) bool {
@@ -106,7 +124,10 @@ pub fn inspect(data: []const u8, spec: *const Firmware) Error!Layout {
     if (try read(u32, data, 16) != spec.ucode_version) return error.Version;
     const offset = try read(u32, data, 24); const bytes = try read(u32, data, 20);
     if (bytes == 0) return error.Range;
-    var result: Layout = .{ .payload = try span(data, header, offset, bytes) };
+    // RLC2.1 always exposes the complete 156-byte layout. The unchanged
+    // Raven2 blob declares the older 104-byte prefix in header_size_bytes.
+    const metadata_end = if (spec.kind == .rlc) @max(header, @as(u32, 156)) else header;
+    var result: Layout = .{ .payload = try span(data, metadata_end, offset, bytes) };
     switch (spec.kind) {
         .psp_asd => {
             if (header != 44) return error.Header;
@@ -133,16 +154,24 @@ pub fn inspect(data: []const u8, spec: *const Firmware) Error!Layout {
             result.jump_table = try jump(data, result.payload, try read(u32, data, jt), try read(u32, data, jt + 4));
         },
         .rlc => {
-            if (header != 156 or spec.header_major != 2 or spec.header_minor != 1) return error.Header;
+            const shared_ranges = spec.family == .raven2;
+            if (header != (if (shared_ranges) @as(u32, 104) else 156) or spec.header_major != 2 or spec.header_minor != 1) return error.Header;
             result.feature = try read(u32, data, 32);
             result.jump_table = try jump(data, result.payload, try read(u32, data, 36), try read(u32, data, 40));
             for (0..7) |i| {
                 const pos: usize = if (i < 4) 72 + i * 8 else 108 + (i - 4) * 16;
                 const count = try read(u32, data, pos + (if (i < 4) @as(usize, 0) else 8));
                 const begin = try read(u32, data, pos + (if (i < 4) @as(usize, 4) else 12));
-                const range = try span(data, header, begin, count);
-                if (overlaps(range, result.payload)) return error.Overlap;
-                for (result.segments[0..i]) |prior| if (overlaps(prior.span, range)) return error.Overlap;
+                const range = try span(data, metadata_end, begin, count);
+                // amdgpu_rlc.c consumes independent absolute offset/size
+                // views. The pinned Raven2 restore views overlap its RLC
+                // payload/register lists; no format rule makes them disjoint.
+                // Every view stays file-bounded and whole-file SHA256 admission
+                // still requires the exact unchanged original bytes.
+                if (!shared_ranges) {
+                    if (overlaps(range, result.payload)) return error.Overlap;
+                    for (result.segments[0..i]) |prior| if (overlaps(prior.span, range)) return error.Overlap;
+                }
                 result.segments[i] = .{ .span = range, .version = if (i < 4) 0 else try read(u32, data, pos), .feature = if (i < 4) 0 else try read(u32, data, pos + 4) };
             }
             if (result.segments[0].span.bytes == 0 or result.segments[1].span.bytes == 0 or
@@ -158,7 +187,9 @@ pub fn inspect(data: []const u8, spec: *const Firmware) Error!Layout {
         .gpu_info => {
             if (header != 36 or try read(u16, data, 32) != 1 or try read(u16, data, 34) != 0 or bytes != 60) return error.Revision;
             // Reference topology, never a measured enabled-CU mask.
-            if (try read(u32, data, offset) == 0 or try read(u32, data, offset + 4) == 0 or try read(u32, data, offset + 8) == 0 or
+            const profile: @import("asic_profile.zig").Profile = switch (spec.family) { .picasso => .picasso, .raven2 => .raven2, .shared => return error.Topology };
+            if (try read(u32, data, offset) != 1 or try read(u32, data, offset + 4) != @popCount(profile.cuMask()) or
+                try read(u32, data, offset + 8) != 1 or try read(u32, data, offset + 12) != @popCount(profile.rbMask()) or
                 try read(u32, data, offset + 44) != 64) return error.Topology;
         },
         .vcn => if (header != 32) return error.Header,
@@ -167,14 +198,15 @@ pub fn inspect(data: []const u8, spec: *const Firmware) Error!Layout {
 }
 comptime {
     @setEvalBranchQuota(2000000);
-    if (lock.schema != 1 or lock.revision.len != 40) @compileError("unsupported AMD firmware lock");
+    if (lock.schema != 3 or lock.revision.len != 40 or lock.raven2_rlc_revision.len != 40) @compileError("unsupported AMD firmware lock");
     var total: usize = lock_bytes.len;
-    for (std.meta.tags(Role)) |role| {
+    for (.{ Family.picasso, Family.raven2 }) |family| for (std.meta.tags(Role)) |role| {
         var count: usize = 0;
-        for (lock.firmware) |entry| if (entry.role == role) { count += 1; };
-        if (count != 1) @compileError("duplicate or absent AMD firmware role");
-    }
+        for (lock.firmware) |entry| if (entry.role == role and (entry.family == family or entry.family == .shared)) { count += 1; };
+        if (count != (if (family == .raven2 and role == .rlc_am4) @as(usize, 0) else 1)) @compileError("duplicate or absent AMD firmware family role");
+    };
     for (lock.firmware, 0..) |entry, i| {
+        if (!std.mem.eql(u8, entry.upstream_revision, if (entry.family == .raven2 and entry.role == .rlc) lock.raven2_rlc_revision else lock.revision)) @compileError("firmware source revision differs from pinned bundle");
         if (entry.bytes < 32 or entry.bytes > max_blob_bytes or entry.sha256.len != 64 or entry.resource.len > 63 or entry.resource.len == 0)
             @compileError("invalid AMD firmware limits");
         for (lock.firmware[0..i]) |old| if (std.ascii.eqlIgnoreCase(old.resource, entry.resource)) @compileError("duplicate firmware resource");
@@ -184,5 +216,13 @@ comptime {
         if (entry.bytes == 0 or entry.bytes > max_blob_bytes or entry.sha256.len != 64) @compileError("invalid AMD firmware metadata");
         total += std.mem.alignForward(usize, entry.bytes, 16);
     }
-    if (total > max_package_bytes) @compileError("AMD firmware package too large");
+    if (total > max_bundle_bytes) @compileError("AMD firmware bundle too large");
+    for (.{ Profile{ .family = .picasso, .socket = .fp5, .pci_revision = 0 },
+        Profile{ .family = .picasso, .socket = .am4, .pci_revision = 0xc8 },
+        Profile{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 } }) |profile| {
+        var selected_bytes: usize = lock_bytes.len;
+        for (lock.metadata) |entry| selected_bytes += std.mem.alignForward(usize, entry.bytes, 16);
+        for (lock.firmware) |entry| if (profile.selects(entry)) { selected_bytes += std.mem.alignForward(usize, entry.bytes, 16); };
+        if (selected_bytes > max_package_bytes) @compileError("selected AMD firmware package too large");
+    }
 }

@@ -13,6 +13,7 @@ pub const Capture = struct {
     allocation: a.DriverHeapAllocation = .{},
     window: a.GfxMmioWindow = .{}, cleanup_pending: bool = false,
     source: Source = .none, acpi: Acpi = .unavailable,
+    stage: enum { source, vfct, atom } = .source,
     board: bios.Board = undefined, valid: bool = false,
     sha256: [32]u8 = @splat(0),
 
@@ -51,11 +52,18 @@ pub const Capture = struct {
                     if (resources.acpiStat("VFCT".*, 0, &after) != 0 or !std.meta.eql(info, after)) return error.Stale;
                     const finished = resources.nowNs();
                     if (finished < started or finished >= deadline) return error.Deadline;
+                    self.stage = .vfct;
+                    const vfct_start = bios.number(u32, destination, 0x34) catch 0;
+                    const vfct_library = bios.number(u32, destination, 0x38) catch 0;
+                    logPrefix(ctx, "vfct-header", destination, 32);
+                    logPrefix(ctx, "vfct-image", destination, vfct_start);
+                    if (vfct_library != 0) logPrefix(ctx, "vfct-library", destination, vfct_library);
+                    if (destination.len >= 32) logPrefix(ctx, "vfct-tail", destination, destination.len - 32);
                     const image = bios.vfct(destination, device) catch |err| switch (err) {
                         error.Missing => { self.acpi = .no_matching_image; if (!self.releaseAllocation()) return error.Cleanup; return self.shadow(ctx, snapshot, device); },
                         else => return err,
                     };
-                    try bios.parse(image, device, &self.board);
+                    try self.parseBoard(ctx, image, device, true);
                     self.source = .vfct; self.valid = true;
                     std.crypto.hash.sha2.Sha256.hash(self.board.image, &self.sha256, .{});
                     return;
@@ -98,9 +106,58 @@ pub const Capture = struct {
         // must not yield mixed board information.
         for (destination, 0..) |byte, index| if (byte != source[index]) return error.Stale;
         if (!self.closeWindow()) return error.Cleanup;
-        try bios.parse(destination, device, &self.board);
+        try self.parseBoard(ctx, destination, device, false);
         self.source = .measured_bar0_shadow; self.valid = true;
         std.crypto.hash.sha2.Sha256.hash(self.board.image, &self.sha256, .{});
+    }
+    fn parseBoard(self: *Capture, ctx: *const r4os.r4dev.DriverContext, image: []const u8, device: bios.Device, verified_vfct: bool) Error!void {
+        self.stage = .atom;
+        var diagnostic: bios.Diagnostic = .{};
+        bios.parseDetailed(image, device, &self.board, &diagnostic, .{ .verified_vfct = verified_vfct }) catch |err| {
+            var failure: [192]u8 = undefined;
+            if (std.fmt.bufPrintZ(&failure, "AMDGPU ROM failure: stage={s} index={d} offset={x} error={s}",
+                .{ @tagName(diagnostic.stage), diagnostic.index, diagnostic.offset, @errorName(err) })) |line| ctx.logInfo(line) else |_| {}
+            logTable(ctx, "failure", image, diagnostic.offset);
+            // Bounded structural evidence for real OEM variants. Diagnostic
+            // offsets never relax parser bounds or authorize firmware execution.
+            const pcir = bios.number(u16, image, 0x18) catch 0;
+            const atom = bios.number(u16, image, 0x48) catch 0;
+            const master = bios.number(u16, image, atom + @offsetOf(bios.c.struct_atom_rom_header_v2_2, "masterdatatable_offset")) catch 0;
+            logPrefix(ctx, "rom", image, 0);
+            logPrefix(ctx, "pcir", image, pcir);
+            logPrefix(ctx, "atom", image, atom);
+            logPrefix(ctx, "master", image, master);
+            const commands = bios.number(u16, image, atom + @offsetOf(bios.c.struct_atom_rom_header_v2_2, "masterhwfunction_offset")) catch 0;
+            logPrefix(ctx, "commands", image, commands);
+            if (master >= 0x4a) for (0..35) |i| {
+                const offset = bios.number(u16, image, @as(usize, master) + 4 + i * 2) catch continue;
+                if (offset >= 0x4a) {
+                    if (i == bios.wireOffset(bios.c.struct_atom_master_list_of_data_tables_v2_1, "displayobjectinfo") / 2)
+                        logTable(ctx, "display-paths", image, offset)
+                    else
+                        logPrefix(ctx, "table", image, offset);
+                }
+            };
+            return err;
+        };
+    }
+    fn logTable(ctx: *const r4os.r4dev.DriverContext, label: []const u8, image: []const u8, offset: usize) void {
+        const declared = bios.number(u16, image, offset) catch 0;
+        if (offset >= image.len) return;
+        const length: usize = @min(image.len - offset, if (declared >= 4) @min(declared, 256) else 32);
+        var relative: usize = 0;
+        while (relative < length) : (relative += 32) logPrefix(ctx, label, image[0 .. offset + length], offset + relative);
+    }
+    fn logPrefix(ctx: *const r4os.r4dev.DriverContext, label: []const u8, image: []const u8, offset: usize) void {
+        if (offset >= image.len) return;
+        const length: usize = @min(image.len - offset, 32);
+        var bytes: [32]u8 = @splat(0);
+        @memcpy(bytes[0..length], image[offset..][0..length]);
+        const hex = std.fmt.bytesToHex(bytes, .lower);
+        var output: [224]u8 = undefined;
+        const line = std.fmt.bufPrintZ(&output, "AMDGPU ROM {s}: source-bytes={d} offset={x} prefix={s}",
+            .{ label, image.len, offset, hex[0..length * 2] }) catch return;
+        ctx.logInfo(line);
     }
     fn closeWindow(self: *Capture) bool {
         if (self.window.handle.id == 0 and !self.cleanup_pending) return true;

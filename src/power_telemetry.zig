@@ -29,7 +29,8 @@ pub const Owner = struct {
     failed: bool = false, closed: bool = false, initialized: bool = false,
     pub fn configure(self: *Owner, adapter: u32, epoch: u64, smu_version_raw: u32) void {
         self.* = .{ .adapter = adapter, .epoch = epoch, .smu_version_raw = smu_version_raw, .initialized = true };
-        // Same raw firmware version boundary used by SMU10's Picasso sensor.
+        // SMU10 uses this boundary for PCI15D8 (Picasso flag, also set on
+        // Raven2 by amdgpu_device_init_apu_flags before soc15 adds Raven2).
         if (smu_version_raw < 0x41e3b) self.unavailable |= 1 << 2;
     }
     pub fn snapshot(self: *const Owner, now: u64, policy: u32) a.GfxTelemetryState {

@@ -77,4 +77,5 @@ enum bp_result r4dcn_hdmi_encoder(struct dc_bios *,struct bp_encoder_control *);
 extern struct r4dcn *r4dcn_current;
 int r4dcn_enter(struct r4dcn *);
 void r4dcn_leave(struct r4dcn *);
+bool r4dcn_frontend_quiet(struct r4dcn *,unsigned,bool,struct r4dcn_inherited_probe *);
 #endif

@@ -16,8 +16,14 @@ const Outputs = @TypeOf(@as(r4os.r4dev.DriverContext, undefined).graphicsOutputs
 pub const Phase = enum { empty, allocate, copy, publish_buffer, prepare_core, wait_core, bind_panel, wait_panel, bind_hdmi, wait_hdmi, commit_core, wait_commit,
     shadow, publication, prepare_common, bind_scanout, wait_bind, enable, wait_enable, stream, wait_stream, sample, wait_sample,
     acknowledge, wait_ack, light, wait_light, handoff, active, failed, closing };
+pub const RequestStep = enum { empty, gate, display_api, outputs_api, capabilities, boot_mode, hdmi_route, shape, clock, reference_clock, ready };
 pub const Owner = struct {
     self_address: usize = 0,
+    // Resident admission diagnostics; no borrowed pointers or extra MMIO.
+    request_step: RequestStep = .empty,
+    request_caps: u16 = 0,
+    request_display_bytes: u32 = 0,
+    request_output_bytes: u32 = 0,
     ctx: ?r4os.r4dev.DriverContext = null,
     native: ?*start.Owner = null,
     engine: ?*sdma.Owner = null,
@@ -80,13 +86,25 @@ pub const Owner = struct {
         core: *dc.Owner, pipe: *pipeline.Owner, presentation: *present.Owner, frames: [2]*buffers.Image,
         board: *const @import("bios.zig").Board, table: clocks.Table, gb_addr_config: u32) !void
     {
+        self.request_step = .gate;
         if (self.self_address != 0 or !native.firmwareReady() or engine.memory != native.memory or engine.client != null or engine.active) return error.State;
+        self.request_step = .display_api;
         const display = ctx.graphicsDisplay() orelse return error.Unsupported;
+        self.request_display_bytes = display.table.size;
+        self.request_step = .outputs_api;
         const outputs = ctx.graphicsOutputs() orelse return error.Unsupported;
-        if (display.table.prepare_held == 0 or display.table.transition == 0 or outputs.table.publish == 0 or outputs.table.withdraw == 0 or
-            !display.supportsReset() or !display.supportsPresentationStats() or !display.supportsPresentationInfo() or
-            !outputs.supportsHotplug() or !outputs.supportsModes()) return error.Unsupported;
+        self.request_output_bytes = outputs.table.size;
+        self.request_step = .capabilities;
+        self.request_caps = 0;
+        inline for (.{ display.table.prepare_held != 0, display.table.transition != 0, outputs.table.publish != 0, outputs.table.withdraw != 0,
+            display.supportsReset(), display.supportsPresentationStats(), display.supportsPresentationInfo(),
+            outputs.supportsHotplug(), outputs.supportsModes() }, 0..) |supported, index| {
+            if (supported) self.request_caps |= @as(u16, 1) << index;
+        }
+        if (self.request_caps != 0x1ff) return error.Unsupported;
+        self.request_step = .boot_mode;
         const mode = try pipeline.bootMode(board, native);
+        self.request_step = .hdmi_route;
         const have_hdmi = blk: {
             _ = @import("hdmi.zig").route(board) catch |err| {
                 if (err == error.Unsupported) break :blk false;
@@ -94,18 +112,24 @@ pub const Owner = struct {
             };
             break :blk true;
         };
+        self.request_step = .shape;
         const shape = try buffers.Shape.make(mode.width, mode.height, false);
+        self.request_step = .clock;
         const now = ctx.resources().?.nowNs();
         if (now == 0 or now > std.math.maxInt(u64) - 120 * std.time.ns_per_s) return error.Clock;
+        self.request_step = .reference_clock;
+        const ref_khz = try board.displayReferenceClock();
         self.* = .{ .self_address = @intFromPtr(self), .ctx = ctx.*, .native = native, .engine = engine, .core = core, .pipeline = pipe,
+            .request_step = .ready, .request_caps = self.request_caps,
+            .request_display_bytes = self.request_display_bytes, .request_output_bytes = self.request_output_bytes,
             .present = presentation, .frames = frames, .board = board, .clocks = table, .mode = mode, .shape = shape,
             .display = display, .outputs = outputs, .phase = .allocate, .last_time = now, .deadline = now + 120 * std.time.ns_per_s,
             .original_boot = native.hold.boot, .hdmi_present = have_hdmi,
             // ASIC limits bound DML admission; actual programmed clocks still
             // require the SMU/ATOM acknowledgements in the pipeline owner.
             .limits = .{ .channels = board.integrated.?.uma_channels, .dcf_khz = table.dcf_khz, .fabric_khz = table.fabric_khz,
-                .soc_khz = table.soc_khz, .disp_khz = 1108000, .dpp_khz = 720000, .ref_khz = try board.displayReferenceClock(),
-                .gb_addr_config = gb_addr_config, .reserved = 0 } };
+                .soc_khz = table.soc_khz, .disp_khz = 1108000, .dpp_khz = 720000, .ref_khz = ref_khz,
+                .gb_addr_config = gb_addr_config, .reserved = 0, .pipe_count = native.memory.?.layout.?.profile.displayPipes() } };
         engine.client = .{ .context = self.self_address, .work = work, .available = available, .accept = accept, .drain = drain, .lost = lost, .idle = powerIdle, .sleep_poll = sleepPoll };
     }
     fn from(raw: usize) *Owner { return @ptrFromInt(raw); }
@@ -505,6 +529,58 @@ pub const Owner = struct {
         var buffer: [220]u8 = undefined;
         const message = std.fmt.bufPrintZ(&buffer, "AMDGPU output: phase={s} failure={s} status={d} resources=retained", .{ @tagName(self.failed_phase), @errorName(err), self.last_status }) catch return;
         self.ctx.?.logError(message);
+        self.diagnoseTask();
+    }
+    fn diagnostic(self: *const Owner, comptime format: []const u8, args: anytype) void {
+        var buffer: [384]u8 = undefined;
+        const message = std.fmt.bufPrintZ(&buffer, format, args) catch return;
+        self.ctx.?.logError(message);
+    }
+    fn diagnoseTask(self: *const Owner) void {
+        const core = self.core orelse return;
+        // Task-owned snapshots are not read while that task can still run.
+        if (core.thread != 0 or !core.joined) return;
+        if (self.pipeline) |pipe| {
+            self.diagnostic("AMDGPU mode prepare: step={s} failure={s} native={d} touched={d} command={d} revision={d}/{d} boot-video={d}",
+                .{ @tagName(pipe.prepare_step), if (pipe.failure) |failure| @errorName(failure) else "none", pipe.prepare_native_result,
+                @intFromBool(pipe.touched), pipe.prepare_command, pipe.prepare_revision[0], pipe.prepare_revision[1], pipe.prepare_boot_video });
+            const state = pipe.prepare_panel_state;
+            const inherited = &pipe.prepare_inherited;
+            self.diagnostic("AMDGPU inherited: checked={x} power-sampled={x} rejected={d}",
+                .{ inherited.checked_mask, inherited.power_mask, inherited.rejected_pipe });
+            for (0..4) |i| if (inherited.checked_mask & (@as(u32, 1) << @intCast(i)) != 0) {
+                self.diagnostic("AMDGPU inherited pipe{d}: otg={x} hubp={x} power={x}",
+                    .{ i, inherited.control[i], inherited.hubp[i], inherited.power[i] });
+            };
+            self.diagnostic("AMDGPU mode panel: power={d} lit={d} pwm-valid={d} firmware-busy={d} pwm={d} period={d}",
+                .{ state.powered, state.lit, state.pwm_valid, state.firmware_busy, state.pwm, state.period });
+        }
+        if (core.panel_allocation.cpu_address != 0) {
+            const runtime: *const @import("panel_runtime.zig").Runtime = @ptrFromInt(core.panel_allocation.cpu_address);
+            self.diagnostic("AMDGPU mode runtime: panel-error={s} atom-error={s} atom-effects={d} panel-phase={s}",
+                .{ if (runtime.last_panel_error) |failure| @errorName(failure) else "none",
+                if (runtime.last_atom_error) |failure| @errorName(failure) else "none", @intFromBool(runtime.vm.effects),
+                if (runtime.protocol) |*p| @tagName(p.phase) else "none" });
+        }
+        const bind = core.panel_bind_diagnostic;
+        self.diagnostic("AMDGPU display task: action={s} phase={s} result={d} worker={d} panel-error={s}",
+            .{ @tagName(core.action), @tagName(core.phase), core.result, core.worker_result,
+            if (core.panel_bind_error) |failure| @errorName(failure) else "none" });
+        self.diagnostic("AMDGPU panel bind: step={s} native={d} scratch={d} tx-rev={d}/{d} commands={d} data={d}",
+            .{ @tagName(bind.step), bind.native_result, bind.scratch_bytes, bind.revision[0], bind.revision[1], core.panel_bind_commands, core.panel_bind_data });
+        const route = bind.route;
+        self.diagnostic("AMDGPU panel route: valid={d} connector={x} encoder={x} phy={d} aux={d} hpd={d} ddc={x} hpd-a={x}",
+            .{ @intFromBool(bind.route_valid), route.connector, route.encoder, route.phy, route.aux, route.hpd, route.ddc_a, route.hpd_a });
+        const board = core.board orelse return;
+        if (board.panel) |p| self.diagnostic("AMDGPU panel decoded: bpc={d} size={d}x{d} clock={d} misc={x}", .{p.bpc, p.width, p.height, p.pixel_clock_khz, p.misc});
+        for (board.paths[0..board.path_count], 0..) |path, index| {
+            if (path.connector & 0xff != 0x14) continue;
+            self.diagnostic("AMDGPU panel path{d}: connector={x} encoder={x} external={x} hardware={d} slave={x} aux={d} hpd-active={d} caps={x}",
+                .{ index, path.connector, path.encoder, path.external_encoder, @intFromBool(path.i2c_hardware), path.i2c_slave,
+                path.aux_ddc_line orelse 255, path.hpd_active, path.encoder_caps orelse 0 });
+            if (path.i2c_pin) |p| self.diagnostic("AMDGPU panel DDC: register={x} shift={d} mask-shift={d}", .{p.register, p.shift, p.mask_shift});
+            if (path.hpd_pin) |p| self.diagnostic("AMDGPU panel HPD: register={x} shift={d} mask-shift={d}", .{p.register, p.shift, p.mask_shift});
+        }
     }
     fn geometry(self: *const Owner, boot: *const a.GfxNativeBootInfo) bool {
         const original = self.original_boot;
