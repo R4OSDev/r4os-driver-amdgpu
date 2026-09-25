@@ -103,7 +103,10 @@ pub const Owner = struct {
     translated: bool = false,
     flush_pending: bool = false,
     ready: bool = false,
+    close_step: enum { idle, renderer_identity, render_jobs, allocation_provider, virtual_provider, render_context, compute_context, render_unmap, render_flush, render_window, render_mapping_count, closed } = .idle,
     admission: u64 = 0,
+    failure_reports: u8 = 0,
+    submit_step: enum { validate, decode, retain, describe, image, adopt, map, encode, payload, hold, enqueue } = .validate,
     jobs: [capacity]Job = @splat(.{}),
     scratch: [65536]u8 align(16) = undefined,
     payload: [4096]u8 = undefined,
@@ -162,7 +165,7 @@ pub const Owner = struct {
         _ = self.virtual.step();
         for (&self.jobs, 0..) |*job, index| if (job.pending) |input| {
             job.pending = null;
-            self.submit(job, index, input) catch {};
+            self.submit(job, index, input) catch |err| self.reportFailure(job, input, err);
         };
     }
     /// Caller checks available before consuming a canonical job. Even partial
@@ -175,12 +178,13 @@ pub const Owner = struct {
             if (self.admission == std.math.maxInt(u64)) return;
             self.admission += 1;
             job.order = self.admission;
-            self.submit(job, index, input) catch {};
+            self.submit(job, index, input) catch |err| self.reportFailure(job, input, err);
             return;
         };
         unreachable;
     }
     fn submit(self: *Owner, job: *Job, index: usize, input: a.GfxDriverJob) Error!void {
+        self.submit_step = .validate;
         if (input.operation == a.gfx_queue_operation_native) return self.submitYuv(job, index, input);
         const memory = self.memory.?;
         const queue = self.rt.?.queue.?;
@@ -188,6 +192,7 @@ pub const Owner = struct {
             input.reserved0 != 0 or input.reserved1 != 0 or input.source_offset != 0 or input.target_offset != 0 or input.byte_length != 0 or
             input.row_count != 0 or input.source_pitch != 0 or input.target_pitch != 0 or input.render.reserved0 != 0 or
             std.meta.eql(input.source_buffer, input.target_buffer)) return error.Invalid;
+        self.submit_step = .decode;
         var list: a.GfxRenderList = .{};
         var grids: [16]a.GfxSampleGrid = @splat(.{});
         var color: ?batch.Color = null;
@@ -217,18 +222,35 @@ pub const Owner = struct {
         for (list.count..16) |i| if (!std.meta.eql(list.commands[i], a.GfxRenderCommand{}) or !std.meta.eql(grids[i], a.GfxSampleGrid{})) return error.Invalid;
         var views: [2]?batch.Image = .{ null, null };
         for ((if (input.render.kind == a.gfx_render_kind_sample) @as(usize, 0) else 1)..2) |side| {
+            self.submit_step = .retain;
             if (queue.retainResource(&input.fence, @intCast(side), &job.references[side]) != 1) return error.Stale;
             var desc: a.GfxBufferDescriptor = .{};
+            self.submit_step = .describe;
             if (memory.memory.?.bufferDescribe(&job.references[side].reference, &desc) != 1 or desc.byte_length == 0 or desc.byte_length > 64 * 1024 * 1024 or
                 !std.meta.eql(job.references[side].buffer, if (side == 0) input.source_buffer else input.target_buffer)) return error.Invalid;
             const address = resource_va + index * 0x10000000 + side * 0x08000000;
+            self.submit_step = .image;
             views[side] = batch.image(self.architecture, memory.adapter, desc, address, side == 1, if (side == 1) 0 else input.render.filter, &self.scratch) catch return error.Invalid;
+            self.submit_step = .adopt;
             try job.maps[side].adopt(memory, &job.references[side], address, job.pages[side][0..@intCast((desc.byte_length + 4095) / 4096)]);
+            self.submit_step = .map;
             try job.maps[side].publish(&memory.virtual, &memory.registers, side == 1, false);
         }
         const offset = parameter_offset + index * 4096;
+        self.submit_step = .encode;
         const count = batch.encode(views[0], views[1].?, list.commands[0..list.count], grids[0..list.count], color, program_va, program_va + offset, &self.payload, &self.commands) catch return error.Invalid;
         return self.publish(job, input, offset, count);
+    }
+    fn reportFailure(self: *Owner, job: *const Job, input: a.GfxDriverJob, failure: Error) void {
+        if (self.failure_reports >= 4) return;
+        const rt = self.rt orelse return;
+        const ctx = rt.ctx orelse return;
+        self.failure_reports += 1;
+        var text: [256]u8 = undefined;
+        const message = std.fmt.bufPrintZ(&text, "AMDGPU render-submit: error={s} step={s} slot={d} timeline={d} point={d} operation={d} enqueued={} maps={}/{}; exact cleanup retained", .{
+            @errorName(failure), @tagName(self.submit_step), input.fence.slot, input.fence.timeline, input.fence.point,
+            input.operation, job.enqueued, job.maps[0].ready, job.maps[1].ready }) catch return;
+        ctx.logError(message);
     }
     fn submitYuv(self: *Owner, job: *Job, index: usize, input: a.GfxDriverJob) Error!void {
         const memory = self.memory.?;
@@ -343,9 +365,11 @@ pub const Owner = struct {
             job.result = a.gfx_queue_result_complete;
             return;
         }
+        self.submit_step = .payload;
         const bytes: [*]volatile u8 = @ptrFromInt(self.window.value.cpu_address + offset);
         for (&self.payload, bytes[0..4096]) |src, *dst| dst.* = src;
         try @import("start_common.zig").hdpFlush(&memory.registers);
+        self.submit_step = .hold;
         for (&job.maps, &job.held) |*map, *held| if (map.ready) {
             try map.retain(input.fence);
             held.* = true;
@@ -356,42 +380,55 @@ pub const Owner = struct {
         };
         const now = memory.registers.nowNs();
         const deadline = @min(input.deadline_ns, std.math.add(u64, now, 2_000_000_000) catch return error.Deadline);
+        self.submit_step = .enqueue;
         try self.contexts.?.enqueue(self.context.?, input.fence, now, deadline, self.commands[0..count], .{ .context = @intFromPtr(job), .retire = Job.retire });
         job.enqueued = true;
     }
     /// GC has already stopped, aborted its timeline and retired its contexts.
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0) return true;
+        self.close_step = .renderer_identity;
         if (self.self_address != @intFromPtr(self)) return false;
         self.ready = false;
         for (&self.jobs) |*job| job.pending = null;
+        self.close_step = .render_jobs;
         if (!self.collect()) return false;
         const memory = self.memory.?;
-        if (!self.allocations.close() or !self.virtual.close()) return false;
+        self.close_step = .allocation_provider;
+        if (!self.allocations.close()) return false;
+        self.close_step = .virtual_provider;
+        if (!self.virtual.close()) return false;
         if (self.context) |handle| {
+            self.close_step = .render_context;
             self.contexts.?.destroy(handle) catch return false;
             self.context = null;
         }
         if (self.compute_context) |handle| {
+            self.close_step = .compute_context;
             self.contexts.?.destroy(handle) catch return false;
             self.compute_context = null;
         }
         if (self.translated) {
+            self.close_step = .render_unmap;
             memory.virtual.unmap(program_va, self.pages.len) catch return false;
             self.translated = false;
             self.flush_pending = true;
         }
         if (self.flush_pending) {
+            self.close_step = .render_flush;
             memory.controller.flush(&memory.registers, 1) catch return false;
             self.flush_pending = false;
         }
+        self.close_step = .render_window;
         if (!self.window.close()) return false;
+        self.close_step = .render_mapping_count;
         if (memory.mapping_users == 0) return false;
         memory.mapping_users -= 1;
         self.self_address = 0;
         self.memory = null;
         self.rt = null;
         self.contexts = null;
+        self.close_step = .closed;
         return true;
     }
 };

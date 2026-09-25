@@ -23,6 +23,8 @@ const F = struct {
     var writes: usize = 0;
     var reads: usize = 0;
     var fail_write: usize = 0;
+    var fail_write_offset: ?u32 = null;
+    var drop_write_offset: ?u32 = null;
     var is_worker = true;
     var clock_ready = true;
     var scanout_model = false;
@@ -30,9 +32,14 @@ const F = struct {
     var tear_frame = false;
     var fail_read: usize = 0;
     var reject_fourth = false;
+    var hold_underflow_clear = false;
+    var underflow_clears: usize = 0;
     fn absent(offset: u32) bool {
         if (!reject_fourth) return false;
-        // top/bottom/opp in start_registers are shared MPCC muxes, not OPP3.
+        // Raven2 has three physical MPCC/OPP instances as well as frontends.
+        // Both reads and writes to the absent fourth instance must fail.
+        if (offset / 4 >= reg("MPCC3_MPCC_TOP_SEL") and offset / 4 <= reg("MPCC3_MPCC_STATUS")) return true;
+        if (offset / 4 == reg("MPC_OUT3_MUX")) return true;
         inline for (.{ "hubp_cntl", "format", "tiling", "pitch", "primary", "primary_hi", "inuse", "inuse_hi", "flip", "surface", "otg", "control", "htotal", "vtotal", "blank" }) |name| {
             if (offset == @field(d, name)[3]) return true;
         }
@@ -47,6 +54,8 @@ const F = struct {
         writes = 0;
         reads = 0;
         fail_write = 0;
+        fail_write_offset = null;
+        drop_write_offset = null;
         is_worker = true;
         clock_ready = true;
         scanout_model = false;
@@ -54,6 +63,8 @@ const F = struct {
         tear_frame = false;
         fail_read = 0;
         reject_fourth = false;
+        hold_underflow_clear = false;
+        underflow_clears = 0;
     }
     fn read(_: ?*anyopaque, offset: u32, out: [*c]u32) callconv(.c) c_int {
         if (offset % 4 != 0 or offset >= @sizeOf(@TypeOf(words))) return -1;
@@ -61,6 +72,12 @@ const F = struct {
         if (absent(offset)) return -1;
         if (fail_read != 0 and reads == fail_read) return -1;
         out.* = words[offset / 4];
+        // Existing hotplug scenarios drive Y as a synthetic external wire;
+        // mirror it into controller sense. panel_test separates both sources.
+        inline for (.{ "HPD0_DC_HPD_INT_STATUS", "HPD1_DC_HPD_INT_STATUS", "HPD2_DC_HPD_INT_STATUS", "HPD3_DC_HPD_INT_STATUS" }, 0..) |name, index| {
+            if (offset / 4 == reg(name)) out.* = if (words[reg("DC_GPIO_HPD_Y")] & (@as(u32, 1) << (index * 8)) != 0)
+                hw.HPD0_DC_HPD_INT_STATUS__DC_HPD_SENSE_DELAYED_MASK else 0;
+        }
         if (tear_frame and offset / 4 == reg("OTG0_OTG_STATUS_FRAME_COUNT")) words[offset / 4] +%= 1;
         return 0;
     }
@@ -68,7 +85,18 @@ const F = struct {
         if (offset % 4 != 0 or offset >= @sizeOf(@TypeOf(words))) return -1;
         writes += 1;
         if (absent(offset)) return -1;
-        if (fail_write != 0 and writes == fail_write) return -1;
+        if ((fail_write != 0 and writes == fail_write) or fail_write_offset == offset) return -1;
+        if (Prefetch.watch) {
+            inline for (0..2) |pipe| {
+                inline for (Prefetch.registers(pipe)) |index| {
+                    // Interdependent DLG updates on a live peer must remain
+                    // inside that peer's acknowledged OTG update lock.
+                    if (offset / 4 == index and words[d.control[pipe] / 4] & hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK != 0 and
+                        words[reg(std.fmt.comptimePrint("OTG{d}_OTG_MASTER_UPDATE_LOCK", .{pipe}))] & hw.OTG0_OTG_MASTER_UPDATE_LOCK__UPDATE_LOCK_STATUS_MASK == 0) return -1;
+                }
+            }
+        }
+        if (drop_write_offset == offset) return 0;
         words[offset / 4] = value;
         if (scanout_model) {
             const idx = offset / 4;
@@ -80,6 +108,17 @@ const F = struct {
             if (idx == d.hubp_cntl[i] / 4) {
                 words[idx] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK | hw.HUBP0_DCHUBP_CNTL__HUBP_NO_OUTSTANDING_REQ_MASK);
                 if (value & hw.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK != 0) words[idx] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK | hw.HUBP0_DCHUBP_CNTL__HUBP_NO_OUTSTANDING_REQ_MASK;
+                if (value & hw.HUBP0_DCHUBP_CNTL__HUBP_UNDERFLOW_CLEAR_MASK != 0) {
+                    underflow_clears += 1;
+                    words[idx] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_UNDERFLOW_CLEAR_MASK);
+                    if (!hold_underflow_clear) words[idx] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_UNDERFLOW_STATUS_MASK);
+                }
+            }
+            if (idx == reg(std.fmt.comptimePrint("ODM{d}_OPTC_INPUT_GLOBAL_CONTROL", .{i})) and
+                value & hw.ODM0_OPTC_INPUT_GLOBAL_CONTROL__OPTC_UNDERFLOW_CLEAR_MASK != 0) {
+                underflow_clears += 1;
+                words[idx] &= ~@as(u32, hw.ODM0_OPTC_INPUT_GLOBAL_CONTROL__OPTC_UNDERFLOW_CLEAR_MASK);
+                if (!hold_underflow_clear) words[idx] &= ~@as(u32, hw.ODM0_OPTC_INPUT_GLOBAL_CONTROL__OPTC_UNDERFLOW_OCCURRED_STATUS_MASK);
             }
             if (idx == reg(std.fmt.comptimePrint("OTG{d}_OTG_BLANK_CONTROL", .{i}))) {
                 words[idx] &= ~@as(u32, hw.OTG0_OTG_BLANK_CONTROL__OTG_CURRENT_BLANK_STATE_MASK);
@@ -118,7 +157,9 @@ const F = struct {
             words[d.otg[i] / 4] = 0;
             words[d.control[i] / 4] = 0;
             words[d.hubp_cntl[i] / 4] = hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK | hw.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK;
-            words[hw.R4DCN_MPC_STATUS(i) / 4] = hw.MPCC0_MPCC_STATUS__MPCC_IDLE_MASK;
+            // A disabled TG cannot supply the MPCC_IDLE acknowledgement.
+            // Keep the measured BUSY value through removal and mode changes.
+            words[hw.R4DCN_MPC_STATUS(i) / 4] = hw.MPCC0_MPCC_STATUS__MPCC_BUSY_MASK;
         }
         words[hw.R4DCN_TG_CLOCK_0 / 4] = if (clock_ready) hw.OTG0_OTG_CLOCK_CONTROL__OTG_CLOCK_ON_MASK else 0;
         words[hw.R4DCN_INPUT_CLOCK_0 / 4] = if (clock_ready) hw.ODM0_OPTC_INPUT_CLOCK_CONTROL__OPTC_INPUT_CLK_ON_MASK else 0;
@@ -161,12 +202,38 @@ test "DCN1 original bandwidth timing and MMIO reject invalid modes and unconfirm
     try F.init();
     try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan));
     F.blank();
+    // Real Lenovo BIOS handoff: a stopped TG leaves MPCC0 BUSY (2).
+    // The disconnect mux readbacks must suffice without inventing an idle ACK.
+    F.words[hw.R4DCN_MPC_STATUS(0) / 4] = hw.MPCC0_MPCC_STATUS__MPCC_BUSY_MASK;
     try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+    try t.expectEqual(@as(u32, 2), F.words[hw.R4DCN_MPC_STATUS(0) / 4]);
     try t.expect(F.writes > 80 and F.words[d.htotal[0] / 4] == 2199);
     try t.expectEqual(@as(u32, 0), F.words[hw.R4DCN_MPC_MUX_0 / 4] & hw.MPC_OUT0_MUX__MPC_OUT_MUX_MASK);
     try t.expectEqual(@as(u32, 0), F.words[d.control[0] / 4] & hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK);
     try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes));
     c.r4dcn_destroy(&F.bytes);
+
+    // A lost disconnect write is still rejected before any new pipe timing.
+    // Exercise each independent route, including the update lock selection.
+    inline for (.{ "MPCC0_MPCC_TOP_SEL", "MPCC0_MPCC_BOT_SEL", "MPCC0_MPCC_OPP_ID", "MPCC0_MPCC_UPDATE_LOCK_SEL", "MPC_OUT0_MUX" }) |name| {
+        F.reset();
+        try F.init();
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan));
+        F.blank();
+        F.words[hw.R4DCN_MPC_STATUS(0) / 4] = hw.MPCC0_MPCC_STATUS__MPCC_BUSY_MASK;
+        F.drop_write_offset = @intCast(reg(name) * 4);
+        try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_program(&F.bytes));
+        try t.expectEqual(@as(u32, 0), F.words[d.htotal[0] / 4]);
+        var diagnostic: c.struct_r4dcn_program_diagnostic = undefined;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_copy_program_diagnostic(&F.bytes, &diagnostic));
+        try t.expectEqual(@as(u32, c.R4DCN_PROGRAM_MPC_DISCONNECTED), diagnostic.step);
+        try t.expectEqual(@as(u32, @intCast(reg(name))), diagnostic.wait.address);
+        try t.expectEqual(@as(u32, 0xf), diagnostic.wait.expected);
+        try t.expectEqual(@as(u32, 0), diagnostic.wait.observed);
+        try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_program(&F.bytes));
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes));
+        c.r4dcn_destroy(&F.bytes);
+    }
 
     F.reset();
     try F.init();
@@ -195,7 +262,7 @@ test "DCN1 original bandwidth timing and MMIO reject invalid modes and unconfirm
 
     // Measured Raven2: only three frontends. Absent instance3 must never be
     // used as an idle receipt, nor touched by frontend/clock programming.
-    // Shared MPC crossbar slots retain the original four-slot constructor.
+    // This also rejects absent MPCC3 registers and the fourth output mux.
     F.reset();
     var rv2 = limits; rv2.pipe_count = 3;
     F.reject_fourth = true;
@@ -222,6 +289,146 @@ test "DCN1 original bandwidth timing and MMIO reject invalid modes and unconfirm
         try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &rv2));
         try t.expect(F.reads == reads and F.writes == writes);
     }
+    try stoppedDisconnectFailures();
+    try completePrefetchProgramming();
+}
+
+// A BIOS handoff can leave every prefetch register stale. The frontend must
+// replace this entire hardware block with the newly calculated DML values,
+// including inactive chroma/cursor fields, and apply the original VREADY WA.
+const Prefetch = struct {
+    var watch = false;
+    fn registers(comptime pipe: usize) [11]usize {
+        return .{ reg(std.fmt.comptimePrint("HUBP{d}_HUBPREQ_DEBUG_DB", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_PREFETCH_SETTINS", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_PREFETCH_SETTINS_C", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_VBLANK_PARAMETERS_0", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_VBLANK_PARAMETERS_3", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_VBLANK_PARAMETERS_4", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_PER_LINE_DELIVERY_PRE", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_DCN_SURF0_TTU_CNTL1", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_DCN_SURF1_TTU_CNTL1", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_DCN_CUR0_TTU_CNTL1", .{pipe})),
+            reg(std.fmt.comptimePrint("HUBPREQ{d}_DCN_GLOBAL_TTU_CNTL", .{pipe})) };
+    }
+    fn seed(comptime pipe: usize) void {
+        const indices = registers(pipe);
+        F.words[indices[0]] = 0xa5a51000;
+        for (indices[1..]) |index| F.words[index] = 0xffffffff;
+    }
+    fn check(comptime pipe: usize) !void {
+        const indices = registers(pipe);
+        try t.expectEqual(@as(u32, 0xa5a50000), F.words[indices[0]] & ~@as(u32, 0x1100));
+        try t.expectEqual(@as(u32, 0x100), F.words[indices[0]] & 0x100);
+        for (indices[1..]) |index| try t.expect(F.words[index] != 0xffffffff);
+        const prefetch = F.words[indices[1]];
+        try t.expect(prefetch & hw.HUBPREQ0_PREFETCH_SETTINS__DST_Y_PREFETCH_MASK != 0);
+        try t.expect(prefetch & hw.HUBPREQ0_PREFETCH_SETTINS__VRATIO_PREFETCH_MASK != 0);
+        try t.expect(F.words[indices[10]] & hw.HUBPREQ0_DCN_GLOBAL_TTU_CNTL__MIN_TTU_VBLANK_MASK != 0);
+    }
+};
+
+fn completePrefetchProgramming() !void {
+    Prefetch.watch = true;
+    defer Prefetch.watch = false;
+    // Initial two-head setup and reprogramming a stopped head beside a live
+    // peer. Fail each newly required register write, without accepting READY.
+    for ([_]u32{ 3, 4 }) |count| for ([_]bool{ false, true }) |update| {
+        for (0..12) |case| {
+            F.reset(); F.scanout_model = true; F.reject_fourth = count == 3;
+            var profile = limits; profile.pipe_count = count;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &profile));
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&Runtime.candidate_bytes, c.r4dcn_size(), &F.io, &profile));
+            var modes = [_]c.struct_r4dcn_mode{ mode, mode };
+            modes[1].pipe = 1; modes[1].mc_address += 0x2000000;
+            var plan: c.struct_r4dcn_plan = undefined;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &modes, 2, &plan));
+            F.blank();
+            F.words[reg("OTG1_OTG_CLOCK_CONTROL")] = hw.OTG0_OTG_CLOCK_CONTROL__OTG_CLOCK_ON_MASK;
+            F.words[reg("ODM1_OPTC_INPUT_CLOCK_CONTROL")] = hw.ODM0_OPTC_INPUT_CLOCK_CONTROL__OPTC_INPUT_CLK_ON_MASK;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_fixed_clock(&F.bytes, 600000));
+            if (update) {
+                try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+                try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_enable(&F.bytes, 1));
+                modes[0].h_total += 8;
+                modes[0].mc_address += 0x1000000;
+                try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&Runtime.candidate_bytes, &modes, 2, &plan));
+            }
+            Prefetch.seed(0); Prefetch.seed(1);
+            if (case != 0) F.fail_write_offset = @intCast((if (update) Prefetch.registers(1) else Prefetch.registers(0))[case - 1] * 4);
+            const result = if (update) c.r4dcn_update(&F.bytes, &Runtime.candidate_bytes, 0) else c.r4dcn_program(&F.bytes);
+            if (case == 0) {
+                try t.expectEqual(@as(c_int, 0), result);
+                try Prefetch.check(0); try Prefetch.check(1);
+                try t.expectEqual(@as(u32, 0), F.words[reg("OTG1_OTG_MASTER_UPDATE_LOCK")] & hw.OTG0_OTG_MASTER_UPDATE_LOCK__UPDATE_LOCK_STATUS_MASK);
+            } else {
+                try t.expectEqual(@as(c_int, c.R4DCN_IO), result);
+                const writes = F.writes;
+                try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_program(&F.bytes));
+                try t.expectEqual(writes, F.writes);
+            }
+            F.fail_write_offset = null;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_stop(&F.bytes, 3));
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes));
+            c.r4dcn_destroy(&F.bytes); c.r4dcn_destroy(&Runtime.candidate_bytes);
+        }
+    };
+    std.debug.print("[amd-dcn1-prefetch] complete BIOS-state replacement; live-peer lock; 44 injected write failures retained; 3/4 pipes\n", .{});
+}
+
+// Exercise the real remove/update entry points with a stopped primary and a
+// live peer. A dropped disconnect write must abort before timing/address or
+// peer programming; a stale MPCC_BUSY bit alone is not a failed disconnect.
+fn stoppedDisconnectFailures() !void {
+    const disconnect = [_]usize{ reg("MPCC0_MPCC_TOP_SEL"), reg("MPCC0_MPCC_BOT_SEL"),
+        reg("MPCC0_MPCC_OPP_ID"), reg("MPCC0_MPCC_UPDATE_LOCK_SEL"), reg("MPC_OUT0_MUX") };
+    for ([_]u32{ 3, 4 }) |count| for ([_]bool{ false, true }) |update| {
+        for (0..disconnect.len + 1) |case| {
+            F.reset(); F.scanout_model = true; F.reject_fourth = count == 3;
+            var profile = limits; profile.pipe_count = count;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &profile));
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&Runtime.candidate_bytes, c.r4dcn_size(), &F.io, &profile));
+            var modes = [_]c.struct_r4dcn_mode{ mode, mode };
+            modes[1].pipe = 1; modes[1].mc_address += 0x2000000;
+            var plan: c.struct_r4dcn_plan = undefined;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &modes, 2, &plan));
+            F.blank();
+            F.words[reg("OTG1_OTG_CLOCK_CONTROL")] = hw.OTG0_OTG_CLOCK_CONTROL__OTG_CLOCK_ON_MASK;
+            F.words[reg("ODM1_OPTC_INPUT_CLOCK_CONTROL")] = hw.ODM0_OPTC_INPUT_CLOCK_CONTROL__OPTC_INPUT_CLK_ON_MASK;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_fixed_clock(&F.bytes, 600000));
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_enable(&F.bytes, 1));
+            modes[0].mc_address += 0x1000000;
+            modes[0].h_total += 8;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&Runtime.candidate_bytes, &modes, 2, &plan));
+            if (case < disconnect.len) {
+                // Inject an unconfirmed disconnect, including a route which
+                // was already disconnected before this call.
+                F.words[disconnect[case]] = 0;
+                F.drop_write_offset = @intCast(disconnect[case] * 4);
+            }
+            @memcpy(&F.original, &F.words);
+            const result = if (update) c.r4dcn_update(&F.bytes, &Runtime.candidate_bytes, 0) else c.r4dcn_remove(&F.bytes, 0);
+            try t.expectEqual(@as(c_int, if (case < disconnect.len) c.R4DCN_STATE else 0), result);
+            if (case < disconnect.len) {
+                // Only the five original disconnect writes may have landed.
+                for (&F.words, &F.original, 0..) |actual, before, address| {
+                    if (std.mem.indexOfScalar(usize, &disconnect, address) == null) try t.expectEqual(before, actual);
+                }
+            } else {
+                try t.expectEqual(@as(u32, 2), F.words[hw.R4DCN_MPC_STATUS(0) / 4]);
+                if (update) try t.expectEqual(modes[0].h_total - 1, F.words[d.htotal[0] / 4]);
+                inline for (.{ "control", "hubp_cntl", "htotal", "vtotal", "primary", "primary_hi", "pitch", "format" }) |name| {
+                    const address = @field(d, name)[1] / 4;
+                    try t.expectEqual(F.original[address], F.words[address]);
+                }
+            }
+            F.drop_write_offset = null;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_stop(&F.bytes, if (!update and result == 0) 2 else 3));
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes));
+            c.r4dcn_destroy(&F.bytes); c.r4dcn_destroy(&Runtime.candidate_bytes);
+        }
+    };
 }
 
 const Runtime = struct {
@@ -256,6 +463,9 @@ const Runtime = struct {
         out.* = .{ .state = a.driver_work_state_completed, .result = work_result }; return 0;
     }
     fn releaseWork(handle: u32) callconv(.c) i32 { std.debug.assert(handle == 19); return 0; }
+    fn waitWork(handle: u32, ticks: u64, result: *i32) callconv(.c) i32 {
+        std.debug.assert(!in_owned_work and handle == 19 and ticks == 1); result.* = work_result; return 0;
+    }
     fn noOutputs(_: *a.GfxDriverOutputApi) callconv(.c) i32 { return a.gfx_output_error_unavailable; }
     var fail_join = false;
     var fail_release = false;
@@ -293,6 +503,7 @@ const Runtime = struct {
         api.log_error = log;
         api.gfx_output_query = noOutputs;
         api.driver_work_submit_owned = submitOwned; api.driver_completion_status = workStatus; api.driver_completion_release = releaseWork;
+        api.driver_completion_wait = waitWork;
         memory.self_address = @intFromPtr(&memory);
         memory.prepared = true;
         layout = try @import("memory_layout.zig").Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
@@ -631,6 +842,23 @@ test "DCN1 real scanout flip cursor registers require coherent hardware receipts
     try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_scanout_flip(&F.bytes, 0, next + 1, mode.buffer_bytes));
     try t.expectEqual(@as(c_int, c.R4DCN_INVALID), c.r4dcn_scanout_flip(&F.bytes, 0, next, mode.buffer_bytes - 1));
     try t.expectEqual(writes, F.writes);
+    // The hardware may enter VBLANK after the caller's admission sample.
+    // This is a write-free retry, while a commanded blank/reset stays State.
+    const hub_before = F.words[d.hubp_cntl[0] / 4];
+    F.words[d.hubp_cntl[0] / 4] = hub_before | @as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
+    try t.expectEqual(@as(c_int, c.R4DCN_BUSY), c.r4dcn_scanout_flip(&F.bytes, 0, next, mode.buffer_bytes));
+    for ([_]u32{ hw.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK, hw.HUBP0_DCHUBP_CNTL__HUBP_DISABLE_MASK }) |bit| {
+        F.words[d.hubp_cntl[0] / 4] = hub_before | @as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK) | bit;
+        try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_scanout_flip(&F.bytes, 0, next, mode.buffer_bytes));
+    }
+    F.words[d.hubp_cntl[0] / 4] = hub_before | @as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
+    for ([_]u32{ hw.OTG0_OTG_BLANK_CONTROL__OTG_BLANK_DATA_EN_MASK, hw.OTG0_OTG_BLANK_CONTROL__OTG_CURRENT_BLANK_STATE_MASK }) |bit| {
+        F.words[reg("OTG0_OTG_BLANK_CONTROL")] = bit;
+        try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_scanout_flip(&F.bytes, 0, next, mode.buffer_bytes));
+    }
+    try t.expectEqual(writes, F.writes);
+    F.words[d.hubp_cntl[0] / 4] = hub_before;
+    F.words[reg("OTG0_OTG_BLANK_CONTROL")] = 0;
     try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_flip(&F.bytes, 0, next, mode.buffer_bytes));
     try t.expectEqual(@as(u32, 0), F.words[reg("HUBPREQ0_DCSURF_FLIP_CONTROL")] & hw.HUBPREQ0_DCSURF_FLIP_CONTROL__SURFACE_FLIP_TYPE_MASK);
     try t.expectEqual(@as(c_int, 0), c.r4dcn_scanout_sample(&F.bytes, 0, &sample));
@@ -687,6 +915,9 @@ test "DCN1 real scanout flip cursor registers require coherent hardware receipts
 }
 
 test "DCN1 scanout BO lifetime rejects timer-only visibility stale epochs and retains failed publication" {
+    try stoppedUnderflowBaseline();
+    try vblankLossCases();
+    try idleScanoutDeadlines();
     const life = @import("scanout_lifetime.zig");
     F.reset(); F.scanout_model = true; try F.init();
     var plan: c.struct_r4dcn_plan = undefined;
@@ -715,6 +946,11 @@ test "DCN1 scanout BO lifetime rejects timer-only visibility stale epochs and re
     const writes = F.writes;
     try t.expectError(error.Stale, owner.flip(stale, 2, second, F.ticks + std.time.ns_per_s));
     try t.expectEqual(writes, F.writes);
+    F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+    try t.expectError(error.Busy, owner.flip(epoch, 2, second, F.ticks + std.time.ns_per_s));
+    try t.expect(owner.phase == .active and owner.pending == null and owner.current.?.reference.id == 30);
+    try t.expectEqual(writes, F.writes);
+    F.words[d.hubp_cntl[0] / 4] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
     try owner.flip(epoch, 2, second, F.ticks + std.time.ns_per_s);
     latchScanout(second.address, 1);
     try t.expectEqual(null, try owner.poll(epoch, F.ticks));
@@ -722,6 +958,10 @@ test "DCN1 scanout BO lifetime rejects timer-only visibility stale epochs and re
     try t.expectEqual(null, try owner.poll(epoch, F.ticks));
     // Both the current address and progress since submission are now proved.
     latchScanout(second.address, 2);
+    F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+    try t.expectEqual(null, try owner.poll(epoch, F.ticks));
+    try t.expect(owner.pending != null and owner.current.?.reference.id == 30 and owner.receipt == null);
+    F.words[d.hubp_cntl[0] / 4] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
     const flipped = (try owner.poll(epoch, F.ticks)).?;
     try t.expect(flipped.previous.?.reference.id == 30 and flipped.image.reference.id == 31);
     try t.expectError(error.Stale, owner.acknowledge(epoch, 1));
@@ -730,11 +970,21 @@ test "DCN1 scanout BO lifetime rejects timer-only visibility stale epochs and re
         .width = 32, .height = 32, .x = -4, .y = 10, .hot_x = 1, .hot_y = 2 };
     F.words[reg("OTG0_OTG_STATUS_POSITION")] = 200 << hw.OTG0_OTG_STATUS_POSITION__OTG_VERT_COUNT__SHIFT;
     try t.expectError(error.Stale, owner.cursor(stale, 1, cursor, F.ticks + std.time.ns_per_s));
+    const cursor_writes = F.writes;
+    F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+    try t.expectError(error.Busy, owner.cursor(epoch, 1, cursor, F.ticks + std.time.ns_per_s));
+    try t.expect(owner.phase == .active and owner.cursor_pending == null);
+    try t.expectEqual(cursor_writes, F.writes);
+    F.words[d.hubp_cntl[0] / 4] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
     try owner.cursor(epoch, 1, cursor, F.ticks + std.time.ns_per_s);
     try t.expectError(error.Busy, owner.flip(epoch, 3, second, F.ticks + std.time.ns_per_s));
     F.ticks += 20 * std.time.ns_per_ms;
     try t.expectEqual(null, try owner.pollCursor(epoch, F.ticks)); // Timer and shadow registers alone are insufficient.
     latchScanout(second.address, 3);
+    F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+    try t.expectEqual(null, try owner.pollCursor(epoch, F.ticks));
+    try t.expect(owner.phase == .cursor and owner.cursor_pending != null and owner.cursor_receipt == null);
+    F.words[d.hubp_cntl[0] / 4] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
     const shown = (try owner.pollCursor(epoch, F.ticks)).?;
     try t.expect(shown.update.image.?.reference.id == 45 and shown.previous.image == null);
     try t.expect(std.meta.eql(shown, (try owner.pollCursor(epoch, F.ticks)).?));
@@ -749,6 +999,7 @@ test "DCN1 scanout BO lifetime rejects timer-only visibility stale epochs and re
     try owner.acknowledgeCursor(epoch, 2);
     try t.expect(owner.cursor_current.image == null);
     try owner.flip(epoch, 3, second, F.ticks + std.time.ns_per_s);
+    F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
     try t.expectEqual(null, try owner.poll(epoch, F.ticks));
     F.ticks += 2 * std.time.ns_per_s;
     try t.expectError(error.Timeout, owner.poll(epoch, F.ticks));
@@ -761,6 +1012,179 @@ test "DCN1 scanout BO lifetime rejects timer-only visibility stale epochs and re
     try t.expect(owner.phase == .stopped and owner.pending != null and owner.current != null);
     try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes)); c.r4dcn_destroy(&F.bytes);
     std.debug.print("[amd-scanout-life] BO receipts require actual address and counter progress; reset domains, stale modes, publication retry, timeout retention and confirmed stop; model only\n", .{});
+}
+
+fn idleScanoutDeadlines() !void {
+    const life = @import("scanout_lifetime.zig");
+    const epoch: life.Epoch = .{ .backend = .{ .adapter_id = 7, .device_generation = 3, .reset_generation = 2 },
+        .output = .{ .adapter_id = 7, .connector_id = 0x3114, .device_generation = 3, .connection_generation = 1 }, .memory = 7, .display = 8, .mode = 1 };
+    const first: life.Image = .{ .reference = .{ .id = 30, .generation = 2 }, .address = mode.mc_address, .bytes = mode.buffer_bytes };
+    const second: life.Image = .{ .reference = .{ .id = 31, .generation = 4 }, .address = mode.mc_address + 0x1000000, .bytes = mode.buffer_bytes };
+    const cursor: life.Cursor = .{ .image = .{ .reference = .{ .id = 45, .generation = 3 }, .address = 0x207000000, .bytes = 16384 },
+        .width = 32, .height = 32, .x = 20, .y = 30 };
+    // A fresh one-second request after five seconds without a lifetime
+    // sample must remain admissible. Health has a separate observation clock.
+    for ([_]u32{3, 4}) |count| for (0..3) |operation| for (0..3) |case| {
+        F.reset(); F.scanout_model = true; F.reject_fourth = count == 3;
+        var profile = limits; profile.pipe_count = count;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &profile));
+        var plan: c.struct_r4dcn_plan = undefined;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan)); F.blank();
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+        var owner: life.Owner = .{};
+        latchScanout(first.address, 0); try owner.bind(&F.bytes, epoch, mode, first);
+        if (operation != 0) {
+            try owner.enable(epoch, 1, F.ticks + std.time.ns_per_s);
+            try t.expectEqual(null, try owner.poll(epoch, F.ticks));
+            F.ticks += 20 * std.time.ns_per_ms; latchScanout(first.address, 1);
+            _ = (try owner.poll(epoch, F.ticks)).?; try owner.acknowledge(epoch, 1);
+        }
+        F.ticks += 5 * std.time.ns_per_s;
+        const idle_time = F.ticks;
+        const frame: u32 = if (operation == 0) 0 else 301;
+        latchScanout(first.address, frame);
+        F.words[reg("OTG0_OTG_STATUS_POSITION")] = 200 << hw.OTG0_OTG_STATUS_POSITION__OTG_VERT_COUNT__SHIFT;
+        const deadline = F.ticks + @as(u64, switch (case) { 0 => std.time.ns_per_s, 1 => 3 * std.time.ns_per_s, else => 1 });
+        const writes = F.writes;
+        const outcome = switch (operation) {
+            0 => owner.enable(epoch, 1, deadline),
+            1 => owner.flip(epoch, 2, second, deadline),
+            else => owner.cursor(epoch, 1, cursor, deadline),
+        };
+        if (case != 0) {
+            if (case == 1) try t.expectError(error.Invalid, outcome) else try t.expectError(error.Timeout, outcome);
+            try t.expectEqual(writes, F.writes);
+            try t.expect(owner.pending == null and owner.cursor_pending == null and owner.current.?.reference.id == first.reference.id);
+            try t.expectEqual(@as(u64, if (operation == 0) 0 else 1), owner.sequence);
+            try t.expectEqual(@as(u64, 0), owner.cursor_sequence);
+        } else {
+            try outcome;
+            const submitted = if (operation == 2) owner.cursor_pending.?.submitted_ns else owner.pending.?.submitted_ns;
+            const held_deadline = if (operation == 2) owner.cursor_pending.?.deadline_ns else owner.pending.?.deadline_ns;
+            try t.expect(submitted >= idle_time and submitted < deadline);
+            try t.expectEqual(deadline, held_deadline);
+            // No receipt from elapsed idle time, shadow registers or merely
+            // the old frame. Require the newly submitted address and frame.
+            if (operation == 2) try t.expectEqual(null, try owner.pollCursor(epoch, F.ticks))
+            else try t.expectEqual(null, try owner.poll(epoch, F.ticks));
+            F.ticks += 20 * std.time.ns_per_ms;
+            latchScanout(if (operation == 1) second.address else first.address, frame + 1);
+            if (operation == 2) {
+                const receipt = (try owner.pollCursor(epoch, F.ticks)).?;
+                try t.expect(receipt.submitted_ns == submitted and receipt.observed_ns > submitted);
+                try owner.acknowledgeCursor(epoch, 1);
+            } else {
+                const receipt = (try owner.poll(epoch, F.ticks)).?;
+                try t.expect(receipt.submitted_ns == submitted and receipt.observed_ns > submitted);
+                try owner.acknowledge(epoch, if (operation == 0) 1 else 2);
+            }
+        }
+        try owner.stop(epoch);
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes)); c.r4dcn_destroy(&F.bytes);
+    };
+    std.debug.print("[amd-idle-deadline] enable/flip/cursor after5s idle, fresh1s deadlines; overlong and expired rejected write-free; fresh receipts required;3/4pipes\n", .{});
+}
+
+fn vblankLossCases() !void {
+    const life = @import("scanout_lifetime.zig");
+    // An asserted VBLANK bit never hides real blank/reset/underflow or a
+    // stopped TG. Exercise both physical resource counts and active jobs.
+    for ([_]u32{3, 4}) |count| for (0..7) |cause| for (0..2) |operation| {
+        F.reset(); F.scanout_model = true; F.reject_fourth = count == 3;
+        var bounded = limits; bounded.pipe_count = count;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &bounded));
+        var plan: c.struct_r4dcn_plan = undefined;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan)); F.blank();
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+        const epoch: life.Epoch = .{ .backend = .{ .adapter_id = 7, .device_generation = 3, .reset_generation = 2 },
+            .output = .{ .adapter_id = 7, .connector_id = 0x3114, .device_generation = 3, .connection_generation = 1 }, .memory = 7, .display = 8, .mode = 1 };
+        const first: life.Image = .{ .reference = .{ .id = 30, .generation = 2 }, .address = mode.mc_address, .bytes = mode.buffer_bytes };
+        var owner: life.Owner = .{};
+        latchScanout(mode.mc_address, 0); try owner.bind(&F.bytes, epoch, mode, first);
+        try owner.enable(epoch, 1, F.ticks + std.time.ns_per_s);
+        try t.expectEqual(null, try owner.poll(epoch, F.ticks));
+        latchScanout(mode.mc_address, 1); _ = (try owner.poll(epoch, F.ticks)).?;
+        try owner.acknowledge(epoch, 1);
+        F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+        switch (cause) {
+            0 => F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_BLANK_EN_MASK,
+            1 => F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_DISABLE_MASK,
+            2 => F.words[reg("OTG0_OTG_BLANK_CONTROL")] = hw.OTG0_OTG_BLANK_CONTROL__OTG_BLANK_DATA_EN_MASK,
+            3 => F.words[reg("OTG0_OTG_BLANK_CONTROL")] = hw.OTG0_OTG_BLANK_CONTROL__OTG_CURRENT_BLANK_STATE_MASK,
+            4 => F.words[d.hubp_cntl[0] / 4] |= @as(u32, 1) << hw.HUBP0_DCHUBP_CNTL__HUBP_UNDERFLOW_STATUS__SHIFT,
+            5 => F.words[reg("ODM0_OPTC_INPUT_GLOBAL_CONTROL")] |= hw.ODM0_OPTC_INPUT_GLOBAL_CONTROL__OPTC_UNDERFLOW_OCCURRED_STATUS_MASK,
+            6 => F.words[d.control[0] / 4] &= ~@as(u32, hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK),
+            else => unreachable,
+        }
+        const writes = F.writes;
+        if (operation == 0) try t.expectError(error.Lost, owner.flip(epoch, 2, first, F.ticks + std.time.ns_per_s))
+        else try t.expectError(error.Lost, owner.cursor(epoch, 1, .{}, F.ticks + std.time.ns_per_s));
+        try t.expect(owner.phase == .retained and owner.current.?.reference.id == 30 and owner.pending == null and owner.cursor_pending == null);
+        try t.expectEqual(writes, F.writes);
+        try owner.stop(epoch);
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes)); c.r4dcn_destroy(&F.bytes);
+    };
+}
+
+fn stoppedUnderflowBaseline() !void {
+    const life = @import("scanout_lifetime.zig");
+    const epoch: life.Epoch = .{ .backend = .{ .adapter_id = 7, .device_generation = 3, .reset_generation = 2 },
+        .output = .{ .adapter_id = 7, .connector_id = 0x3114, .device_generation = 3, .connection_generation = 1 }, .memory = 7, .display = 8, .mode = 1 };
+    const first: life.Image = .{ .reference = .{ .id = 30, .generation = 2 }, .address = mode.mc_address, .bytes = mode.buffer_bytes };
+    const hub = reg("HUBP0_DCHUBP_CNTL");
+    const optc = reg("ODM0_OPTC_INPUT_GLOBAL_CONTROL");
+    // Both sources independently, then combined as seen in the aggregate
+    // Lenovo sample. No address/frame receipt exists while the TG is stopped.
+    for ([_]u32{ 3, 4 }) |count| for ([_]u2{ 1, 2, 3 }) |source| for (0..4) |failure| {
+        F.reset(); F.scanout_model = true; F.reject_fourth = count == 3;
+        var profile = limits; profile.pipe_count = count;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_init(&F.bytes, c.r4dcn_size(), &F.io, &profile));
+        var plan: c.struct_r4dcn_plan = undefined;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_prepare(&F.bytes, &mode, 1, &plan)); F.blank();
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_program(&F.bytes));
+        if (source & 1 != 0) F.words[hub] |= @as(u32, 1) << hw.HUBP0_DCHUBP_CNTL__HUBP_UNDERFLOW_STATUS__SHIFT;
+        if (source & 2 != 0) F.words[optc] |= hw.ODM0_OPTC_INPUT_GLOBAL_CONTROL__OPTC_UNDERFLOW_OCCURRED_STATUS_MASK;
+        latchScanout(mode.mc_address - 0x1000000, 0);
+        var owner: life.Owner = .{};
+        try owner.bind(&F.bytes, epoch, mode, first);
+        F.hold_underflow_clear = failure == 1;
+        if (failure == 2) F.words[d.control[0] / 4] = hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK | hw.OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK;
+        if (failure == 3) F.words[reg("OTG0_OTG_MASTER_UPDATE_LOCK")] = hw.OTG0_OTG_MASTER_UPDATE_LOCK__UPDATE_LOCK_STATUS_MASK;
+        const before = F.writes;
+        if (failure == 1) {
+            try t.expectError(error.Io, owner.enable(epoch, 1, F.ticks + std.time.ns_per_s));
+            try t.expect(owner.phase == .retained and owner.pending != null and owner.current.?.reference.id == 30);
+            try t.expectEqual(@as(u32, 0), F.words[d.control[0] / 4] & hw.OTG0_OTG_CONTROL__OTG_MASTER_EN_MASK);
+        } else if (failure >= 2) {
+            if (failure == 2) try t.expectError(error.Lost, owner.enable(epoch, 1, F.ticks + std.time.ns_per_s))
+            else try t.expectError(error.Busy, owner.enable(epoch, 1, F.ticks + std.time.ns_per_s));
+            try t.expectEqual(before, F.writes);
+            try t.expectEqual(@as(usize, 0), F.underflow_clears);
+        } else {
+            std.debug.print("[amd-underflow-baseline] stopped TG with source{d}, pipes{d}; require reset and fresh receipt\n", .{source, count});
+            try owner.enable(epoch, 1, F.ticks + std.time.ns_per_s);
+            try t.expect(owner.phase == .enabling and owner.receipt == null and F.underflow_clears >= 2);
+            try t.expectEqual(null, try owner.poll(epoch, F.ticks)); // inherited in-use BO still differs
+            latchScanout(mode.mc_address, 0);
+            try t.expectEqual(null, try owner.poll(epoch, F.ticks)); // first running sample only rebases
+            F.ticks += 20 * std.time.ns_per_ms; latchScanout(mode.mc_address, 1);
+            const receipt = (try owner.poll(epoch, F.ticks)).?;
+            try t.expect(receipt.image.reference.id == 30);
+            try owner.acknowledge(epoch, 1);
+            const clears = F.underflow_clears;
+            try owner.flip(epoch, 2, first, F.ticks + std.time.ns_per_s);
+            if (source & 1 != 0) F.words[hub] |= @as(u32, 1) << hw.HUBP0_DCHUBP_CNTL__HUBP_UNDERFLOW_STATUS__SHIFT;
+            if (source & 2 != 0) F.words[optc] |= hw.ODM0_OPTC_INPUT_GLOBAL_CONTROL__OPTC_UNDERFLOW_OCCURRED_STATUS_MASK;
+            F.ticks += 20 * std.time.ns_per_ms; latchScanout(mode.mc_address, 2);
+            try t.expectError(error.Lost, owner.poll(epoch, F.ticks));
+            try t.expect(owner.phase == .retained and owner.pending != null and owner.current != null);
+            try t.expectEqual(clears, F.underflow_clears); // never clear a running-stream fault
+        }
+        F.hold_underflow_clear = false;
+        F.words[reg("OTG0_OTG_MASTER_UPDATE_LOCK")] = 0;
+        try owner.stop(epoch);
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_quiesce(&F.bytes)); c.r4dcn_destroy(&F.bytes);
+    };
 }
 
 const ClockIo = struct {
@@ -868,11 +1292,12 @@ test "SMU10 original clock table DMA and separate RV1 VBIOS channel require exac
 const DpStream = struct {
     var pixel: [4]u32 = @splat(0);
     var pixel_count: usize = 0;
+    var reference_raw: u32 = 60000;
     fn atom(_: ?*anyopaque, command: u32, words: [*c]u32, count: u32) callconv(.c) c_int {
         const b = @import("bios.zig").c;
         if (command == @offsetOf(b.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2 and count == 4) {
             std.debug.assert(words[0] == 0 and words[1] == 0x0801 and words[2] == 0 and words[3] == 0);
-            words[0] = 60000; return 0;
+            words[0] = reference_raw; return 0;
         }
         if (command == @offsetOf(b.struct_atom_master_list_of_command_functions_v2_1, "setpixelclock") / 2 and count == 4) {
             pixel = words[0..4].*; pixel_count += 1; return 0;
@@ -888,6 +1313,7 @@ test "DCN1 eDP SST programs six and eight bit streams and retains unconfirmed st
     for ([_]u32{6, 8}) |bpc| {
         F.reset(); try F.init(); F.scanout_model = true;
         DpStream.pixel_count = 0;
+        DpStream.reference_raw = 60000;
         var selected = mode;
         if (bpc == 6) selected.flags |= 8;
         var plan: c.struct_r4dcn_plan = undefined;
@@ -899,6 +1325,21 @@ test "DCN1 eDP SST programs six and eight bit streams and retains unconfirmed st
         try t.expectEqual(@as(c_int, 0), c.r4dcn_pixel_clock_bind(&F.bytes, 0, 48000));
         try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_pixel_clock_program(&F.bytes, 0, 0));
         var reference_khz: u32 = 0;
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_reference_clock_program(&F.bytes, 0, &reference_khz));
+        try t.expectEqual(@as(u32, 600000), reference_khz);
+        // The measured Lenovo return must fail under the default 10kHz
+        // contract and retain its full kHz precision under the proven Hz one.
+        DpStream.reference_raw = 598875000;
+        try t.expectEqual(@as(c_int, c.R4DCN_IO), c.r4dcn_reference_clock_program(&F.bytes, 0, &reference_khz));
+        try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_reference_clock_get(&F.bytes, &reference_khz));
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_reference_clock_program_hz(&F.bytes, 0, &reference_khz));
+        try t.expectEqual(@as(u32, 598875), reference_khz);
+        for ([_]u32{ 0, 60000, 23999999, 1200000001, 598875001, 0xffffffff }) |invalid| {
+            DpStream.reference_raw = invalid;
+            try t.expectEqual(@as(c_int, c.R4DCN_IO), c.r4dcn_reference_clock_program_hz(&F.bytes, 0, &reference_khz));
+            try t.expectEqual(@as(c_int, c.R4DCN_STATE), c.r4dcn_reference_clock_get(&F.bytes, &reference_khz));
+        }
+        DpStream.reference_raw = 60000;
         try t.expectEqual(@as(c_int, 0), c.r4dcn_reference_clock_program(&F.bytes, 0, &reference_khz));
         try t.expectEqual(@as(u32, 600000), reference_khz);
         try t.expectEqual(@as(c_int, 0), c.r4dcn_pixel_clock_program(&F.bytes, 0, 0));
@@ -1299,9 +1740,12 @@ const Integration = struct {
     var partial_prepare = false;
     var commit_calls: u32 = 0;
     var stats_calls: u32 = 0;
+    var stats_rejected: u32 = 0;
     var release_busy = false;
     var reset_begin_calls: u32 = 0;
     var reset_retire_calls: u32 = 0;
+    var external_recovery = false;
+    var recovery_boot: a.GfxNativeBootInfo = .{};
     var common_reset_retired = false;
     var mode_job: ?a.GfxDriverModeJob = null;
     var mode_extension: ?a.GfxDriverModeColor = null;
@@ -1499,6 +1943,7 @@ const Integration = struct {
     fn deviceReset(backend: *const a.GfxBackendBinding, generation: u64, quiet: u32, state: *a.GfxNativeState) callconv(.c) i32 {
         std.debug.assert(std.meta.eql(backend.*, binding) and queue.thread == 0);
         if (quiet == 0) {
+            if (external_recovery and generation != 13) return a.gfx_output_error_stale;
             reset_begin_calls += 1; std.debug.assert(generation == output.reset_original and generation >= 12 and generation <= 13);
             if (reset_begin_calls == 1) return a.gfx_output_error_busy;
         } else {
@@ -1653,7 +2098,23 @@ const Integration = struct {
         return 1;
     }
     fn schedule(_: *const a.GfxBackendBinding) callconv(.c) i32 { return 0; }
-    fn stats(value: *const a.DisplayPresentationStats) callconv(.c) i32 { stats_calls += 1; reported = value.*; return 1; }
+    fn stats(value: *const a.DisplayPresentationStats) callconv(.c) i32 {
+        // The old stub accepted a boot receipt as a completed application
+        // frame and silently ignored the common consumer's IRQ requirements.
+        const zero_hardware_fields = value.render_point == 0 and value.window_point == 0 and
+            value.gpu_timestamp == 0 and value.irq_sequence == 0 and value.irq_observed_ns == 0;
+        const receipt_ok = if (value.visible_count == 0)
+            value.visible_sequence == 0 and value.source_timeline == 0 and value.source_point == 0 and
+                value.submitted_ns == 0 and value.visible_ns == 0 and value.released_ns == 0
+        else value.visible_sequence != 0 and value.visible_sequence <= value.submitted_count and
+            value.source_timeline != 0 and value.source_point != 0 and value.submitted_ns != 0 and
+            value.visible_ns >= value.submitted_ns and
+            ((value.released_ns == 0) == (value.released_count < value.visible_count));
+        if (!zero_hardware_fields or !receipt_ok or value.flags & a.display_presentation_flag_polled == 0) {
+            stats_rejected += 1; return a.gfx_output_error_invalid;
+        }
+        stats_calls += 1; reported = value.*; return 1;
+    }
     fn presentInfo(value: *const a.DisplayPresentationInfo) callconv(.c) i32 { info = value.*; return 1; }
     fn cursorConfigure(value: *const a.DisplayCursorInfo) callconv(.c) i32 {
         std.debug.assert(value.flags == 15 and value.display_generation == 12 and value.max_width == 64); return 1;
@@ -1693,7 +2154,7 @@ const Integration = struct {
         output = .{}; presentation = .{}; pipe = .{}; engine = .{}; queue = .{}; images = .{ .{}, .{} };
         bos = @splat(.{}); refs = @splat(.{}); leases = @splat(.{}); window_live = @splat(false);
         source = .{}; job = .{}; active_job = false; hdmi_source = .{}; hdmi_job = .{}; hdmi_active_job = false; hdmi_completed = 0; completed = 0; complete_busy = false; release_busy = false;
-        cursor_job = null; cursor_reply = .{}; cursor_busy = false; prepare_calls = 0; partial_prepare = false; commit_calls = 0; stats_calls = 0;
+        cursor_job = null; cursor_reply = .{}; cursor_busy = false; prepare_calls = 0; partial_prepare = false; commit_calls = 0; stats_calls = 0; stats_rejected = 0; reported = .{};
         reset_begin_calls = 0; reset_retire_calls = 0; common_reset_retired = false;
         mode_job = null; mode_extension = null; next_color_ticket = 300; published_colors = .{null,null}; published_refresh = .{null,null}; mode_reply = .{}; mode_complete_busy = false; mode_enable_calls = 0; publication_calls = 0;
         extra_active = false; extra_retired = false;
@@ -1824,6 +2285,33 @@ const Integration = struct {
         }
         queue.timeline.writeback[ticket.slot] = ticket.token;
         try engine.engine.ring.observe(@intCast(engine.engine.ring.write & (engine.engine.ring.words.len - 1)));
+    }
+    fn vblankHealth() !void {
+        defer sleep_model = false;
+        for ([_]bool{false, true}) |sleeping| {
+            try init(); try untilActive(); try queueReady();
+            sleep_model = sleeping;
+            output.next_health = 0;
+            F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+            for (0..20) |_| step();
+            try t.expect(output.failure == null and output.phase == .active and output.health_retry_deadline != 0);
+            // The output may already have launched the next retry and reset
+            // result to State. Observe the completed sample and live output.
+            try t.expect(R.owner.health_sample.?.blank == 1 and R.owner.health_step == .settled);
+            F.words[d.hubp_cntl[0] / 4] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
+            for (0..20) |_| step();
+            try t.expect(output.failure == null and output.health_retry_deadline == 0 and R.owner.health_epoch != 0);
+            // A status that never leaves blank cannot retry forever, even
+            // when the fixture keeps advancing the frame counter.
+            output.next_health = 0;
+            F.words[d.hubp_cntl[0] / 4] |= hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK;
+            for (0..2500) |_| { step(); if (output.failure != null) break; }
+            try t.expect(output.failure.? == error.Deadline and R.owner.scanout_owner.current != null);
+            sleep_model = false;
+            F.words[d.hubp_cntl[0] / 4] &= ~@as(u32, hw.HUBP0_DCHUBP_CNTL__HUBP_IN_BLANK_MASK);
+            try cleanup();
+        }
+        std.debug.print("[amd-vblank-health] active and sleeping GC retry isolated HUBP blank; persistent blank hits the existing deadline; model only\n", .{});
     }
     fn sleepingDisplay() !void {
         try init(); try untilActive();
@@ -1962,6 +2450,8 @@ const Integration = struct {
         std.debug.print("[amd-screen-power] physical protocol model: panel off/on, brightness/BO/identity retained, busy receipts, reversed intent and failed wake retention\n", .{});
     }
     fn check() !void {
+        try externalRecovery();
+        try vblankHealth();
         try screenCycles();
         try sleepingDisplay();
         var stage: []const u8 = "initial present";
@@ -1970,7 +2460,9 @@ const Integration = struct {
               @tagName(output.additional.phase), output.additional.failure, @tagName(output.modes.phase), output.modes.failure, R.owner.result, pipe.failure});
         try init(); try untilActive();
         try t.expect(prepare_calls == 2 and commit_calls == 2 and output.callback_confirmed and R.native.hold.native_adopted);
-        try t.expect(info.flags & a.display_presentation_info_visibility != 0 and reported.visible_ns != 0 and reported.gpu_timestamp == 0 and reported.irq_sequence == 0);
+        try t.expect(stats_rejected == 0 and stats_calls != 0);
+        try t.expect(info.flags & a.display_presentation_info_visibility != 0 and reported.visible_count == 0 and reported.visible_ns == 0 and
+            reported.source_timeline == 0 and reported.source_point == 0 and reported.gpu_timestamp == 0 and reported.irq_sequence == 0);
         const calls = stats_calls; for (0..3) |_| step(); try t.expectEqual(calls, stats_calls); // idle publishes no fake frames
 
         source = output.shadow.reference;
@@ -1981,9 +2473,27 @@ const Integration = struct {
         try queueReady(); active_job = true; presentation.accept(job);
         try t.expect(presentation.armed and completed == 0 and presentation.source.ready);
         try completeDma(); Pipeline.hold_frames = true;
+        // DMA retirement may launch the flip immediately, but neither an
+        // unfinished join nor a retained thread release may expose its result.
+        step();
+        try t.expect(presentation.phase == .flip_wait and R.live and !R.ran and
+            R.owner.scanout_request.operation == .flip and presentation.rendered == 1 and completed == 0);
+        R.fail_join = true; step();
+        try t.expect(presentation.phase == .flip_wait and R.live and presentation.submitted == 0);
+        R.fail_join = false; R.fail_release = true; step();
+        try t.expect(presentation.phase == .flip_wait and R.live and presentation.submitted == 0);
+        R.fail_release = false; step();
+        try t.expect(presentation.phase == .sample_wait and R.live and !R.ran and
+            R.owner.scanout_request.operation == .sample and presentation.submitted == 1);
+        // Busy hardware is a real wait: no receipt, re-launch or spin here.
+        step();
+        try t.expect(presentation.phase == .sample_retry and !R.live and presentation.receipt == null and completed == 0);
         for (0..20) |_| step();
         try t.expect(completed == 0 and !presentation.source.ready and (presentation.phase == .sample_wait or presentation.phase == .sample_retry));
         Pipeline.hold_frames = false; complete_busy = true;
+        for (0..10) |_| { step(); if (presentation.visible != 0) break; }
+        try t.expect(presentation.visible == 1 and presentation.phase == .ack_wait and
+            R.live and !R.ran and R.owner.scanout_request.operation == .acknowledge and completed == 0);
         for (0..80) |_| { step(); if (presentation.retired) break; }
         try t.expect(presentation.retired and completed == 0 and presentation.visible == 1 and !presentation.available());
         try t.expectEqual(@as(u8, 0x71), data[index(images[1].reference.reference)][0]);
@@ -2039,14 +2549,47 @@ const Integration = struct {
         try t.expect(std.mem.allEqual(u8, data[front][(@as(usize, shape.height) - 1) * shape.pitch..][0..@as(usize, shape.width) * 4], 0x5a));
         try cleanup();
     }
+    fn recoveryInfo(out: *a.GfxNativeBootInfo) callconv(.c) i32 {
+        std.debug.assert(external_recovery);
+        out.* = recovery_boot;
+        return a.gfx_output_ok;
+    }
+    fn externalRecovery() !void {
+        try init(); try untilActive();
+        external_recovery = true;
+        output.display.?.table.boot_info = @intFromPtr(&recoveryInfo);
+        const callback: *const fn (u64, u64, *const a.GfxNativeBootInfo) callconv(.c) i32 = @ptrFromInt(registration.restore_callback);
+        var boot = output.original_boot;
+        boot.generation = 13; boot.state = a.display_state_recovering;
+        var bad = boot; bad.width += 1;
+        try t.expect(callback(registration.context, 13, &bad) == 0 and output.restore_requested == 0);
+        bad = boot; bad.generation = 11;
+        try t.expect(callback(registration.context, 11, &bad) == 0 and output.restore_requested == 0);
+        bad = boot; bad.state = a.display_state_software_native;
+        try t.expect(callback(registration.context, 13, &bad) == 0 and output.restore_requested == 0);
+        // CpuWrite.finish initiated recovery: no driver transition caller
+        // receives the new generation. Request cleanup without claiming stop.
+        try t.expect(callback(registration.context, 13, &boot) == 0 and output.restore_requested == 1);
+        try t.expect(R.native.hold.native_generation == 12 and R.native.hold.held_generation == 12 and output.restore_ready == 0);
+        recovery_boot = boot; recovery_boot.state = a.display_state_unavailable;
+        recovery_boot.width += 1;
+        try t.expect(!output.beginReset() and reset_begin_calls == 0 and R.native.hold.native_generation == 12);
+        recovery_boot.width -= 1; recovery_boot.state = a.display_state_software_native;
+        try t.expect(!output.beginReset() and reset_begin_calls == 0 and R.native.hold.native_generation == 12);
+        recovery_boot.state = a.display_state_unavailable;
+        try cleanup();
+        external_recovery = false;
+    }
     fn cleanup() !void {
+        try t.expectEqual(@as(u32, 0), stats_rejected);
         // Common restoration refuses before the whole device owner confirms.
         R.native.hold.read = .{}; // This model's immutable pixels have no SDK lease; the capture tests cover that owner.
         const original_generation: u64 = if (common_mode_retained) 12 else 13;
-        try t.expect(!R.native.hold.close());
-        try t.expect(R.native.hold.native_generation == original_generation and R.native.hold.held_generation == 12 and output.restore_requested == 1);
+        if (!external_recovery) try t.expect(!R.native.hold.close());
+        const before_reset: u64 = if (external_recovery) 12 else original_generation;
+        try t.expect(R.native.hold.native_generation == before_reset and R.native.hold.held_generation == 12 and output.restore_requested == 1);
         output.phase = .closing;
-        try t.expect(!output.beginReset() and R.native.hold.native_generation == original_generation);
+        try t.expect(!output.beginReset() and R.native.hold.native_generation == before_reset);
         try t.expect(output.beginReset() and output.beginReset() and reset_begin_calls == 2 and R.native.hold.native_generation == original_generation + 1);
         try t.expect(!output.retireReset() and reset_retire_calls == 0 and !R.native.hold.close());
         for (0..20) |_| {
@@ -2539,6 +3082,7 @@ const Integration = struct {
         try queueReady();
     }
     fn commonModes() !void {
+        const before_modes = reported;
         var mode_source: a.GfxBufferReference = .{};
         try t.expectEqual(@as(i32, 1), create(&.{ .width = 1280, .height = 720, .byte_length = 1280 * 720 * 4,
             .format = a.gfx_buffer_format_xrgb8888, .plane_count = 1, .plane_pitches = .{5120,0,0,0},
@@ -2560,6 +3104,12 @@ const Integration = struct {
             presentation.receipt.?.image.address == output.frames[0].mc_address and output.modes.copy.self_address == 0);
         try t.expectEqual(@as(u8, 0x5c), data[index(output.frames[0].reference.reference)][0]);
         try modeFinish(1, a.gfx_output_outcome_applied);
+        step(); // Mode-only rebind must preserve the prior application receipt.
+        try t.expectEqual(before_modes.visible_count, reported.visible_count);
+        try t.expectEqual(before_modes.visible_sequence, reported.visible_sequence);
+        try t.expectEqual(before_modes.source_timeline, reported.source_timeline);
+        try t.expectEqual(before_modes.source_point, reported.source_point);
+        try t.expectEqual(before_modes.visible_ns, reported.visible_ns);
         // The confirmed candidate can present while the old bank is retained
         // for the user's decision. This upload must not alter the old image.
         const original_source = source; source = mode_source;

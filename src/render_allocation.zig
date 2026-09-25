@@ -18,6 +18,7 @@ pub const Owner = struct {
     reference: a.GfxBufferReference = .{},
     result: ?i32 = null,
     acknowledged: bool = false,
+    unregister_result: ?i32 = null,
     scratch: [65536]u8 align(16) = undefined,
     fn notify(raw: usize) callconv(.c) i32 {
         const self: *Owner = @ptrFromInt(raw);
@@ -106,9 +107,16 @@ pub const Owner = struct {
     pub fn close(self: *Owner) bool {
         self.closing = true;
         const memory = self.memory orelse return true;
-        if (!self.step() or self.pending != null) return false;
+        if (!self.step() or self.pending != null or self.reference.reference.id != 0 or
+            self.result != null or self.acknowledged) return false;
         if (self.handle.id != 0) {
-            if (memory.memory.?.nativeUnregister(&self.handle) != 1) return false;
+            const rc = memory.memory.?.nativeUnregister(&self.handle);
+            self.unregister_result = rc;
+            // Kernel closingDriver/service can retire the canonical provider
+            // after its requests and callbacks drain, before this joined close.
+            // Stale retires only that handle; the local receipts above must be
+            // empty first, including a completed but not yet dropped reference.
+            if (rc != 1 and rc != a.gfx_buffer_error_stale) return false;
             self.handle = .{};
         }
         self.memory = null;

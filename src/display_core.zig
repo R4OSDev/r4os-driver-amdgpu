@@ -69,6 +69,11 @@ pub const Owner = struct {
     health_epoch: u64 = 0,
     health_frame: u32 = 0,
     health_progress: u64 = 0,
+    // Worker-written observations, inspected only after join; no extra I/O.
+    health_step: enum { idle, admission, panel_owner, link, sample, visibility, settled, progress, ready } = .idle,
+    health_error: ?anyerror = null,
+    health_sample: ?c.struct_r4dcn_scanout_sample = null,
+    health_expected_address: u64 = 0,
     hdmi_storage_valid: bool = false,
     audio_peer: ?@import("display_audio.zig").Peer = null,
     hdmi_operation: hdmi.Operation = .probe,
@@ -83,6 +88,7 @@ pub const Owner = struct {
     panel_bind_error: ?anyerror = null,
     panel_bind_commands: usize = 0,
     panel_bind_data: usize = 0,
+    program_diagnostic: c.struct_r4dcn_program_diagnostic = std.mem.zeroes(c.struct_r4dcn_program_diagnostic),
     panel_identity: a.GfxOutputId = .{},
     initialized: bool = false,
     thread: u64 = 0,
@@ -103,6 +109,9 @@ pub const Owner = struct {
     diagnostic_count: u32 = 0,
     scanout_owner: scanout.Owner = .{},
     scanout_request: ScanoutRequest = undefined,
+    scanout_error: ?scanout.Error = null,
+    abort_step: enum { idle, admission, output_stop, scanout_stop, frontend_quiet, restore, boot_guard, done } = .idle,
+    abort_reported: bool = false,
     pub fn prepareBoot(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
         const held = &native.hold;
         if (mode.mc_address != native.guard.boot_mc or mode.buffer_bytes != held.boot.byte_length or
@@ -323,6 +332,13 @@ pub const Owner = struct {
                 self.result = self.worker_result;
                 self.phase = .retained;
             }
+            if (self.action == .abort and self.result != 0 and !self.abort_reported) {
+                self.abort_reported = true;
+                var message: [192]u8 = undefined;
+                const text = std.fmt.bufPrintZ(&message, "AMDGPU display cleanup: step={s} result={d} worker={d} quiet={d} effects={d}",
+                    .{ @tagName(self.abort_step), self.result, self.worker_result, @intFromBool(self.quiet), @intFromBool(self.effects) }) catch unreachable;
+                self.ctx.?.logError(text);
+            }
         }
         if (self.threads.?.release(self.thread) != 0) return false;
         self.thread = 0;
@@ -441,7 +457,9 @@ pub const Owner = struct {
             },
             .scanout_work => {
                 self.result = 0;
+                self.scanout_error = null;
                 self.scanoutInWorker() catch |err| {
+                    self.scanout_error = err;
                     self.result = switch (err) {
                         error.Busy => c.R4DCN_BUSY, error.Timeout => c.R4DCN_TIMEOUT,
                         error.Invalid => c.R4DCN_INVALID, error.State, error.Stale => c.R4DCN_STATE,
@@ -556,25 +574,36 @@ pub const Owner = struct {
                 if (hooks.prepare(hooks.context, &self.plan, &self.limits)) {
                     self.frontend_attempted = true;
                     self.result = c.r4dcn_program(self.storage());
+                    _ = c.r4dcn_copy_program_diagnostic(self.storage(), &self.program_diagnostic);
                 }
                 self.phase = if (self.result == 0) .programmed else .retained;
             },
             .abort => {
+                self.abort_step = .admission;
                 if (!self.effects or self.hooks == null or !self.initialized) return c.R4DCN_STATE;
+                self.abort_step = .output_stop;
                 if (self.hooks.?.stop) |stop| if (!stop(self.hooks.?.context)) {
                     self.result = c.R4DCN_IO; self.phase = .retained; return 0;
                 };
+                self.abort_step = .scanout_stop;
                 if (self.scanout_owner.self_address != 0) self.scanout_owner.stop(self.scanout_owner.epoch) catch {
                     self.result = c.R4DCN_IO; self.phase = .retained; return 0;
                 };
+                self.abort_step = .frontend_quiet;
                 self.result = if (self.quiet or !self.frontend_attempted) 0 else c.r4dcn_quiesce(self.storage());
                 if (self.result == 0) {
                     self.quiet = true;
                     const hooks = self.hooks.?;
-                    self.result = if (hooks.restore(hooks.context) and self.native.?.bootMatches()) 0 else c.R4DCN_IO;
+                    self.abort_step = .restore;
+                    self.result = if (hooks.restore(hooks.context)) 0 else c.R4DCN_IO;
+                    if (self.result == 0) {
+                        self.abort_step = .boot_guard;
+                        self.result = if (self.native.?.bootMatches()) 0 else c.R4DCN_IO;
+                    }
                     if (self.result == 0) {
                         self.effects = false;
                         self.phase = .aborted;
+                        self.abort_step = .done;
                     }
                 }
                 if (self.result != 0) self.phase = .retained;
@@ -601,15 +630,23 @@ pub const Owner = struct {
         }
     }
     fn healthInWorker(self: *Owner) c_int {
+        self.health_step = .admission; self.health_error = null; self.health_sample = null; self.health_expected_address = 0;
         if (workerCheck(self) != 1 or self.action != .health_work or self.scanout_owner.current == null) return c.R4DCN_STATE;
-        const runtime = self.workerPanel() catch return c.R4DCN_STATE;
-        runtime.protocol.?.verifyLink() catch return c.R4DCN_IO;
+        self.health_expected_address = self.scanout_owner.current.?.address;
+        self.health_step = .panel_owner;
+        const runtime = self.workerPanel() catch |err| { self.health_error = err; return c.R4DCN_STATE; };
+        self.health_step = .link;
+        runtime.protocol.?.verifyLink() catch |err| { self.health_error = err; return c.R4DCN_IO; };
+        self.health_step = .sample;
         var sample: c.struct_r4dcn_scanout_sample = undefined;
         const result = c.r4dcn_scanout_sample(self.storage(), self.mode.pipe, &sample);
         if (result != 0) return result;
-        if (sample.underflow != 0 or sample.running != 1 or sample.blank != 0 or sample.requested_address != self.scanout_owner.current.?.address or
+        self.health_sample = sample; self.health_step = .visibility;
+        if (sample.underflow != 0 or sample.running != 1 or (sample.blank != 0 and sample.vblank_only == 0) or sample.requested_address != self.scanout_owner.current.?.address or
             sample.inuse_address != self.scanout_owner.current.?.address) return c.R4DCN_IO;
-        if (sample.pending != 0 or sample.locked != 0) return c.R4DCN_BUSY;
+        self.health_step = .settled;
+        if (sample.vblank_only != 0 or sample.pending != 0 or sample.locked != 0) return c.R4DCN_BUSY;
+        self.health_step = .progress;
         if (self.health_epoch != self.scanout_owner.epoch.mode) {
             self.health_epoch = self.scanout_owner.epoch.mode; self.health_frame = sample.frame; self.health_progress = sample.end_ns;
         } else {
@@ -619,6 +656,7 @@ pub const Owner = struct {
             if (delta != 0) { self.health_frame = sample.frame; self.health_progress = sample.end_ns; }
             if (sample.end_ns - self.health_progress >= 2 * std.time.ns_per_s) return c.R4DCN_TIMEOUT;
         }
+        self.health_step = .ready;
         return 0;
     }
     fn from(raw: ?*anyopaque) *Owner {

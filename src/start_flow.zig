@@ -138,6 +138,8 @@ pub const Flow = struct {
             .cleanup_park => {
                 if (!self.smu_effects and !self.engines.touched) { self.phase = .cleanup_asd; return; }
                 if (!try gfxOn(io)) return;
+                self.engines.allow_rlc_reset = self.cleanup_recheck and self.store != null and
+                    self.store.?.profile != null and self.store.?.profile.?.family == .raven2;
                 if (self.cleanup_recheck) try self.engines.recheck(io) else try self.engines.begin(io);
                 self.phase = .cleanup_parked;
             },

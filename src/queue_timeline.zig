@@ -15,7 +15,7 @@ pub const Epoch = struct {
     }
     pub fn matches(self: Epoch, fence: a.GfxFence) bool {
         return fence.adapter_id == self.adapter and fence.device_generation == self.device and fence.reset_generation == self.reset and
-            fence.timeline != 0 and fence.point != 0 and fence.slot < a.gfx_queue_fence_capacity;
+            fence.timeline != 0 and fence.point != 0 and fence.slot != 0 and fence.slot <= a.gfx_queue_fence_capacity;
     }
 };
 /// Supplied only by the engine stop/reset owner after real idle/reset evidence.

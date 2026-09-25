@@ -233,17 +233,26 @@ uint32_t generic_reg_get8(const struct dc_context *ctx, uint32_t addr,
 void generic_reg_wait(const struct dc_context *ctx, uint32_t addr,
  uint32_t shift,uint32_t mask,uint32_t condition,unsigned delay,unsigned tries,
  const char *function,int line) {
- (void)function;(void)line;
  struct r4dcn *d=ctx->driver_context;
  if (!mask || shift>=32 || (uint64_t)delay*tries>3000000 || tries>3000000) { d->fault=R4DCN_INVALID; return; }
- uint64_t start=ktime_get_raw_ns();
+ uint64_t start=ktime_get_raw_ns(),elapsed=0;
+ uint32_t observed=0,polls=0;
  for (unsigned i=0;i<=tries && !d->fault;i++) {
-  if (((dm_read_reg(ctx,addr)&mask)>>shift)==condition) return;
+  observed=dm_read_reg(ctx,addr);polls++;
+  if (((observed&mask)>>shift)==condition) return;
   if (i<tries && delay) udelay(delay);
   uint64_t now=ktime_get_raw_ns();
+  if(now>=start)elapsed=now-start;
   if (now<start || now-start>3000000000ull) break;
  }
  if (!d->fault) d->fault=R4DCN_TIMEOUT;
+ if(polls && !d->program_diagnostic.wait.valid) {
+  struct r4dcn_wait_diagnostic *w=&d->program_diagnostic.wait;
+  *w=(struct r4dcn_wait_diagnostic){.valid=1,.address=addr,.shift=shift,.mask=mask,
+   .expected=condition,.observed=observed,.polls=polls,.delay_us=delay,.tries=tries,
+   .line=(uint32_t)line,.elapsed_ns=elapsed};
+  for(unsigned n=0;function && n<sizeof(w->function)-1 && function[n];n++)w->function[n]=function[n];
+ }
 }
 void reg_sequence_start_gather(const struct dc_context *ctx) { ASSERT(!ctx->dmub_srv); }
 void reg_sequence_start_execute(const struct dc_context *ctx) { ASSERT(!ctx->dmub_srv); }

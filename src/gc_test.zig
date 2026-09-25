@@ -83,7 +83,7 @@ const F = struct {
         try rt.timeline.init(.{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 }, try rt.arena.fences(), time);
         try owner.init(rt.timeline.epoch, .picasso);
     }
-    fn fence(index: usize) a.GfxFence { return .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 3, .point = index + 1, .slot = @intCast(index) }; }
+    fn fence(index: usize) a.GfxFence { return .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 3, .point = index + 1, .slot = @intCast(index + 1) }; }
     fn resources(index: usize) q.Resources { resource_live[index] = true; return .{ .context = index + 1, .retire = retire }; }
     fn retire(raw: usize, exact: a.GfxFence) bool {
         const index = raw - 1;
@@ -272,12 +272,29 @@ test "AMD GFX9 real owner requires ordered startup, exact context fences and GC-
     F.data[l.Queue.gfx.readback() / 4] = 9; try t.expectError(error.Stale, F.engine.observe(&F.fixture, &F.rt.arena));
     F.data[l.Queue.gfx.readback() / 4] = 8;
     try t.expect(!try F.engine.stop(&F.fixture, &F.rt.arena)); try t.expectEqual(core.Phase.unmap_wait, F.engine.phase);
-    F.active[0] = 0; _ = try F.engine.stop(&F.fixture, &F.rt.arena); F.time += 50_000;
+    // The next owner turn may run after the old deadline although the
+    // compute HQD already stopped. Observe that proof before timing out.
+    F.active[0] = 0; F.time += 600_000_000;
+    _ = try F.engine.stop(&F.fixture, &F.rt.arena); F.time += 50_000;
     try t.expect(try F.engine.stop(&F.fixture, &F.rt.arena)); try t.expectEqual(@as(usize, 0), F.sdma_writes);
     try t.expectEqual(@as(u32, 0), F.regs[r.RLC_CSIB_LENGTH / 4]);
     try F.reset(); try F.start(); F.auto_dequeue = false;
     _ = try F.engine.stop(&F.fixture, &F.rt.arena); F.time += 500_000_000;
     try t.expectError(error.Deadline, F.engine.stop(&F.fixture, &F.rt.arena)); try t.expect(F.engine.phase != .closed and F.rt.arena.ready);
+    // A late KIQ stop acknowledgement is equally valid; neither test
+    // converts an active HQD or a rendering timeout into completion.
+    try F.reset(); try F.start(); F.auto_dequeue = false;
+    _ = try F.engine.stop(&F.fixture, &F.rt.arena);
+    F.active[0] = 0; _ = try F.engine.stop(&F.fixture, &F.rt.arena);
+    try t.expectEqual(core.Phase.kiq_wait, F.engine.phase);
+    F.time += 600_000_000;
+    try t.expectError(error.Deadline, F.engine.stop(&F.fixture, &F.rt.arena));
+    try t.expect(F.engine.kiq_live and F.rt.arena.ready);
+    try t.expectEqual(F.engine.saved_bank, F.regs[r.GRBM_GFX_CNTL / 4]);
+    F.active[1] = 0;
+    _ = try F.engine.stop(&F.fixture, &F.rt.arena); F.time += 50_000;
+    try t.expect(try F.engine.stop(&F.fixture, &F.rt.arena));
+    try t.expectEqual(core.Phase.closed, F.engine.phase);
     // A graphics timeout must preserve an independent compute observation,
     // without turning a late fence into success or releasing the arena.
     try F.reset();

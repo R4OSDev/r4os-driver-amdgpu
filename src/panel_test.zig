@@ -28,8 +28,10 @@ const Native = struct {
     var reply_at: usize = 0;
     var timeout = false;
     var fail_write: usize = 0;
+    var deny_read: ?u32 = null;
     fn read(_: ?*anyopaque, offset: u32, out: [*c]u32) callconv(.c) c_int {
         if (offset % 4 != 0 or offset / 4 >= words.len) return -1;
+        if (deny_read == offset / 4) return -1;
         const index = offset / 4;
         out.* = words[index];
         if (index == reg("DP_AUX0_AUX_SW_DATA") and words[index] & hw.DP_AUX0_AUX_SW_DATA__AUX_SW_DATA_RW_MASK != 0) {
@@ -97,6 +99,7 @@ const Native = struct {
         fifo_count = 0;
         timeout = false;
         fail_write = 0;
+        deny_read = null;
         @memset(&reply, 0);
         reply_count = 1;
         reply_at = 0;
@@ -106,6 +109,7 @@ const Native = struct {
     const route: c.struct_r4dcn_route = .{ .connector = 0x3114, .encoder = 0x211e, .phy = 0, .aux = 0, .hpd = 0, .caps = 0xa, .ddc_a = reg("DC_GPIO_DDC1_A"), .hpd_a = reg("DC_GPIO_HPD_A"), .hpd_shift = 0, .hpd_active = 1 };
 };
 test "DCN1 native link AUX and PWM use original registers and release an ordinary bus timeout" {
+    try hpdControllerState();
     const n = Native;
     try n.init();
     var invalid = n.route;
@@ -163,6 +167,33 @@ test "DCN1 native link AUX and PWM use original registers and release an ordinar
     try AtomNative.check();
     std.debug.print("[amd-panel-native] original AUX/link/PWM; exact FIFO, ATOM parameters, timeout arbitration, invalid PWM and firmware-owner rejection\n", .{});
 }
+fn hpdControllerState() !void {
+    const n = Native;
+    const statuses = [_]u32{reg("HPD0_DC_HPD_INT_STATUS"),reg("HPD1_DC_HPD_INT_STATUS"),reg("HPD2_DC_HPD_INT_STATUS"),reg("HPD3_DC_HPD_INT_STATUS")};
+    for (0..4) |index| for (0..2) |legacy| {
+        try n.init();
+        var route = n.route; route.hpd = @intCast(index); route.hpd_shift = @intCast(index * 8); route.hpd_active = @intCast(legacy);
+        try t.expectEqual(@as(c_int, 0), c.r4dcn_link_bind(&n.bytes, 0, &route, &n.atom_io));
+        const before = n.writes;
+        for (0..2) |present| for (0..2) |raw| {
+            // Controller sense is independent of raw Y and the legacy BIOS
+            // pin-state value. Opposite peers also expose wrong-index reads.
+            n.words[reg("DC_GPIO_HPD_Y")] = @as(u32, @intCast(raw)) << @intCast(index * 8);
+            for (statuses) |address| n.words[address] = if (present == 0) hw.HPD0_DC_HPD_INT_STATUS__DC_HPD_SENSE_DELAYED_MASK else 0;
+            n.words[statuses[index]] = 1 | (if (present != 0) @as(u32, hw.HPD0_DC_HPD_INT_STATUS__DC_HPD_SENSE_DELAYED_MASK) else 0);
+            var observed: u32 = 99;
+            try t.expectEqual(@as(c_int, 0), c.r4dcn_link_hpd(&n.bytes, 0, &observed));
+            try t.expectEqual(@as(u32, @intCast(present)), observed);
+            try t.expectEqual(before, n.writes);
+        };
+        n.deny_read = statuses[index];
+        var observed: u32 = 99;
+        try t.expectEqual(@as(c_int, c.R4DCN_IO), c.r4dcn_link_hpd(&n.bytes, 0, &observed));
+        try t.expect(c.r4dcn_fault(&n.bytes) != 0 and n.writes == before);
+        n.deny_read = null; c.r4dcn_destroy(&n.bytes);
+    };
+    std.debug.print("[amd-hpd] four controller sources, both BIOS pin states, independent raw GPIO and genuine disconnect/read-fault; model only\n", .{});
+}
 const Receiver = struct {
     var rom: [4096]u8 = undefined;
     var board: b.Board = undefined;
@@ -184,6 +215,12 @@ const Receiver = struct {
     var attempts: usize = 0;
     var light_on_at: u64 = 0;
     var power_on_at: u64 = 0;
+    var power_on_count: u32 = 0;
+    var init_power: ?bool = null;
+    var init_at: u64 = 0;
+    var status_calls: u32 = 0;
+    var fail_status_at: u32 = 0;
+    var hold_hpd = false;
     var stop_count: usize = 0;
     var pwm_value: u32 = 0;
     var firmware_busy: u32 = 0;
@@ -196,10 +233,17 @@ const Receiver = struct {
     }
     fn action(_: usize, a: p.Action) p.Error!void {
         switch (a) {
-            .init => {},
+            .init => {
+                if (init_power) |value| {
+                    ticks += 70_000_000;
+                    powered = value;
+                }
+                init_at = ticks;
+            },
             .power_on => {
                 powered = true;
                 power_on_at = ticks;
+                power_on_count += 1;
             },
             .power_off => powered = false,
             .backlight_on => {
@@ -223,6 +267,8 @@ const Receiver = struct {
         for (levels) |level| if ((level & 3) + ((level >> 3) & 3) > 3) return error.Invalid;
     }
     fn status(_: usize) p.Error!c.struct_r4dcn_panel_state {
+        status_calls += 1;
+        if (status_calls == fail_status_at) return error.Io;
         return .{ .powered = @intFromBool(powered), .lit = @intFromBool(lit), .pwm_valid = pwm_valid, .firmware_busy = firmware_busy, .pwm = pwm_value, .period = 4000 };
     }
     fn pwm(_: usize, value: u32) p.Error!void {
@@ -230,7 +276,7 @@ const Receiver = struct {
         pwm_value = value;
     }
     fn hpd(_: usize) p.Error!bool {
-        return powered;
+        return powered and !hold_hpd;
     }
     fn playing(_: usize) p.Error!bool {
         return video;
@@ -279,6 +325,8 @@ const Receiver = struct {
         rate = 0;
         pattern = 0;
         powered = false;
+        power_on_count = 0; init_power = null; init_at = 0;
+        status_calls = 0; fail_status_at = 0; hold_hpd = false;
         lit = false;
         video = false;
         fail_rate20 = false;
@@ -353,6 +401,31 @@ test "eDP discovery training fallback and brightness preserve ordered effects ac
     const off = r.ticks;
     try r.panel.discover();
     try t.expect(r.power_on_at >= off + 500_000_000);
+    // ATOM INIT may change a firmware-owned power state. A stale pre-INIT
+    // value must neither skip power-on nor trigger a duplicate power command.
+    try r.reset(true);
+    r.powered = true; r.init_power = false;
+    r.ticks = 2 * std.time.ns_per_s; r.panel.off_at = 1;
+    try r.panel.discover();
+    try t.expect(r.power_on_count == 1 and r.power_on_at >= r.init_at + 500_000_000 and r.panel.phase == .discovered);
+    try r.reset(true);
+    r.init_power = true;
+    try r.panel.discover();
+    try t.expect(r.power_on_count == 0 and r.panel.phase == .discovered);
+    try r.reset(true);
+    r.powered = true;
+    try r.panel.discover();
+    try t.expect(r.power_on_count == 0);
+    // Failure to re-read retains the effects and sends no guessed power-on.
+    try r.reset(true);
+    r.powered = true; r.init_power = false; r.fail_status_at = 2;
+    try t.expectError(error.Io, r.panel.discover());
+    try t.expect(r.panel.phase == .retained and r.panel.effects and r.power_on_count == 0 and r.attempts == 0);
+    // A real missing HPD still times out without AUX traffic or extra retries.
+    try r.reset(true);
+    r.powered = true; r.hold_hpd = true;
+    try t.expectError(error.Timeout, r.panel.discover());
+    try t.expect(r.panel.phase == .retained and r.panel.hpd_polls == 1000 and r.attempts == 0 and r.power_on_count == 0);
     try r.reset(false);
     r.firmware_busy = 1;
     try r.panel.discover();

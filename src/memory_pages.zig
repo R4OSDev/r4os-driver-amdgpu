@@ -65,41 +65,70 @@ pub const Virtual = struct {
         self.* = .{ .entries = entries, .physical = physical, .count = 1 };
     }
     pub fn root(self: *const Virtual) Error!u64 { return pde(self.physical, false); }
-    fn leaf(self: *Virtual, va: u64, create: bool) Error!*volatile u64 {
-        if (self.count == 0 or va == 0 or va >= layout.address_limit or va & 4095 != 0) return error.Invalid;
+    // A run ends at the next 512-entry leaf-table boundary. Directory
+    // entries are stable under the caller's memory owner, so walk them
+    // once per run instead of repeatedly reading WC memory for every PTE.
+    // No pointer survives the current map/unmap operation or its owner.
+    fn leaves(self: *Virtual, va: u64, count: usize, create: bool) Error![]volatile u64 {
+        if (self.count == 0 or count == 0 or va == 0 or va >= layout.address_limit or va & 4095 != 0) return error.Invalid;
         var node: usize = 0;
         inline for (.{ @as(u6, 39), @as(u6, 30), @as(u6, 21) }) |shift| {
             const slot = &self.entries[node * 512 + @as(usize, @intCast((va >> shift) & 511))];
-            if (slot.* == 0) {
+            var entry = slot.*;
+            if (entry == 0) {
                 if (!create) return error.Sparse;
                 if (self.count == self.entries.len / 512) return error.Capacity;
                 const next = self.count; self.count += 1;
-                slot.* = try pde(self.physical + next * 4096, false);
+                entry = try pde(self.physical + next * 4096, false);
+                slot.* = entry;
             }
-            const physical = slot.* & physical_mask;
-            if (slot.* != try pde(physical, false) or physical < self.physical or physical - self.physical >= self.count * 4096) return error.Stale;
+            const physical = entry & physical_mask;
+            if (entry != try pde(physical, false) or physical < self.physical or physical - self.physical >= self.count * 4096) return error.Stale;
             node = @intCast((physical - self.physical) / 4096);
         }
-        return &self.entries[node * 512 + @as(usize, @intCast((va >> 12) & 511))];
+        const index: usize = @intCast((va >> 12) & 511);
+        return self.entries[node * 512 + index ..][0..@min(count, 512 - index)];
+    }
+    fn leaf(self: *Virtual, va: u64, create: bool) Error!*volatile u64 {
+        const run = try self.leaves(va, 1, create);
+        return &run[0];
     }
     pub fn map(self: *Virtual, address: u64, physical: []const u64, attributes: Attributes) Error!void {
         const bytes = std.math.mul(u64, physical.len, 4096) catch return error.Overflow;
         _ = try layout.pages(address, bytes, layout.address_limit);
+        var run: []volatile u64 = &.{};
         for (physical, 0..) |value, i| {
             if (value == 0) return error.Sparse;
             _ = try pte(value, attributes);
             // Any capacity failure leaves only empty, valid directories;
             // no partial mapped data page or unexpected GPU access exists.
-            if ((try self.leaf(address + i * 4096, true)).* != 0) return error.Busy;
+            if (run.len == 0) run = try self.leaves(address + i * 4096, physical.len - i, true);
+            if (run[0] != 0) return error.Busy;
+            run = run[1..];
         }
-        for (physical, 0..) |value, i| (try self.leaf(address + i * 4096, false)).* = try pte(value, attributes);
+        run = &.{};
+        for (physical, 0..) |value, i| {
+            if (run.len == 0) run = try self.leaves(address + i * 4096, physical.len - i, false);
+            run[0] = try pte(value, attributes);
+            run = run[1..];
+        }
         self.mapped_pages += physical.len;
     }
     pub fn unmap(self: *Virtual, address: u64, count: usize) Error!void {
         const bytes = std.math.mul(u64, count, 4096) catch return error.Overflow;
         _ = try layout.pages(address, bytes, layout.address_limit);
-        for (0..count) |i| if ((try self.leaf(address + i * 4096, false)).* & 1 == 0) return error.Sparse;
-        for (0..count) |i| (try self.leaf(address + i * 4096, false)).* = 0;
+        var start: usize = 0;
+        while (start < count) {
+            const run = try self.leaves(address + start * 4096, count - start, false);
+            for (run) |entry| if (entry & 1 == 0) return error.Sparse;
+            start += run.len;
+        }
+        start = 0;
+        while (start < count) {
+            const run = try self.leaves(address + start * 4096, count - start, false);
+            for (run) |*entry| entry.* = 0;
+            start += run.len;
+        }
         self.mapped_pages -= count;
     }
     pub fn lookup(self: *Virtual, address: u64) Error!u64 { return (try self.leaf(address, false)).*; }

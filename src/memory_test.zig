@@ -59,6 +59,57 @@ const Hardware = struct {
 var hw: Hardware = .{};
 var flat_words: [512]u64 align(4096) = undefined;
 var vm_words: [8 * 512]u64 align(4096) = undefined;
+var span_words: [16 * 512]u64 align(4096) = undefined;
+var span_physical: [1028]u64 = undefined;
+
+fn checkLeafSpans() !void {
+    // Cross leaf, directory and root boundaries with non-contiguous pages.
+    // Check original wire values, late errors and whole-range atomicity.
+    for (&span_physical, 0..) |*physical, i| physical.* = 0x330000000 + i * 8192;
+    for ([_]u64{ 1 << 21, 1 << 30, 1 << 39 }) |boundary| {
+        var vm: pages.Virtual = .{};
+        try vm.init(&span_words, 0x225000000);
+        const start = boundary - 2 * 4096;
+        const last = start + (span_physical.len - 1) * 4096;
+        const attributes: pages.Attributes = .{ .system = true, .write = true, .execute = true };
+        try vm.map(last, span_physical[span_physical.len - 1 ..], attributes);
+        try t.expectError(error.Busy, vm.map(start, &span_physical, attributes));
+        try t.expectEqual(@as(usize, 1), vm.mapped_pages);
+        for (0..span_physical.len - 1) |i| try t.expectEqual(@as(u64, 0), try vm.lookup(start + i * 4096));
+        try vm.unmap(last, 1);
+        const saved = span_physical[span_physical.len - 1];
+        span_physical[span_physical.len - 1] = 0;
+        try t.expectError(error.Sparse, vm.map(start, &span_physical, attributes));
+        try t.expectEqual(@as(usize, 0), vm.mapped_pages);
+        for (0..span_physical.len) |i| try t.expectEqual(@as(u64, 0), try vm.lookup(start + i * 4096));
+        span_physical[span_physical.len - 1] = saved;
+        try vm.map(start, &span_physical, attributes);
+        try t.expectEqual(span_physical.len, vm.mapped_pages);
+        for (span_physical, 0..) |physical, i| try t.expectEqual(physical | @as(u64, 0x0600000000000077), try vm.lookup(start + i * 4096));
+        // A missing page in the final table must not clear earlier tables.
+        try vm.unmap(last, 1);
+        try t.expectError(error.Sparse, vm.unmap(start, span_physical.len));
+        try t.expectEqual(span_physical.len - 1, vm.mapped_pages);
+        for (span_physical[0 .. span_physical.len - 1], 0..) |physical, i| try t.expectEqual(physical | @as(u64, 0x0600000000000077), try vm.lookup(start + i * 4096));
+        try vm.map(last, span_physical[span_physical.len - 1 ..], attributes);
+        try vm.unmap(start, span_physical.len);
+        try t.expectEqual(@as(usize, 0), vm.mapped_pages);
+        for (0..span_physical.len) |i| try t.expectEqual(@as(u64, 0), try vm.lookup(start + i * 4096));
+    }
+    var limited: pages.Virtual = .{};
+    try limited.init(span_words[0 .. 4 * 512], 0x225000000);
+    const start = (1 << 21) - 2 * 4096;
+    try t.expectError(error.Capacity, limited.map(start, span_physical[0..3], .{ .system = false }));
+    try t.expectEqual(@as(usize, 4), limited.count);
+    try t.expectEqual(@as(usize, 0), limited.mapped_pages);
+    try t.expectEqual(@as(u64, 0), try limited.lookup(start));
+    try t.expectEqual(@as(u64, 0), try limited.lookup(start + 4096));
+    // Invalid directory flags still reject a run before any leaf mutation.
+    span_words[0] |= 4;
+    try t.expectError(error.Stale, limited.map(start, span_physical[0..1], .{ .system = false }));
+    span_words[0] &= ~@as(u64, 4);
+    try t.expectEqual(@as(u64, 0), try limited.lookup(start));
+}
 
 test "Picasso UMA partitions conserve capacity and GPU page tables reject holes and mixed addresses" {
     const Profile = @import("asic_profile.zig").Profile;
@@ -101,6 +152,7 @@ test "Picasso UMA partitions conserve capacity and GPU page tables reject holes 
 }
 
 test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and confirmed teardown" {
+    try checkLeafSpans();
     try t.expectError(error.Invalid, l.aligned(12, 0));
     try t.expectError(error.Overflow, l.aligned(std.math.maxInt(u64), 4096));
     try t.expectError(error.Invalid, pages.pte(0x1001, .{ .system = true }));
@@ -219,6 +271,8 @@ const F = struct {
     var committed = false;
     var claimed = false;
     var release_fail = false;
+    var unrelated_pending_release = false;
+    var collect_calls: usize = 0;
     var map_fail = false;
     var segment_hole = false;
     var segment_duplicate = false;
@@ -242,6 +296,8 @@ const F = struct {
         committed = false;
         claimed = false;
         release_fail = false;
+        unrelated_pending_release = false;
+        collect_calls = 0;
         map_fail = false;
         segment_hole = false;
         segment_duplicate = false;
@@ -305,7 +361,8 @@ const F = struct {
         return 1;
     }
     fn collect() callconv(.c) i32 {
-        return if (release_fail) -4 else 1;
+        collect_calls += 1;
+        return if (release_fail or unrelated_pending_release) -4 else 1;
     }
     fn budget(req: *const a.GfxDeviceBudgetRequest, out: *a.GfxDeviceBudgetState) callconv(.c) i32 {
         std.debug.assert(req.memory_generation == 23 and req.adapter_id == 7 and req.limit_bytes == layout.native_budget);
@@ -461,8 +518,11 @@ const Render = struct {
     var native_result: u32 = a.gfx_queue_result_complete;
     var native_registered = false;
     var virtual_registered = false;
+    var native_unregister_error: i32 = 1;
+    var native_unregister_calls: u32 = 0;
+    var allocation_complete_error: i32 = 1;
     const binding: a.GfxBackendBinding = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 };
-    const fence: a.GfxFence = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 3, .point = 1, .slot = 0 };
+    const fence: a.GfxFence = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 3, .point = 1, .slot = 1 };
     fn registerNative(input: *const a.GfxNativeProvider, out: *a.GfxBufferHandle) callconv(.c) i32 {
         std.debug.assert(input.adapter_id == 7 and input.memory_generation == 23 and !native_registered);
         native_registered = true;
@@ -477,6 +537,9 @@ const Render = struct {
     }
     fn unregisterNative(_: *const a.GfxBufferHandle) callconv(.c) i32 {
         std.debug.assert(!allocation_pending);
+        native_unregister_calls += 1;
+        if (!native_registered) return a.gfx_buffer_error_stale;
+        if (native_unregister_error != 1) return native_unregister_error;
         native_registered = false;
         return 1;
     }
@@ -492,6 +555,7 @@ const Render = struct {
         return 1;
     }
     fn completeNative(_: *const a.GfxBufferHandle, _: *const a.GfxBufferHandle, result: i32, reference: *const a.GfxBufferHandle) callconv(.c) i32 {
+        if (allocation_complete_error != 1) return allocation_complete_error;
         std.debug.assert(result == 1 and reference.id == 101 and F.native_refs == 1);
         F.native_refs += 1;
         allocation_ack += 1;
@@ -505,6 +569,10 @@ const Render = struct {
     }
     fn completeVirtual(_: *const a.GfxBufferHandle, input: *const a.GfxVirtualCompletion) callconv(.c) i32 {
         if (input.result != 1) std.debug.assert(input.address == 0 and std.meta.eql(input.token, a.GfxVirtualToken{}));
+        // Match the resident broker: physical retirement must echo the exact
+        // claimed token. A zero/wrong token cannot release its BO reference.
+        if (input.operation == 1 and (input.result != 1 or input.address != 0 or
+            !std.meta.eql(input.token, virtual_job.token))) return a.gfx_buffer_error_invalid;
         if (virtual_ack_fail) return a.gfx_buffer_error_busy;
         virtual_done = input.*;
         return 1;
@@ -616,6 +684,9 @@ const Render = struct {
         raw_mode = false; native_binding = .{}; native_fail = false; native_result = a.gfx_queue_result_complete;
         native_registered = false;
         virtual_registered = false;
+        native_unregister_error = 1;
+        native_unregister_calls = 0;
+        allocation_complete_error = 1;
         F.reset();
         try F.prepare();
         F.regs[r.gfx.VM_INVALIDATE_ENG17_ACK / 4] = 3;
@@ -643,6 +714,56 @@ const Render = struct {
 
 test "AMD renderer crosses real allocation mapping PM4 timeline and canonical retirement facades" {
     const R = Render;
+    // Kernel closingDriver/service may retire an empty provider before this
+    // joined renderer closes. Stale then acknowledges only provider retirement.
+    try R.reset();
+    R.native_registered = false;
+    try t.expect(R.owner.close());
+    try t.expect(R.owner.close() and R.native_unregister_calls == 1);
+    try t.expect(F.owner.mapping_users == 0 and R.owner.allocations.memory == null);
+    try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+    try t.expect(F.windows == 0);
+
+    for ([_]i32{ a.gfx_buffer_error_busy, a.gfx_buffer_error_invalid, a.gfx_buffer_error_unavailable }) |failure| {
+        try R.reset();
+        R.native_unregister_error = failure;
+        try t.expect(!R.owner.close());
+        try t.expect(R.native_registered and R.owner.allocations.handle.id != 0 and
+            R.owner.allocations.memory != null and F.owner.mapping_users == 1 and F.windows == 4);
+        R.native_unregister_error = 1;
+        try t.expect(R.owner.close());
+        try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+        try t.expect(F.windows == 0);
+    }
+
+    // An unacknowledged request and then an acknowledged, unreleased local
+    // reference both retain the provider handle and renderer backing.
+    try R.reset();
+    R.allocation_pending = true;
+    R.allocation_complete_error = a.gfx_buffer_error_busy;
+    try t.expect(!R.owner.allocations.step());
+    try t.expect(!R.owner.close());
+    try t.expect(R.native_unregister_calls == 0 and R.allocation_ack == 0 and
+        R.owner.allocations.pending != null and F.native_refs == 1 and F.windows == 4);
+    R.allocation_complete_error = 1;
+    F.release_fail = true;
+    try t.expect(!R.owner.close());
+    try t.expect(R.allocation_ack == 1 and R.owner.allocations.acknowledged and F.native_refs == 2);
+    // Canonical retirement is now possible, but it does not release our ref.
+    R.native_registered = false;
+    try t.expect(!R.owner.close());
+    try t.expect(R.native_unregister_calls == 0 and R.allocation_ack == 1 and
+        R.owner.allocations.reference.reference.id != 0 and F.native_refs == 2 and F.windows == 4);
+    F.release_fail = false;
+    try t.expect(R.owner.close());
+    try t.expect(R.native_unregister_calls == 1 and R.allocation_ack == 1 and F.native_refs == 1 and
+        R.owner.allocations.pending == null and R.owner.allocations.reference.reference.id == 0 and
+        R.owner.allocations.result == null and !R.owner.allocations.acknowledged and F.owner.mapping_users == 0);
+    try t.expectEqual(@as(i32, 1), F.release(&.{ .id = 101, .generation = 19 }));
+    try t.expect(F.owner.collect());
+    try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+    try t.expect(F.charged == 0 and F.windows == 0);
+
     for ([_]u32{ a.gfx_buffer_format_nv12, a.gfx_buffer_format_p010 }, [_]u64{ 512, 768 }, [_]u64{ 131072, 196608 }, [_]u64{ 196608, 327680 }) |format, pitch, uv, bytes| {
         try R.reset();
         R.allocation_format = format; R.allocation_width = 320; R.allocation_height = 240;
@@ -738,11 +859,21 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
     try t.expect(!R.owner.virtual.step());
     try t.expect(!F.gpu and F.native_refs == 1);
     F.heap_release_fail = false;
+    R.virtual_ack_fail = true;
+    try t.expect(!R.owner.virtual.step());
+    try t.expect(R.owner.virtual.detached and R.owner.virtual.pending != null and
+        R.owner.virtual.bindings[R.owner.virtual.slot.?].serial != 0 and
+        R.owner.virtual.ranges[0].children == 1 and !F.gpu and F.native_refs == 1);
+    // Physical mapping/heap release happened once. A later broker ACK alone
+    // clears the retained metadata; retries must keep the original token.
+    R.virtual_ack_fail = false;
     try t.expect(R.owner.virtual.step());
+    try t.expectEqualDeep(bound.token, R.virtual_done.token);
     try t.expect(!F.gpu and F.native_refs == 1);
     R.virtual_job = .{ .resource = range.resource, .operation = 1, .request = .{ .kind = 1 }, .token = range.token };
     R.virtual_pending = true;
     try t.expect(R.owner.virtual.step());
+    try t.expectEqualDeep(range.token, R.virtual_done.token);
     try t.expect(R.owner.close());
     try t.expect(!R.native_registered and !R.virtual_registered and F.owner.mapping_users == 0);
     try t.expectEqual(@as(i32, 1), F.release(&.{ .id = 101, .generation = 19 }));
@@ -752,7 +883,43 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
     try t.expectEqual(@as(usize, 0), F.windows);
 }
 
+fn checkWindowRetirement() !void {
+    // The kernel confirms exact MMIO release independently of collect(),
+    // which also reports unfinished driver BO destruction. That work may
+    // need a later shutdown owner: it cannot gate this released window.
+    F.reset();
+    const ctx = r4os.r4dev.DriverContext.init(&F.api);
+    const memory = ctx.memory().?;
+    var window: @import("memory_io.zig").Window = .{};
+    try window.open(memory, 0xf0000000, r.required_prefix, 0, 4096, false);
+    F.release_fail = true;
+    const handle = window.value.handle;
+    try t.expect(!window.close());
+    try t.expectEqualDeep(handle, window.value.handle);
+    try t.expect(window.pending and F.windows == 1);
+    F.release_fail = false;
+    F.unrelated_pending_release = true;
+    try t.expect(window.close());
+    try t.expect(!window.pending and window.value.handle.id == 0 and F.windows == 0);
+    try t.expectEqual(@as(usize, 0), F.collect_calls);
+    try t.expect(window.close());
+    // No independent BO completion was fabricated or hidden.
+    try t.expectEqual(@as(i32, -4), memory.collect());
+    try t.expectEqual(@as(usize, 1), F.collect_calls);
+    F.reset();
+    F.map_fail = true;
+    try t.expectError(error.Unsupported, window.open(memory, 0xf0000000, r.required_prefix, 0, 4096, false));
+    F.unrelated_pending_release = true;
+    try t.expect(!window.close());
+    try t.expect(window.pending and window.value.handle.id == 0);
+    F.unrelated_pending_release = false;
+    try t.expect(window.close());
+    try t.expectEqual(@as(usize, 2), F.collect_calls);
+    try t.expect(!window.pending);
+}
+
 test "AMD actual memory facades retain SG/UMA backing until fence and both TLB acknowledgements" {
+    try checkWindowRetirement();
     try DisplayBuffers.check();
     F.reset();
     try F.prepare();

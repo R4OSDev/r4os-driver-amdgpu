@@ -88,6 +88,7 @@ pub const Owner = struct {
     gc_stop: @import("start_engines.zig").Park = .{},
     gc_stop_started: bool = false,
     closed: bool = false,
+    close_step: enum { idle, sdma_identity, queue_worker, power, media, graphics, sdma_engine, gc_stop_begin, gc_stop_poll, display_client, sdma_jobs, queue, display_client_after, arena, sdma_routing, arena_unmap, arena_flush, queue_unregister, fence_retirement, closed } = .idle,
     selftest_submitted: bool = false,
     verified: bool = false,
     deadline: c.Deadline = .{},
@@ -217,50 +218,69 @@ pub const Owner = struct {
     }
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0 or self.closed) return true;
+        self.close_step = .sdma_identity;
         if (self.self_address != @intFromPtr(self)) return false;
         const runtime = self.runtime.?;
         const memory = self.memory.?;
+        self.close_step = .queue_worker;
         if (!runtime.stopWorker()) return false;
+        self.close_step = .power;
         if (!self.power.close(self)) return false;
+        self.close_step = .media;
         if (self.media) |media| if (!media.close()) return false;
+        self.close_step = .graphics;
         if (self.graphics) |graphics| if (!graphics.close()) return false;
+        self.close_step = .sdma_engine;
         if (!(self.engine.stop(&memory.registers) catch false)) return false;
         if (!self.gc_stop_started) {
+            self.close_step = .gc_stop_begin;
             self.gc_stop.begin(&memory.registers) catch return false;
             self.gc_stop_started = true;
         }
+        self.close_step = .gc_stop_poll;
         if (!self.gc_stop.confirmed and !(self.gc_stop.poll(&memory.registers) catch false)) return false;
+        self.close_step = .display_client;
         if (self.client) |client| if (client.drain) |drain| if (!drain(client.context)) return false;
+        self.close_step = .sdma_jobs;
         for (&self.jobs) |*job| if (job.owner != null and job.ticket == null) {
             if (!Job.retire(@intFromPtr(job), job.fence) or runtime.queue.?.complete(&job.fence, a.gfx_queue_result_failed, 1) != 1) return false;
             job.clear();
         };
         const proof: ?q.Quiescence = if (runtime.timeline.self_address != 0) .{ .epoch = runtime.timeline.epoch, .engines = @import("queue_ring.zig").all_engines } else null;
+        self.close_step = .queue;
         if (!runtime.close(proof)) return false;
+        self.close_step = .display_client_after;
         if (self.client) |client| if (client.drain) |drain| if (!drain(client.context)) return false;
         // prepare() owns the arena even before a common backend/timeline exists.
+        self.close_step = .arena;
         if (!runtime.arena.close(true)) return false;
+        self.close_step = .sdma_routing;
         self.engine.restoreRouting(&memory.registers) catch return false;
         if (self.arena_translated) {
+            self.close_step = .arena_unmap;
             memory.virtual.unmap(arena_va, self.arena_pages.len) catch return false;
             self.arena_translated = false;
             self.arena_flush_pending = true;
         }
         if (self.arena_flush_pending) {
+            self.close_step = .arena_flush;
             memory.controller.flush(&memory.registers, 1) catch return false;
             self.arena_flush_pending = false;
         }
         if (self.registered) {
+            self.close_step = .queue_unregister;
             const queue = self.queue orelse return false;
             if (queue.unregister(&self.binding, 1) != 1) return false;
             self.registered = false;
         }
+        self.close_step = .fence_retirement;
         for (&self.jobs) |*job| if (job.owner != null) {
             if (!job.fence_retired) return false;
             job.clear();
         };
         self.active = false;
         self.closed = true;
+        self.close_step = .closed;
         return true;
     }
     fn beforePoll(runtime: *@import("queue_runtime.zig").Owner, raw: usize) void {

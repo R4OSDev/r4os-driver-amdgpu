@@ -25,8 +25,15 @@ pub const Window = struct {
         const memory = self.memory orelse return false;
         if (self.value.handle.id != 0) {
             if (memory.mmioUnmap(&self.value.handle, 1) != 1) return false;
-            self.value = .{};
+            // Success confirms this exact window and its CPU TLB retirement.
+            // Global collect also waits for unrelated BO destruction, which
+            // may need an owner scheduled later in the shutdown sequence.
+            // Those BOs remain owned; they cannot retain this released map.
+            self.* = .{};
+            return true;
         }
+        // A failed map can leave a private partial window without a public
+        // handle. Only the collector can confirm that exceptional cleanup.
         if (memory.collect() != 1) return false;
         self.* = .{}; return true;
     }

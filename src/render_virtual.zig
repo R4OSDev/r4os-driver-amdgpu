@@ -195,7 +195,10 @@ pub const Owner = struct {
                 self.result = 1;
             }
         }
-        var t: a.GfxVirtualToken = .{};
+        // Retirement acknowledges the claimed physical identity, including
+        // retries after unmap/heap release. The broker rejects a zero token
+        // and retains its BO reference until this exact acknowledgement.
+        var t: a.GfxVirtualToken = if (job.operation == 1) job.token else .{};
         var address: u64 = 0;
         if (self.slot) |slot| {
             if (job.operation == 1 or self.result.? != 1) {

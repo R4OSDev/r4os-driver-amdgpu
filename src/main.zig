@@ -308,7 +308,8 @@ pub export fn amdgpu_shutdown() callconv(.c) i32 {
         // firmware cleanup phase being pending is not a terminal failure.
         // Keep all receipts and allocations retained while callbacks retire;
         // never widen the lower-level hardware deadlines or force release.
-        var io: ShutdownIo = .{ .ctx = ctx, .clock = native_worker.clock orelse return -1 };
+        var io: ShutdownIo = .{ .ctx = ctx, .clock = native_worker.clock orelse return -1,
+            .wait_ticks = native_worker.interval_ticks };
         if (!@import("shutdown_drain.zig").run(&io, shutdownNativeStep)) {
             ctx.logError("AMDGPU shutdown: bounded native drain failed; resources retained");
             return -1;
@@ -330,8 +331,9 @@ const ShutdownIo = struct {
     // Captured during init: querying a new resource service after the
     // kernel's admission close may already be forbidden.
     clock: r4os.r4dev.DriverResourceContext,
+    wait_ticks: u64,
     pub fn nowNs(self: *@This()) u64 { return self.clock.nowNs(); }
-    pub fn wait(self: *@This()) void { self.ctx.waitTicks(1); }
+    pub fn wait(self: *@This()) void { self.ctx.waitTicks(self.wait_ticks); }
 };
 fn shutdownNativeStep() bool { return native_worker.join() and recoverNative(); }
 var recovery_last_block: []const u8 = "";
@@ -339,29 +341,43 @@ var recovery_last_firmware: @import("start_flow.zig").Phase = .empty;
 var recovery_last_gc_phase: ?@import("gc_engine.zig").Phase = null;
 var recovery_last_gc_wait: u8 = 255;
 var recovery_last_gc_failure: ?anyerror = null;
+var recovery_last_close_block: []const u8 = "";
+var recovery_last_allocation_rc: ?i32 = null;
 fn recoverNative() bool {
     var step: []const u8 = "admission";
     var complete = false;
     defer {
+        const close_block: []const u8 = if (!std.mem.eql(u8, step, "sdma-close")) "" else if (sdma_runtime.close_step == .graphics)
+            (if (gc_runtime.close_step == .renderer) @tagName(gc_runtime.renderer.close_step) else @tagName(gc_runtime.close_step))
+        else @tagName(sdma_runtime.close_step);
+        const allocation = &gc_runtime.renderer.allocations;
         if (complete) {
             recovery_last_block = "";
             recovery_last_firmware = .empty;
             recovery_last_gc_phase = null; recovery_last_gc_wait = 255; recovery_last_gc_failure = null;
+            recovery_last_close_block = ""; recovery_last_allocation_rc = null;
         } else if (!std.mem.eql(u8, step, recovery_last_block) or recovery_last_firmware != native_start.flow.phase or
             recovery_last_gc_phase != gc_runtime.engine.phase or recovery_last_gc_wait != @intFromEnum(gc_runtime.engine.park.wait) or
-            recovery_last_gc_failure != gc_runtime.engine.stop_failure) {
+            recovery_last_gc_failure != gc_runtime.engine.stop_failure or !std.mem.eql(u8, close_block, recovery_last_close_block) or
+            recovery_last_allocation_rc != allocation.unregister_result) {
             recovery_last_block = step;
             recovery_last_firmware = native_start.flow.phase;
             recovery_last_gc_phase = gc_runtime.engine.phase; recovery_last_gc_wait = @intFromEnum(gc_runtime.engine.park.wait);
             recovery_last_gc_failure = gc_runtime.engine.stop_failure;
+            recovery_last_close_block = close_block; recovery_last_allocation_rc = allocation.unregister_result;
             diagnoseGc();
             log("AMDGPU recovery pending: step={s} firmware={s} clock={s} gc-stop={s} engine-users={d} mappings={d} gmc={d}/{d}",
                 .{ step, @tagName(native_start.flow.phase), @tagName(display_clock_runtime.phase), @tagName(sdma_runtime.gc_stop.wait),
                 memory_runtime.engine_users, memory_runtime.mapping_users, @intFromBool(memory_runtime.controller.touched), @intFromBool(memory_runtime.controller.enabled) });
+            log("AMDGPU recovery owners: close={s} allocation-rc={d} pending={d} reference={d} acknowledged={d}",
+                .{ close_block, allocation.unregister_result orelse 0, @intFromBool(allocation.pending != null),
+                allocation.reference.reference.id, @intFromBool(allocation.acknowledged) });
             log("AMDGPU recovery firmware: failure={s} failed={s} park={s} PSP-operation={s} response={x} token={d} ring={d} tmr={d} asd={d}",
                 .{ if (native_start.flow.failure) |failure| @errorName(failure) else "none", @tagName(native_start.flow.failed_phase),
                 @tagName(native_start.flow.engines.wait), @tagName(native_start.flow.psp.operation), native_start.flow.psp.response,
                 native_start.flow.psp.token, @intFromBool(native_start.flow.psp.ring_ready), @intFromBool(native_start.flow.psp.tmr_ready), @intFromBool(native_start.flow.psp.asd_ready) });
+            log("AMDGPU recovery RLC reset: allowed={d} phase={s} control={x}",
+                .{ @intFromBool(native_start.flow.engines.allow_rlc_reset), @tagName(native_start.flow.engines.rlc_reset), native_start.flow.engines.rlc_reset_sample });
             if (native_start.flow.phase == .cleanup_parked or native_start.flow.phase == .retained) {
                 const park = &native_start.flow.engines;
                 log("AMDGPU recovery park: sampled={x} polls={d} cp={x} mec={x} rlc={x} sdma={x}/{x}/{x}/{x}",
@@ -403,8 +419,9 @@ fn recoverNative() bool {
     if (sdma_runtime.closed and sdma_runtime.memory == &memory_runtime and sdma_runtime.gc_stop.confirmed)
         native_start.flow.cleanup_recheck = true;
     step = "firmware-quiesce"; if (!native_start.quiesce()) return false;
-    step = "scanout-restore";
+    step = "scanout-confirm";
     if (native_start.self_address != 0) display_output.confirmRestore() catch return false;
+    step = "scanout-reset-retire";
     if (!display_output.retireReset()) return false;
     step = "native-close"; if (!native_start.close() or !display_output.closeMetadata()) return false;
     step = "memory-close";

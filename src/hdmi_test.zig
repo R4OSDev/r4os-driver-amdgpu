@@ -41,6 +41,12 @@ const Native = struct {
         if (offset % 4 != 0 or offset / 4 >= words.len) return -1;
         const index = offset / 4;
         out.* = words[index];
+        // External hotplug stimulus drives both raw and controller views in
+        // this integration fixture; panel_test independently varies them.
+        inline for (.{ "HPD0_DC_HPD_INT_STATUS", "HPD1_DC_HPD_INT_STATUS", "HPD2_DC_HPD_INT_STATUS", "HPD3_DC_HPD_INT_STATUS" }, 0..) |name, source| {
+            if (index == reg(name)) out.* = if (words[reg("DC_GPIO_HPD_Y")] & (@as(u32, 1) << (source * 8)) != 0)
+                hw.HPD0_DC_HPD_INT_STATUS__DC_HPD_SENSE_DELAYED_MASK else 0;
+        }
         if (index == reg("DP_AUX0_AUX_SW_DATA") and words[index] & hw.DP_AUX0_AUX_SW_DATA__AUX_SW_DATA_RW_MASK != 0) {
             const value: u32 = if (reply_at < reply_count) reply[reply_at] else 0;
             reply_at += 1;

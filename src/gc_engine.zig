@@ -329,23 +329,41 @@ pub const Owner = struct {
             }
         }
         if (self.phase == .unmap_wait) {
-            _ = try self.deadline.check(io.nowNs());
             try io.write(r.GRBM_GFX_CNTL, Queue.compute.bank());
             const active = try c.read(io, r.CP_HQD_ACTIVE); try io.write(r.GRBM_GFX_CNTL, self.saved_bank);
-            if (active & 1 != 0) return false;
+            if (active & 1 != 0) {
+                _ = try self.deadline.check(io.nowNs());
+                return false;
+            }
+            // Owner scheduling may observe a completed dequeue after its
+            // deadline. The physical inactive HQD is still valid stop proof.
+            // KIQ dequeue is a new bounded operation with its own interval.
             self.compute_mapped = false; self.phase = .kiq_wait;
+            try self.deadline.start(io.nowNs(), 500_000_000, 0);
         }
         if (self.phase == .kiq_wait) {
-            _ = try self.deadline.check(io.nowNs());
             if (self.kiq_live) {
                 try io.write(r.GRBM_GFX_CNTL, Queue.kiq.bank());
                 // Preparation may fail before MEC ever leaves the original
                 // confirmed HALT state. In that case proceed directly
                 // to the idle proof; no instruction could dequeue the HQD.
                 const halted = try c.read(io, r.CP_MEC_CNTL) & @import("start_engines.zig").mec_halt_mask == @import("start_engines.zig").mec_halt_mask;
-                if (!halted and !self.kiq_dequeue) { self.kiq_dequeue = true; try io.write(r.CP_HQD_DEQUEUE_REQUEST, 1); }
-                const active = try c.read(io, r.CP_HQD_ACTIVE); try io.write(r.GRBM_GFX_CNTL, self.saved_bank);
-                if (!halted and active & 1 != 0) return false;
+                var active = try c.read(io, r.CP_HQD_ACTIVE);
+                if (!halted and active & 1 != 0 and !self.kiq_dequeue) {
+                    // Do not issue a new request after expiry. Already
+                    // inactive hardware below needs no further request.
+                    try io.write(r.GRBM_GFX_CNTL, self.saved_bank);
+                    _ = try self.deadline.check(io.nowNs());
+                    try io.write(r.GRBM_GFX_CNTL, Queue.kiq.bank());
+                    self.kiq_dequeue = true;
+                    try io.write(r.CP_HQD_DEQUEUE_REQUEST, 1);
+                    active = try c.read(io, r.CP_HQD_ACTIVE);
+                }
+                try io.write(r.GRBM_GFX_CNTL, self.saved_bank);
+                if (!halted and active & 1 != 0) {
+                    _ = try self.deadline.check(io.nowNs());
+                    return false;
+                }
                 self.kiq_live = false;
             }
             self.park.include_sdma = false; try self.park.begin(io); self.phase = .park;

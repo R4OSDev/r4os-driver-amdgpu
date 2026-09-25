@@ -32,12 +32,19 @@ int r4dcn_init(void *storage,size_t bytes,const struct r4dcn_io *io,const struct
  d->soc.socclk=limits->soc_khz/1000.0f;
  d->dc.debug.min_disp_clk_khz=100000;d->dc.debug.optimized_watermark=true;
  d->dc.debug.pipe_split_policy=MPC_SPLIT_AVOID;d->dc.debug.disable_dmcu=true;
- d->pool.pipe_count=d->limits.pipe_count;d->pool.timing_generator_count=d->limits.pipe_count;
+ d->pool.pipe_count=d->limits.pipe_count;d->pool.timing_generator_count=d->limits.pipe_count;d->pool.mpcc_count=d->limits.pipe_count;
  d->pool.ref_clocks.dchub_ref_clock_inKhz=limits->ref_khz;
  d->pool.hubbub=&d->hubbub.base;d->pool.mpc=&d->mpc.base;
  hubbub1_construct(&d->hubbub.base,&d->ctx,&hubbub_reg,&hubbub_shift,&hubbub_mask);
- /* The shared MPC still has four slots in the original Raven2 constructor. */
- dcn10_mpc_construct(&d->mpc,&d->ctx,&mpc_regs,&mpc_shift,&mpc_mask,R4DCN_PIPES);
+ /* Raven2's resource caps and init_pipes admit three physical MPCC/OPP
+  * instances even though the upstream constructor has four metadata slots.
+  * The measured fourth TOP_SEL is absent. Bound original MPC loops and its
+  * sparse output-mux table to the admitted hardware, not array capacity. */
+ d->mpc_registers=mpc_regs;
+ for(unsigned i=d->limits.pipe_count;i<MAX_OPP;i++) {
+  d->mpc_registers.MUX[i]=0;d->mpc_registers.CUR[i]=0;
+ }
+ dcn10_mpc_construct(&d->mpc,&d->ctx,&d->mpc_registers,&mpc_shift,&mpc_mask,d->limits.pipe_count);
  for(unsigned i=0;i<d->limits.pipe_count;i++) {
   dcn10_hubp_construct(&d->hubps[i],&d->ctx,i,&hubp_regs[i],&hubp_shift,&hubp_mask);
   dpp1_construct(&d->dpps[i],&d->ctx,i,&tf_regs[i],&tf_shift,&tf_mask);
@@ -117,39 +124,87 @@ int r4dcn_prepare(void *storage,const struct r4dcn_mode *modes,uint32_t count,st
 static bool frontend_quiet(struct r4dcn *d,unsigned i) {
  return r4dcn_frontend_quiet(d,i,!(d->mask&(1u<<i)),NULL);
 }
+static void program_step(struct r4dcn *d,uint32_t step,uint32_t pipe) {
+ if(!d->fault) { d->program_diagnostic.step=step;d->program_diagnostic.pipe=pipe; }
+}
+static void disconnected_field(struct r4dcn *d,uint32_t address,uint32_t mask,uint32_t shift) {
+ if(d->fault)return;
+ uint32_t observed=dm_read_reg(&d->ctx,address);
+ if(d->fault || ((observed&mask)>>shift)==0xf)return;
+ d->fault=R4DCN_STATE;
+ if(!d->program_diagnostic.wait.valid)
+  d->program_diagnostic.wait=(struct r4dcn_wait_diagnostic){.valid=1,.address=address,
+   .shift=shift,.mask=mask,.expected=0xf,.observed=observed,.polls=1,
+   .line=__LINE__,.function="disconnected_field"};
+}
+static void mpc_disconnected(struct r4dcn *d,unsigned i) {
+ disconnected_field(d,mpc_regs.MPCC_TOP_SEL[i],mpc_mask.MPCC_TOP_SEL,mpc_shift.MPCC_TOP_SEL);
+ disconnected_field(d,mpc_regs.MPCC_BOT_SEL[i],mpc_mask.MPCC_BOT_SEL,mpc_shift.MPCC_BOT_SEL);
+ disconnected_field(d,mpc_regs.MPCC_OPP_ID[i],mpc_mask.MPCC_OPP_ID,mpc_shift.MPCC_OPP_ID);
+ disconnected_field(d,mpc_regs.MPCC_UPDATE_LOCK_SEL[i],mpc_mask.MPCC_UPDATE_LOCK_SEL,mpc_shift.MPCC_UPDATE_LOCK_SEL);
+ if(mpc_regs.MUX[i])disconnected_field(d,mpc_regs.MUX[i],mpc_mask.MPC_OUT_MUX,mpc_shift.MPC_OUT_MUX);
+}
+int r4dcn_copy_program_diagnostic(const void *storage,struct r4dcn_program_diagnostic *out) {
+ const struct r4dcn *d=storage;
+ if(!d || d->self!=(uintptr_t)d || !out)return R4DCN_INVALID;
+ *out=d->program_diagnostic;out->fault=d->fault;return 0;
+}
+static void program_hubp(struct r4dcn *d,unsigned i) {
+ struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct hubp *h=&d->hubps[i].base;
+ /* dcn10 update_dchubp_dpp requires both original setup stages. Calling
+  * requestor/deadline alone leaves BIOS prefetch and VREADY state behind.
+  * The caller has either stopped this TG or holds its update lock. */
+ h->funcs->hubp_setup(h,&p->dlg_regs,&p->ttu_regs,&p->rq_regs,&p->pipe_dlg_param);
+ if(!d->fault)h->funcs->hubp_setup_interdependent(h,&p->dlg_regs,&p->ttu_regs);
+}
 static void program_pipe(struct r4dcn *d,unsigned i) {
   struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct hubp *h=&d->hubps[i].base;
+  program_step(d,R4DCN_PROGRAM_CLOCKS,i);
   optc1_enable_optc_clock(&d->tgs[i].base,true);hubp1_clk_cntl(h,true);hubp1_vtg_sel(h,i);
   if(d->fault)return;
   const struct dc_clocks *clocks=&d->state.bw_ctx.bw.dcn.clk;
+  program_step(d,R4DCN_PROGRAM_DPP_CLOCK,i);
   dpp1_dppclk_control(&d->dpps[i].base,!d->fixed_disp_khz && clocks->dppclk_khz<=clocks->dispclk_khz/2,true);
   opp1_pipe_clock_control(&d->opps[i].base,true);
+  program_step(d,R4DCN_PROGRAM_TIMING,i);
   optc1_program_timing(&d->tgs[i].base,&p->stream->timing,p->pipe_dlg_param.vready_offset,p->pipe_dlg_param.vstartup_start,
    p->pipe_dlg_param.vupdate_offset,p->pipe_dlg_param.vupdate_width,0,p->stream->signal,false);
-  hubp1_program_requestor(h,&p->rq_regs);hubp1_program_deadline(h,&p->dlg_regs,&p->ttu_regs);
+  program_step(d,R4DCN_PROGRAM_REQUESTOR,i);
+  program_hubp(d,i);
+  program_step(d,R4DCN_PROGRAM_SURFACE,i);
   hubp1_program_surface_config(h,p->plane_state->format,&p->plane_state->tiling_info,&p->plane_state->plane_size,
    ROTATION_ANGLE_0,&p->plane_state->dcc,false,0);
+  program_step(d,R4DCN_PROGRAM_VIEWPORT,i);
   min_set_viewport(h,&p->plane_res.scl_data.viewport,&p->plane_res.scl_data.viewport_c);
+  program_step(d,R4DCN_PROGRAM_DPP_BYPASS,i);
   d->dpps[i].base.funcs->dpp_full_bypass(&d->dpps[i].base);
   /* Original bypass assumes ARGB8888. Keep CM bypass, set the actual CNVC format. */
+  program_step(d,R4DCN_PROGRAM_CNVC,i);
   dpp1_cnv_setup(&d->dpps[i].base,p->plane_state->format,0,(struct dc_csc_transform){0},COLOR_SPACE_SRGB,NULL);
+  program_step(d,R4DCN_PROGRAM_SCALER,i);
   dpp1_dscl_set_scaler_manual_scale(&d->dpps[i].base,&p->plane_res.scl_data);
   struct mpc_tree *tree=&d->opps[i].base.mpc_tree_params;
   *tree=(struct mpc_tree){.opp_id=i};
   struct mpcc_blnd_cfg blend={.alpha_mode=MPCC_ALPHA_BLEND_MODE_GLOBAL_ALPHA,.global_alpha=255,.global_gain=255};
   struct mpcc_sm_cfg stereo={0};
+  program_step(d,R4DCN_PROGRAM_MPC_INSERT,i);
   if(!mpc1_insert_plane(&d->mpc.base,tree,&blend,&stereo,NULL,i,i))d->fault=R4DCN_STATE;
+  program_step(d,R4DCN_PROGRAM_MPC_COLOR,i);
   mpc1_set_bg_color(&d->mpc.base,&blend.black_color,i);
   struct bit_depth_reduction_params depth={0};
   depth.flags.TRUNCATE_ENABLED=p->stream->timing.display_color_depth!=COLOR_DEPTH_101010;depth.flags.TRUNCATE_DEPTH=p->stream->timing.display_color_depth==COLOR_DEPTH_666?0:1;
   struct clamping_and_pixel_encoding_params clamp={.clamping_level=CLAMPING_FULL_RANGE,.pixel_encoding=PIXEL_ENCODING_RGB};
+  program_step(d,R4DCN_PROGRAM_FORMAT,i);
   opp1_program_fmt(&d->opps[i].base,&depth,&clamp);
+  program_step(d,R4DCN_PROGRAM_EXPANSION,i);
   opp1_set_dyn_expansion(&d->opps[i].base,COLOR_SPACE_SRGB,p->stream->timing.display_color_depth,p->stream->signal);
+  program_step(d,R4DCN_PROGRAM_ADDRESS,i);
   if(!hubp1_program_surface_flip_and_addr(h,&p->plane_state->address,true))d->fault=R4DCN_IO;
  }
 int r4dcn_program(void *storage) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(!d->prepared || d->programmed || d->fault) { r4dcn_leave(d);return R4DCN_STATE; }
+ program_step(d,R4DCN_PROGRAM_ADMISSION,UINT32_MAX);
  /* Watermarks and MPC are shared. Selected pipes must be stopped and blank;
   * unused pipes may instead be confirmed fully power-gated. */
  for(unsigned i=0;i<d->limits.pipe_count;i++) {
@@ -157,10 +212,20 @@ int r4dcn_program(void *storage) {
  }
  if(result || d->fault) { r4dcn_leave(d);return d->fault?d->fault:result; }
  d->programmed=1;
+ program_step(d,R4DCN_PROGRAM_MPC_INIT,UINT32_MAX);
  mpc1_mpc_init(&d->mpc.base);
- for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)mpc1_assert_idle_mpcc(&d->mpc.base,i);
+ /* dcn10_wait_for_mpcc_disconnect waits for MPCC_IDLE only while the TG is
+  * enabled; dcn10_plane_atomic_disconnect documents that a disabled OTG can
+  * never assert it. All our TGs were admitted stopped above. Confirm the
+  * complete shared crossbar disconnect instead, before programming a pipe.
+  * This is not a receipt for active scanout or stopped memory requests. */
+ for(unsigned i=0;i<(unsigned)d->mpc.num_mpcc && !d->fault;i++) {
+  program_step(d,R4DCN_PROGRAM_MPC_DISCONNECTED,i);mpc_disconnected(d,i);
+ }
+ program_step(d,R4DCN_PROGRAM_WATERMARKS,UINT32_MAX);
  hubbub1_program_watermarks(&d->hubbub.base,&d->state.bw_ctx.bw.dcn.watermarks,d->limits.ref_khz/1000,false);
  for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(d->mask&(1u<<i))program_pipe(d,i);
+ program_step(d,R4DCN_PROGRAM_READY,UINT32_MAX);
  r4dcn_leave(d);return d->fault;
 }
 /* No clock change while a peer is scanning. Fixed full-rate DPP is a
@@ -175,7 +240,11 @@ int r4dcn_fixed_clock(void *storage,uint32_t khz) {
 static void unlink_pipe(struct r4dcn *d,unsigned i) {
  struct mpc_tree *tree=&d->opps[i].base.mpc_tree_params;
  if(tree->opp_list)mpc1_remove_mpcc(&d->mpc.base,tree,tree->opp_list);
- mpc1_assert_idle_mpcc(&d->mpc.base,i);
+ /* Both callers admit this TG stopped and its selected HUBP blank. Like
+  * initial programming, this cannot obtain a live-TG MPCC_IDLE receipt.
+  * Confirm every original disconnect write, without touching a live peer.
+  * The separate scanout-stop owner still proves DMA retirement. */
+ mpc_disconnected(d,i);
 }
 int r4dcn_remove(void *storage,uint32_t pipe) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
@@ -212,6 +281,9 @@ int r4dcn_update(void *storage,const void *candidate,uint32_t pipe) {
  }
  if(result || d->fault) { r4dcn_leave(d);return d->fault?d->fault:result; }
  if(d->mask&(1u<<pipe))unlink_pipe(d,pipe);
+ /* A partial disconnect retains the old plan and all references. Do not
+  * replace cached modes or program peer watermarks after that failure. */
+ if(d->fault) { result=d->fault;r4dcn_leave(d);return result; }
  /* Copy only calculated values, never candidate-context pointers or MPC
   * state. The peer's active plane, address and cursor are untouched. */
  d->mask&=~(1u<<pipe);d->count=0;
@@ -229,8 +301,7 @@ int r4dcn_update(void *storage,const void *candidate,uint32_t pipe) {
  for(unsigned i=0;i<d->limits.pipe_count && !d->fault;i++)if(i!=pipe && (d->running&(1u<<i))) {
   struct pipe_ctx *p=&d->state.res_ctx.pipe_ctx[i];struct timing_generator *tg=&d->tgs[i].base;
   d->tg_locked|=1u<<i;optc1_lock(tg);
-  hubp1_program_requestor(&d->hubps[i].base,&p->rq_regs);
-  hubp1_program_deadline(&d->hubps[i].base,&p->dlg_regs,&p->ttu_regs);
+  program_hubp(d,i);
   tg->funcs->program_global_sync(tg,p->pipe_dlg_param.vready_offset,p->pipe_dlg_param.vstartup_start,
    p->pipe_dlg_param.vupdate_offset,p->pipe_dlg_param.vupdate_width,0);
   optc1_unlock(tg);if(!d->fault)d->tg_locked&=~(1u<<i);

@@ -90,6 +90,8 @@ pub const Owner = struct {
     frame: u64 = 0,
     raw_frame: u32 = 0,
     last_ns: u64 = 0,
+    last_native_result: c_int = 0,
+    last_sample: ?c.struct_r4dcn_scanout_sample = null,
     pub fn bind(self: *Owner, storage: *anyopaque, epoch: Epoch, mode: c.struct_r4dcn_mode, first: Image) Error!void {
         if (self.self_address != 0) return error.Busy;
         if (!epoch.valid() or mode.pipe >= 4 or mode.width < 16 or mode.height < 16 or mode.width > 4096 or mode.height > 4096 or
@@ -98,11 +100,13 @@ pub const Owner = struct {
             !first.valid(@as(u64, mode.pitch_bytes) * mode.height) or first.address != mode.mc_address or first.bytes != mode.buffer_bytes)
             return error.Invalid;
         var sample: c.struct_r4dcn_scanout_sample = undefined;
-        try code(c.r4dcn_scanout_sample(storage, mode.pipe, &sample));
+        self.last_native_result = c.r4dcn_scanout_sample(storage, mode.pipe, &sample);
+        try code(self.last_native_result);
+        self.last_sample = sample;
         if (sample.running != 0 or sample.locked != 0 or sample.blank != 1 or sample.frame > 0xffffff or sample.end_ns < sample.begin_ns or
             sample.requested_address != first.address) return error.State;
         self.* = .{ .self_address = @intFromPtr(self), .storage = storage, .epoch = epoch, .mode = mode,
-            .current = first, .raw_frame = sample.frame, .last_ns = sample.end_ns, .phase = .ready };
+            .current = first, .raw_frame = sample.frame, .last_ns = sample.end_ns, .phase = .ready, .last_sample = sample };
     }
     fn identity(self: *const Owner, epoch: Epoch) Error!void {
         if (self.self_address != @intFromPtr(self) or !std.meta.eql(self.epoch, epoch)) return error.Stale;
@@ -119,16 +123,27 @@ pub const Owner = struct {
     }
     fn reserve(self: *Owner, sequence: u64, image: Image, deadline: u64) Error!Pending {
         if (self.pending != null or sequence <= self.sequence or sequence == std.math.maxInt(u64)) return error.Busy;
-        if (!image.valid(@as(u64, self.mode.pitch_bytes) * self.mode.height) or deadline <= self.last_ns or
-            deadline - self.last_ns > 2 * std.time.ns_per_s) return error.Invalid;
+        if (!image.valid(@as(u64, self.mode.pitch_bytes) * self.mode.height) or deadline <= self.last_ns) return error.Invalid;
         const sample = self.observe() catch |err| {
             if (err != error.Busy) self.phase = .retained;
             return err;
         };
-        if (sample.underflow != 0 or (self.phase == .active and (sample.running == 0 or sample.blank != 0))) {
+        if (self.phase == .ready) {
+            // A stopped, blank frontend may retain a boot/blanking underflow.
+            // Native enable clears and verifies both status sources before
+            // starting the TG. A fresh address/frame receipt is still required.
+            if (sample.running != 0 or sample.blank != 1) {
+                self.phase = .retained; return error.Lost;
+            }
+            if (sample.locked != 0) return error.Busy;
+        } else if (sample.underflow != 0 or sample.running == 0 or (sample.blank != 0 and sample.vblank_only == 0)) {
             self.phase = .retained; return error.Lost;
         }
         if (sample.end_ns >= deadline) return error.Timeout;
+        // last_ns may belong to a long-idle image; health uses its own sample
+        // clock. Bound this new transaction from the fresh observation.
+        if (deadline - sample.end_ns > 2 * std.time.ns_per_s) return error.Invalid;
+        if (self.phase == .active and sample.vblank_only != 0) return error.Busy;
         return .{ .sequence = sequence, .image = image, .previous = self.current, .frame = self.frame,
             .submitted_ns = sample.end_ns, .deadline_ns = deadline };
     }
@@ -140,7 +155,8 @@ pub const Owner = struct {
         self.pending.?.baseline_valid = false;
         // Arm before the first hardware write. Even a partial C call must
         // retain the scanout reference and the transaction's restore context.
-        code(c.r4dcn_scanout_enable(self.storage, self.mode.pipe)) catch |err| {
+        self.last_native_result = c.r4dcn_scanout_enable(self.storage, self.mode.pipe);
+        code(self.last_native_result) catch |err| {
             self.phase = .retained; return err;
         };
         self.sequence = sequence;
@@ -174,6 +190,7 @@ pub const Owner = struct {
         const work = try self.reserve(sequence, image, deadline);
         self.pending = work; self.phase = .flipping;
         const result = c.r4dcn_scanout_flip(self.storage, self.mode.pipe, image.address, image.bytes);
+        self.last_native_result = result;
         if (result == c.R4DCN_BUSY or result == c.R4DCN_INVALID) {
             // These two C results are guaranteed to precede all flip writes.
             self.pending = null; self.phase = .active; try code(result);
@@ -183,7 +200,9 @@ pub const Owner = struct {
     }
     fn observe(self: *Owner) Error!c.struct_r4dcn_scanout_sample {
         var sample: c.struct_r4dcn_scanout_sample = undefined;
-        try code(c.r4dcn_scanout_sample(self.storage, self.mode.pipe, &sample));
+        self.last_native_result = c.r4dcn_scanout_sample(self.storage, self.mode.pipe, &sample);
+        try code(self.last_native_result);
+        self.last_sample = sample;
         if (sample.frame > 0xffffff or sample.begin_ns < self.last_ns or sample.end_ns < sample.begin_ns) return error.Stale;
         // Enabling a previously stopped TG starts a new counter domain. The
         // first running sample establishes its baseline; it completes nothing.
@@ -239,14 +258,17 @@ pub const Owner = struct {
         if (self.phase != .active or self.cursor_pending != null or sequence == std.math.maxInt(u64) or
             (if (restoring) !self.resume_cursor or sequence != self.cursor_sequence else sequence <= self.cursor_sequence)) return error.Busy;
         const native = try update.native();
-        if (deadline <= self.last_ns or deadline - self.last_ns > 2 * std.time.ns_per_s) return error.Invalid;
+        if (deadline <= self.last_ns) return error.Invalid;
         const sample = self.observe() catch |err| { if (err != error.Busy) self.phase = .retained; return err; };
-        if (sample.underflow != 0 or sample.running == 0 or sample.blank != 0) { self.phase = .retained; return error.Lost; }
+        if (sample.underflow != 0 or sample.running == 0 or (sample.blank != 0 and sample.vblank_only == 0)) { self.phase = .retained; return error.Lost; }
         if (sample.end_ns >= deadline) return error.Timeout;
+        if (deadline - sample.end_ns > 2 * std.time.ns_per_s) return error.Invalid;
+        if (sample.vblank_only != 0) return error.Busy;
         self.cursor_pending = .{ .sequence = sequence, .update = update, .previous = self.cursor_current,
             .frame = self.frame, .submitted_ns = sample.end_ns, .deadline_ns = deadline };
         self.phase = .cursor;
         const result = c.r4dcn_scanout_cursor(self.storage, self.mode.pipe, &native);
+        self.last_native_result = result;
         if (result == c.R4DCN_BUSY or result == c.R4DCN_INVALID) {
             self.cursor_pending = null; self.phase = .active; try code(result);
         }
@@ -263,9 +285,10 @@ pub const Owner = struct {
             if (err == error.Busy) return null;
             self.phase = .retained; return err;
         };
-        if (sample.end_ns >= work.deadline_ns or sample.underflow != 0 or sample.running == 0 or sample.blank != 0) {
+        if (sample.end_ns >= work.deadline_ns or sample.underflow != 0 or sample.running == 0 or (sample.blank != 0 and sample.vblank_only == 0)) {
             self.phase = .retained; return if (sample.end_ns >= work.deadline_ns) error.Timeout else error.Lost;
         }
+        if (sample.vblank_only != 0) return null;
         // Cursor registers are shadowed; register equality alone cannot retire
         // its previous image. Require an unlocked, later physical OTG frame.
         if (sample.locked != 0 or self.frame <= work.frame or sample.begin_ns <= work.submitted_ns or

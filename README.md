@@ -1,17 +1,24 @@
 ﻿# AMDGPU
 
-Version 0.1.64 retains the Picasso display, rendering, compute, video,
+Version 0.1.95 retains the Picasso display, rendering, compute, video,
 power and recovery integration prepared through R4OS 0.80.38.
 The target is PCI1002:15D8. Raven2 passive discovery is implemented. Native
 qualification is now admitted only for the measured Lenovo17AA:3808,PCI C4,
 ASIC9; other Raven2 boards remain passive pending their DCN/board audit.
 The measured Raven2 path includes its three-pipe DCN1.01 register map,
-ATOM clock/panel fixes and bounded native cleanup diagnostics. The latest
-physical trial passes inherited scanout admission and GC fence prerequisites,
-then stops at the pixel-clock transition; display-close still retains native
-resources. Native output and successful native shutdown remain unqualified.
-R4OS 0.80.39 is an interim prerelease with AMDGPU explicitly passive by
-default. Its hardware roadmap remains open.
+ATOM clock/panel fixes, real native desktop output and bounded native cleanup.
+Kernel 0.1.221, R4GFX/R4VK 0.1.29 and R4GL 0.1.17 form the measured baseline.
+Exact MMIO-window retirement fixes the observed shutdown ownership cycle;
+thirteen consecutive automatic reboot returns were recorded through the
+Desktop83/AMDGPU95 comparison. This is not a general reliability guarantee.
+Two bounded desktop measurements reached 54.473 and 48.486 visible hardware
+receipts/s with stable BO ownership. Vulkan pixel/compute and the corrected
+Zink descriptor-memory probe also passed their specific oracles.
+The user discarded the complete 0.80.39 hardware-qualification subversion.
+Visual, HDMI/audio and broad API qualification remain unconfirmed. Follow-up
+0.80.40-42 contains bounded desktop optimizations, not a replacement full
+hardware qualification. Previously published 0.80.39 images remain passive
+by default; source promotion does not change that boot policy.
 Version 0.1.26 reports the failing VBIOS source stage, specific length
 checks and bounded ROM/table prefixes for OEM format diagnosis.
 Diagnostics now identify the failing ATOM stage, table index and offset;
@@ -55,7 +62,9 @@ Raven2 selects eleven Raven2 files and the original shared Raven DMCU;
 Picasso selects its own twelve-file profile.
 `mode=native` on an admitted board starts an asynchronous owner with real firmware, engine and
 display prerequisites and bounded restoration. `IMAGE_SCOPE=none` keeps the
-in-progress driver out of normal profiles until package integration. Physical laptop validation belongs exclusively to 0.80.39.
+in-progress driver out of normal profiles until package integration. The
+full hardware qualification in 0.80.39 was discarded; any necessary short
+combined optimization measurement belongs to 0.80.42.
 Host fixtures verify source formats and ownership, not execution on Picasso.
 
 The private resident native pump composes:
@@ -371,7 +380,8 @@ active display path; full SDMA power-down belongs to native shutdown.
 Display DCF/SOC/Fabric floors remain the previously validated joint DML
 point. MMHUB power gating, voltage/overdrive and arbitrary laptop limits are
 not enabled. Source/model tests do not establish real temperature, battery
-life or firmware/session retention; laptop qualification is 0.80.39.
+life or firmware/session retention; the full laptop qualification was
+discarded with 0.80.39 and is not implied by these checks.
 See Docs/Drivers/AMDEnergie08034.txt/.json.
 
 ## Raven2 RLC comparison candidate (0.1.43)

@@ -183,19 +183,18 @@ pub const Owner = struct {
         if (core.phase != .programmed or !std.meta.eql(life.epoch, self.epoch)) return error.Stale;
         const deadline = self.input.?.deadline_ns;
         if (self.engine.?.memory.?.registers.nowNs() >= deadline) return error.Deadline;
+        // Consume at most one exact retired operation, then immediately
+        // launch its successor. Pure bookkeeping must not cost another queue
+        // worker turn. Busy hardware still returns to the existing wait path.
         switch (self.phase) {
             .copying => { self.rendered +|= 1; self.sequence += 1; self.phase = .flip_retry; },
-            .flip_retry => {
-                try core.scanoutCommand(.{ .operation = .flip, .epoch = self.epoch, .sequence = self.sequence,
-                    .image = try self.frames[self.back].scanout(), .deadline_ns = @min(deadline, self.engine.?.memory.?.registers.nowNs() + std.time.ns_per_s) });
-                self.phase = .flip_wait;
-            },
             .flip_wait => {
                 if (core.result != 0 and core.result != dc.c.R4DCN_BUSY) return error.Unconfirmed;
-                if (core.result == dc.c.R4DCN_BUSY and life.phase == .active and life.pending == null) self.phase = .flip_retry
-                else { self.submitted +|= 1; self.phase = .sample_retry; }
+                if (core.result == dc.c.R4DCN_BUSY and life.phase == .active and life.pending == null) {
+                    self.phase = .flip_retry; return false;
+                }
+                self.submitted +|= 1; self.phase = .sample_retry;
             },
-            .sample_retry => { try core.scanoutCommand(.{ .operation = .sample, .epoch = self.epoch }); self.phase = .sample_wait; },
             .sample_wait => {
                 if (core.result != 0 and core.result != dc.c.R4DCN_BUSY) return error.Unconfirmed;
                 if (core.result == dc.c.R4DCN_BUSY) { self.phase = .sample_retry; return false; }
@@ -206,11 +205,21 @@ pub const Owner = struct {
                 if (receipt.previous != null) self.released +|= 1;
                 self.phase = .ack_retry;
             },
+            .ack_wait => { if (core.result != 0) return error.Unconfirmed; return true; },
+            .flip_retry, .sample_retry, .ack_retry => {},
+            else => return error.State,
+        }
+        switch (self.phase) {
+            .flip_retry => {
+                try core.scanoutCommand(.{ .operation = .flip, .epoch = self.epoch, .sequence = self.sequence,
+                    .image = try self.frames[self.back].scanout(), .deadline_ns = @min(deadline, self.engine.?.memory.?.registers.nowNs() + std.time.ns_per_s) });
+                self.phase = .flip_wait;
+            },
+            .sample_retry => { try core.scanoutCommand(.{ .operation = .sample, .epoch = self.epoch }); self.phase = .sample_wait; },
             .ack_retry => {
                 try core.scanoutCommand(.{ .operation = .acknowledge, .epoch = self.epoch, .sequence = self.sequence });
                 self.phase = .ack_wait;
             },
-            .ack_wait => { if (core.result != 0) return error.Unconfirmed; return true; },
             else => return error.State,
         }
         return false;

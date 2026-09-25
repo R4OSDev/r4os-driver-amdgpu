@@ -18,17 +18,35 @@ pub const Owner = struct {
         var value: a.DisplayPresentationStats = .{
             .backend = output.engine.?.binding, .head_id = output.mode.pipe, .display_generation = output.epoch.display,
             .sequence = if (self.last) |last| last.sequence else 0,
-            .flags = a.display_presentation_flag_available | @as(u32, if (failed) a.display_presentation_flag_lost else 0),
+            .flags = a.display_presentation_flag_available | a.display_presentation_flag_polled |
+                @as(u32, if (failed) a.display_presentation_flag_lost else 0),
             .buffer_count = 2, .acquired_count = p.acquired, .rendered_count = p.rendered, .submitted_count = p.submitted,
             .visible_count = p.visible, .released_count = p.released, .rejected_count = p.rejected,
-            .visible_sequence = receipt.sequence, .submitted_ns = receipt.submitted_ns, .visible_ns = receipt.observed_ns,
-            .released_ns = if (receipt.previous != null) receipt.observed_ns else 0,
-            .source_timeline = p.source_fence.timeline, .source_point = p.source_fence.point,
             .pending = switch (p.phase) { .copying => a.display_presentation_pending_copy,
                 .flip_retry => a.display_presentation_pending_ready,
                 .flip_wait, .sample_retry, .sample_wait, .ack_retry, .ack_wait => a.display_presentation_pending_flip, else => 0 },
         };
-        if (!self.disabled and (self.last == null or !std.meta.eql(value, self.last.?))) {
+        var receipt_ready = true;
+        if (p.visible != 0) {
+            // Boot/mode receipts observe scanout but are not submitted images.
+            // The present owner attaches a source fence only after the exact
+            // address and a later hardware frame have both been observed.
+            value.visible_sequence = p.visible;
+            if (p.source_fence.timeline != 0 and p.source_fence.point != 0 and p.receipt != null) {
+                value.source_timeline = p.source_fence.timeline; value.source_point = p.source_fence.point;
+                value.submitted_ns = p.receipt.?.submitted_ns; value.visible_ns = p.receipt.?.observed_ns;
+                value.released_ns = if (p.receipt.?.previous != null) p.receipt.?.observed_ns else 0;
+            } else if (self.last) |last| {
+                // A mode-only rebind clears the present source. Preserve the
+                // last published image receipt, never pair its old fence with
+                // the new mode observation. A new submitted image replaces it.
+                receipt_ready = last.visible_count == p.visible and last.display_generation == value.display_generation and
+                    std.meta.eql(last.backend, value.backend) and last.head_id == value.head_id;
+                value.source_timeline = last.source_timeline; value.source_point = last.source_point;
+                value.submitted_ns = last.submitted_ns; value.visible_ns = last.visible_ns; value.released_ns = last.released_ns;
+            } else receipt_ready = false;
+        }
+        if (receipt_ready and !self.disabled and (self.last == null or !std.meta.eql(value, self.last.?))) {
             if (value.sequence == std.math.maxInt(u64)) self.disabled = true else {
                 value.sequence += 1;
                 const status = output.display.?.presentationStats(&value);

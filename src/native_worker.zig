@@ -44,6 +44,9 @@ pub fn check() !void {
             out.* = .{ .state = a.driver_work_state_completed, .result = work_result }; return 0;
         }
         fn releaseWork(handle: u32) callconv(.c) i32 { std.debug.assert(handle == 19); return 0; }
+        fn waitWork(handle: u32, ticks: u64, out: *i32) callconv(.c) i32 {
+            std.debug.assert(!in_work and handle == 19 and ticks == 1); out.* = work_result; return 0;
+        }
         fn log(_: [*:0]const u8) callconv(.c) void {}
         fn query(out: *a.DriverThreadApi) callconv(.c) i32 {
             out.* = .{ .start = @intFromPtr(&start), .join = @intFromPtr(&join), .release = @intFromPtr(&release),
@@ -93,6 +96,7 @@ pub fn check() !void {
             api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
             api.thread_query = query; api.resource_query = resources; api.timer_frequency = frequency; api.log_error = log;
             api.driver_work_submit_owned = submit; api.driver_completion_status = status; api.driver_completion_release = releaseWork;
+            api.driver_completion_wait = waitWork;
             in_work = false; work_result = 0;
         }
         fn run() void {
@@ -173,7 +177,7 @@ pub const Owner = struct {
         const frequency = ctx.timerFrequency();
         if (frequency == 0 or threads.table.sleep_ticks == 0) return error.Unsupported;
         self.* = .{ .self_address = @intFromPtr(self), .ctx = ctx.*, .threads = threads, .clock = clock, .hooks = hooks,
-            .output = output, .interval_ticks = @max(@as(u64, 1), (@as(u64, frequency) + 99) / 100) };
+            .output = output, .interval_ticks = @import("shutdown_drain.zig").intervalTicks(frequency) };
         if (threads.start(worker, self.self_address, a.driver_thread_flag_parallel, &self.thread) != 0 or self.thread == 0) return error.Capacity;
     }
     pub fn requestStop(self: *Owner) void { if (self.self_address != 0) @atomicStore(u32, &self.stop, 1, .release); }

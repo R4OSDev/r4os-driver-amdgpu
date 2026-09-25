@@ -18,6 +18,10 @@ const F = struct {
     var invalid_address = false;
     var restore_reply: u32 = 0;
     var mixed_restore_reply = false;
+    var reset_writes: u32 = 0;
+    var reset_asserted_ns: u64 = 0;
+    var reset_clears_busy = true;
+    var reset_ignored = false;
     fn reset() !void { try resetFor(.fp5); }
     fn resetFor(socket: fw.Socket) !void {
         try resetProfile(.{ .socket = socket, .pci_revision = if (socket == .am4) 0xc8 else 0xc1 });
@@ -29,6 +33,7 @@ const F = struct {
         auto_smu = true; auto_psp = true; fail_write = 0; disconnected = false; invalid_address = false;
         restore_reply = 0;
         mixed_restore_reply = false;
+        reset_writes = 0; reset_asserted_ns = 0; reset_clears_busy = true; reset_ignored = false;
         view = try s.View.create(&arena, 0x100300000, 0x220300000);
         store.profile = profile; store.generation = 19; store.valid = true;
         for (fw.lock.firmware, 0..) |spec, i| {
@@ -52,6 +57,16 @@ const F = struct {
     pub fn read(_: *@This(), address: u32) c.Error!u32 { return if (disconnected) 0xffffffff else words[address / 4]; }
     pub fn write(_: *@This(), address: u32, value: u32) c.Error!void {
         writes += 1; if (writes == fail_write) return error.Invalid;
+        if (address == r.gc.GRBM_SOFT_RESET) {
+            reset_writes += 1;
+            // The recovery must isolate RLC: no CP/GFX or unrelated reset.
+            std.debug.assert((value ^ words[address / 4]) & ~r.gc.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK == 0);
+            if (reset_ignored) return;
+            if (value & r.gc.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK != 0) reset_asserted_ns = clock else {
+                std.debug.assert(reset_asserted_ns != 0 and clock - reset_asserted_ns >= 50_000);
+                if (reset_clears_busy) words[r.gc.GRBM_STATUS2 / 4] &= ~r.gc.GRBM_STATUS2__RLC_BUSY_MASK;
+            }
+        }
         words[address / 4] = value;
         // Hardware CP receipt from Native40; MEC models command bits that
         // do not persist, not a measured MEC sample (the CP check ran first).
@@ -180,6 +195,7 @@ test "Picasso PSP10 actual command ABI, original upload sections, bounded SMU10 
 }
 
 test "Picasso startup failures preserve outstanding mailbox, TMR and firmware ownership" {
+    try checkRavenCleanupReset();
     // Each execution HALT bit is still mandatory even if all command bits
     // have cleared. A missing bit must time out without admitting PSP work.
     var park_io: F = .{};
@@ -336,6 +352,80 @@ test "Picasso startup failures preserve outstanding mailbox, TMR and firmware ow
     F.disconnected = true; F.flow.abort(&io); try F.tick(&io);
     try t.expectError(error.Disconnected, F.tick(&io)); try t.expect(!F.flow.safeToRelease());
     F.disconnected = false; try F.close(&io);
+}
+
+fn prepareRavenCleanup(io: *F) !void {
+    try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 });
+    try F.begin(io); try F.until(io, .firmware_ready);
+    F.flow.cleanup_recheck = true;
+    F.flow.abort(io); try F.until(io, .cleanup_parked);
+    F.words[r.gc.GRBM_STATUS2 / 4] = 0x01000008; // measured post-GMC Raven2 value
+}
+fn checkRavenCleanupReset() !void {
+    var io: F = .{};
+    try prepareRavenCleanup(&io);
+    const commands = F.commands;
+    F.clock += 50_000; try F.flow.advance(&io);
+    try t.expectEqual(@as(u32, 1), F.reset_writes);
+    try t.expect(F.flow.phase == .cleanup_parked and !F.flow.safeToRelease() and F.commands == commands);
+    F.clock += 49_999; try F.flow.advance(&io);
+    try t.expectEqual(@as(u32, 1), F.reset_writes);
+    F.clock += 1; try F.flow.advance(&io);
+    try t.expectEqual(@as(u32, 2), F.reset_writes);
+    try t.expect(F.flow.phase == .cleanup_parked and F.commands == commands);
+    F.clock += 49_999; try F.flow.advance(&io);
+    try t.expect(F.flow.phase == .cleanup_parked and F.commands == commands);
+    F.clock += 1; try F.flow.advance(&io);
+    try t.expect(F.flow.phase == .cleanup_asd and !F.flow.safeToRelease());
+    try F.until(&io, .closed);
+    try t.expect(F.flow.safeToRelease() and F.reset_writes == 2);
+
+    // One RLC reset never overrides execution, pending DMA, or SERDES vetoes.
+    inline for (.{ .{ r.gc.CP_ME_CNTL, 0 }, .{ r.gc.CP_MEC_CNTL, 0 },
+        .{ r.gc.RLC_CNTL, r.gc.RLC_CNTL__RLC_ENABLE_F32_MASK }, .{ r.sdma.SDMA0_F32_CNTL, 0 },
+        .{ r.gc.GRBM_STATUS, r.gc.GRBM_STATUS__GUI_ACTIVE_MASK },
+        .{ r.gc.GRBM_STATUS2, r.gc.GRBM_STATUS2__RLC_BUSY_MASK | r.gc.GRBM_STATUS2__RLC_RQ_PENDING_MASK },
+        .{ r.gc.RLC_SERDES_CU_MASTER_BUSY, 1 }, .{ r.gc.RLC_SERDES_NONCU_MASTER_BUSY, r.gc.RLC_SERDES_NONCU_MASTER_BUSY__GC_MASTER_BUSY_MASK } }) |veto| {
+        try prepareRavenCleanup(&io); F.words[veto[0] / 4] = veto[1];
+        try F.tick(&io); try t.expect(F.reset_writes == 0 and !F.flow.safeToRelease());
+        F.clock += 500_000_000;
+        try t.expectError(error.Deadline, F.flow.advance(&io));
+        try t.expect(F.flow.phase == .retained and F.flow.psp.asd_ready and F.flow.psp.tmr_ready);
+    }
+    // A reset that does not clear BUSY is not a receipt and is not repeated.
+    try prepareRavenCleanup(&io); F.reset_clears_busy = false;
+    for (0..5) |_| try F.tick(&io);
+    try t.expect(F.reset_writes == 2 and F.flow.phase == .cleanup_parked and !F.flow.safeToRelease());
+    F.clock += 500_000_000; try t.expectError(error.Deadline, F.flow.advance(&io));
+    try t.expect(F.flow.psp.asd_ready and F.flow.psp.tmr_ready and F.reset_writes == 2);
+    // Failed assertion/readback, failed release and clock regression retain.
+    for (0..4) |failure| {
+        try prepareRavenCleanup(&io);
+        if (failure == 0) F.fail_write = F.writes + 3; // two bank-selection writes precede reset
+        if (failure == 1) F.reset_ignored = true;
+        if (failure < 2) {
+            if (failure == 0) try t.expectError(error.Invalid, F.tick(&io)) else try t.expectError(error.Unconfirmed, F.tick(&io));
+        } else {
+            try F.tick(&io);
+            if (failure == 2) {
+                F.fail_write = F.writes + 1;
+                try t.expectError(error.Invalid, F.tick(&io));
+            } else {
+                F.clock -= 1;
+                try t.expectError(error.Deadline, F.flow.advance(&io));
+            }
+        }
+        try t.expect(F.flow.phase == .retained and !F.flow.safeToRelease() and F.flow.psp.tmr_ready and F.flow.psp.asd_ready);
+    }
+    // The fallback is restricted to Raven2 post-engine cleanup; startup stays
+    // non-destructive and another family's cleanup must still retain.
+    for ([_]bool{ false, true }) |picasso| {
+        if (picasso) { try F.reset(); try F.begin(&io); try F.until(&io, .firmware_ready); F.flow.cleanup_recheck = true; F.flow.abort(&io); try F.until(&io, .cleanup_parked); }
+        else { try F.resetProfile(.{ .family = .raven2, .socket = .fp5, .pci_revision = 0xc4 }); try F.begin(&io); try F.until(&io, .parked); }
+        F.words[r.gc.GRBM_STATUS2 / 4] = r.gc.GRBM_STATUS2__RLC_BUSY_MASK;
+        for (0..5) |_| try F.tick(&io);
+        try t.expect(F.reset_writes == 0 and !F.flow.safeToRelease());
+    }
 }
 
 test "Picasso boot display guard compares actual scanout, format, pitch and routing without register writes" {

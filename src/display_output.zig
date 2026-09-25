@@ -12,6 +12,7 @@ const present = @import("display_present.zig");
 const sdma = @import("sdma_jobs.zig");
 const start = @import("start_runtime.zig");
 const clocks = @import("display_clocks.zig");
+const bios = @import("bios.zig");
 const Outputs = @TypeOf(@as(r4os.r4dev.DriverContext, undefined).graphicsOutputs().?);
 pub const Phase = enum { empty, allocate, copy, publish_buffer, prepare_core, wait_core, bind_panel, wait_panel, bind_hdmi, wait_hdmi, commit_core, wait_commit,
     shadow, publication, prepare_common, bind_scanout, wait_bind, enable, wait_enable, stream, wait_stream, sample, wait_sample,
@@ -540,6 +541,48 @@ pub const Owner = struct {
         const core = self.core orelse return;
         // Task-owned snapshots are not read while that task can still run.
         if (core.thread != 0 or !core.joined) return;
+        if (core.action == .health_work) {
+            self.diagnostic("AMDGPU health: step={s} error={s} native={d} expected={x} epoch={d} frame={d} progress-ns={d}",
+                .{ @tagName(core.health_step), if (core.health_error) |err| @errorName(err) else "none", core.result,
+                core.health_expected_address, core.health_epoch, core.health_frame, core.health_progress });
+            if (core.health_sample) |sample| {
+                self.diagnostic("AMDGPU health sample: running={d} blank={d} locked={d} pending={d} underflow={d} hubp={d} optc={d} frame={d} position={d}/{d}",
+                    .{ sample.running, sample.blank, sample.locked, sample.pending, sample.underflow, sample.hubp_underflow, sample.optc_underflow, sample.frame, sample.hpos, sample.vpos });
+                self.diagnostic("AMDGPU health addresses: requested={x} inuse={x} time={d}/{d}",
+                    .{ sample.requested_address, sample.inuse_address, sample.begin_ns, sample.end_ns });
+                self.diagnostic("AMDGPU health blank sources: hubp-control={x} otg-blank-control={x} vblank-only={d}",
+                    .{ sample.hubp_control, sample.otg_blank_control, sample.vblank_only });
+            }
+            if (self.initial_receipt) |receipt| self.diagnostic("AMDGPU initial receipt: sequence={d} address={x} frame={d} time={d}/{d}",
+                .{ receipt.sequence, receipt.image.address, receipt.frame, receipt.submitted_ns, receipt.observed_ns });
+        }
+        if (core.action == .scanout_work) {
+            const life = core.scanoutFor(core.scanout_request.epoch);
+            self.diagnostic("AMDGPU scanout task: operation={s} phase={s} error={s} last-native={d}",
+                .{ @tagName(core.scanout_request.operation), @tagName(life.phase), if (core.scanout_error) |err| @errorName(err) else "none", life.last_native_result });
+            self.diagnostic("AMDGPU scanout request: sequence={d} current={d} deadline={d} last-sample={d} worker-now={d}",
+                .{core.scanout_request.sequence, life.sequence, core.scanout_request.deadline_ns, life.last_ns, self.last_time});
+            if (core.scanout_request.image) |image| self.diagnostic("AMDGPU scanout image: id={d} generation={d} reserved={d} address={x} bytes={d}",
+                .{image.reference.id, image.reference.generation, image.reference.reserved0, image.address, image.bytes});
+            if (life.last_sample) |sample| {
+                self.diagnostic("AMDGPU scanout last sample: running={d} blank={d} locked={d} pending={d} underflow={d} hubp={d} optc={d} frame={d} position={d}/{d}",
+                    .{ sample.running, sample.blank, sample.locked, sample.pending, sample.underflow, sample.hubp_underflow, sample.optc_underflow, sample.frame, sample.hpos, sample.vpos });
+                self.diagnostic("AMDGPU scanout sample addresses: requested={x} inuse={x} time={d}/{d}",
+                    .{ sample.requested_address, sample.inuse_address, sample.begin_ns, sample.end_ns });
+                self.diagnostic("AMDGPU scanout blank sources: hubp-control={x} otg-blank-control={x} vblank-only={d}",
+                    .{ sample.hubp_control, sample.otg_blank_control, sample.vblank_only });
+            }
+            if (life.self_address != 0) self.diagnostic("AMDGPU scanout mode: size={d}x{d} total={d}/{d} pixel-khz={d}",
+                .{ life.mode.width, life.mode.height, life.mode.h_total, life.mode.v_total, life.mode.pixel_khz });
+        }
+        const program = &core.program_diagnostic;
+        const waited = &program.wait;
+        self.diagnostic("AMDGPU DC program: step={d} pipe={d} fault={d}", .{program.step, program.pipe, program.fault});
+        const function_end = std.mem.indexOfScalar(u8, &waited.function, 0) orelse waited.function.len;
+        self.diagnostic("AMDGPU DC wait: valid={d} function={s} line={d} register={x} shift={d} mask={x} expected={x} observed={x}",
+            .{waited.valid, waited.function[0..function_end], waited.line, waited.address, waited.shift, waited.mask, waited.expected, waited.observed});
+        self.diagnostic("AMDGPU DC wait bounds: polls={d} delay-us={d} tries={d} elapsed-ns={d}",
+            .{waited.polls, waited.delay_us, waited.tries, waited.elapsed_ns});
         if (self.pipeline) |pipe| {
             self.diagnostic("AMDGPU mode prepare: step={s} failure={s} native={d} touched={d} command={d} revision={d}/{d} boot-video={d}",
                 .{ @tagName(pipe.prepare_step), if (pipe.failure) |failure| @errorName(failure) else "none", pipe.prepare_native_result,
@@ -561,6 +604,71 @@ pub const Owner = struct {
                 .{ if (runtime.last_panel_error) |failure| @errorName(failure) else "none",
                 if (runtime.last_atom_error) |failure| @errorName(failure) else "none", @intFromBool(runtime.vm.effects),
                 if (runtime.protocol) |*p| @tagName(p.phase) else "none" });
+            if (runtime.protocol) |*p| {
+                if (core.action == .health_work) {
+                    const health = &p.link_health;
+                    self.diagnostic("AMDGPU link health: step={s} phase={s} powered={d} lanes={d} hpd={d} video={d}",
+                        .{ @tagName(health.step), @tagName(p.phase), @intFromBool(p.powered), p.link.lanes,
+                        if (health.hpd) |value| @as(i32, @intFromBool(value)) else @as(i32, -1),
+                        if (health.video) |value| @as(i32, @intFromBool(value)) else @as(i32, -1) });
+                    if (health.status) |status| self.diagnostic("AMDGPU link status: bytes={x}", .{status});
+                    if (health.video != null or health.step == .video) {
+                        const video = &runtime.last_video;
+                        self.diagnostic("AMDGPU link video: native={d} pipe={d} phy={d} otg={x} stream={x} source-valid={d} source={d}",
+                            .{ runtime.video_native_result, video.pipe, video.phy, video.control, video.stream, video.source_valid, video.source });
+                    }
+                }
+                self.diagnostic("AMDGPU panel discovery: step={s} hpd-polls={d} present={d} receiver={x} edid={d}",
+                    .{ @tagName(p.discover_step), p.hpd_polls, @intFromBool(p.hpd_present), p.receiver, p.edid_length });
+                if (p.initial_state) |state| self.diagnostic("AMDGPU panel initial: powered={d} lit={d}", .{state.powered, state.lit});
+                if (p.initialized_state) |state| self.diagnostic("AMDGPU panel after INIT: powered={d} lit={d}", .{state.powered, state.lit});
+            }
+            const aux = &runtime.last_aux;
+            self.diagnostic("AMDGPU panel HPD sample: source=controller-sense-delayed native={d} valid={d} index={d} status={x}",
+                .{ runtime.hpd_native_result, runtime.last_hpd.valid, runtime.last_hpd.index, runtime.last_hpd.status });
+            self.diagnostic("AMDGPU panel AUX: calls={d} native={d} address={x} flags={x} length={d} reply={x} status={d} transferred={d}",
+                .{ runtime.aux_calls, runtime.aux_native_result, aux.address, aux.flags, aux.length, aux.reply, aux.status, aux.transferred });
+            const clock = &runtime.clock_diagnostic;
+            self.diagnostic("AMDGPU pixel clock: step={s} native={d} crystal={d} reference={d} bound={d} calls={d}/{d} unit={s}",
+                .{ @tagName(clock.step), clock.native_result, runtime.crystal_khz, runtime.dprefclk_khz,
+                @intFromBool(runtime.clock_bound), clock.reference_calls, clock.pixel_calls, if (clock.reference_hz) "Hz" else "10kHz" });
+            self.diagnostic("AMDGPU clock ATOM: reference={x}/{x}/{x}/{x} pixel={x}/{x}/{x}/{x}",
+                .{ clock.reference_words[0], clock.reference_words[1], clock.reference_words[2], clock.reference_words[3],
+                clock.pixel_words[0], clock.pixel_words[1], clock.pixel_words[2], clock.pixel_words[3] });
+            const trace = &runtime.clock_trace;
+            self.diagnostic("AMDGPU clock trace: instructions={d} retained={d}", .{trace.count, @min(trace.count, trace.entries.len)});
+            const first = trace.count - @min(trace.count, trace.entries.len);
+            for (first..trace.count) |n| {
+                const entry = &trace.entries[n % trace.entries.len];
+                self.diagnostic("AMDGPU clock op{d}: pc={x} depth={d} ps={d} words={x}/{x}/{x} qr={x}/{x}",
+                    .{n, entry.pc, entry.depth, entry.ps, entry.words[0], entry.words[1], entry.words[2], entry.quotient, entry.remainder});
+            }
+            var remaining: usize = 4096;
+            // These immutable BIOS tables also explain the clock contract if
+            // panel discovery failed before the clock command was executed.
+            const selected = [_]usize{
+                @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2,
+                @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "getsmuclockinfo") / 2,
+                @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setpixelclock") / 2,
+            };
+            var dumped: [256]bool = @splat(false);
+            for (0..selected.len + trace.commands.len) |slot| {
+                const command = if (slot < selected.len) selected[slot] else slot - selected.len;
+                if (dumped[command] or (slot >= selected.len and !trace.commands[command]) or
+                    runtime.vm.commands.len < 4 or command >= (runtime.vm.commands.len - 4) / 2) continue;
+                dumped[command] = true;
+                const offset = bios.number(u16, runtime.vm.commands, 4 + command * 2) catch continue;
+                if (offset < 0x4a) continue;
+                const length = bios.number(u16, runtime.vm.image, offset) catch continue;
+                const bytes = bios.part(runtime.vm.image, offset, length) catch continue;
+                const count = @min(bytes.len, remaining);
+                self.diagnostic("AMDGPU clock table: command={d} offset={x} length={d} captured={d}", .{command, offset, length, count});
+                var at: usize = 0;
+                while (at < count) : (at += 64) {
+                    self.diagnostic("AMDGPU clock bytes: offset={x} data={x}", .{offset + at, bytes[at..@min(at + 64, count)]});
+                }
+                remaining -= count;
+            }
         }
         const bind = core.panel_bind_diagnostic;
         self.diagnostic("AMDGPU display task: action={s} phase={s} result={d} worker={d} panel-error={s}",
@@ -599,9 +707,14 @@ pub const Owner = struct {
         if (raw == 0) return 0;
         const self = from(raw);
         if (self.self_address != raw or !self.geometry(boot) or generation != boot.generation or
-            self.native == null or !self.native.?.hold.native_adopted or generation != self.native.?.hold.native_generation) return 0;
+            self.native == null or !self.native.?.hold.native_adopted) return 0;
+        const held = self.native.?.hold.native_generation;
+        if (generation < held or (generation != held and boot.state != a.display_state_recovering)) return 0;
+        // CpuWrite.finish may initiate recovery without a driver transition
+        // caller to receive its advanced generation. Signal the outer owner,
+        // but never adopt a callback token or claim physical stop here.
         @atomicStore(u32, &self.restore_requested, 1, .release);
-        return @intFromBool(@atomicLoad(u32, &self.restore_ready, .acquire) == 1);
+        return @intFromBool(generation == held and @atomicLoad(u32, &self.restore_ready, .acquire) == 1);
     }
     /// Called only after the queue worker joins, display restores boot, every
     /// copy/GC mapping retires, GMC restores and native.quiesce finishes.
@@ -621,7 +734,20 @@ pub const Owner = struct {
         if (!self.native.?.hold.native_adopted or self.reset_state.generation != 0) return true;
         if (self.reset_original == 0) self.reset_original = self.native.?.hold.native_generation;
         var state: a.GfxNativeState = .{};
-        if (self.display.?.deviceReset(&self.engine.?.binding, self.reset_original, false, &state) != a.gfx_output_ok) return false;
+        var result = self.display.?.deviceReset(&self.engine.?.binding, self.reset_original, false, &state);
+        if (result == a.gfx_output_error_stale) {
+            // Only a failed common restore may advance the display identity
+            // behind this driver. Read that identity, then let deviceReset
+            // validate the exact owner/backend again. Busy or unrelated state
+            // never updates the retained snapshot or proves quiescence.
+            var boot: a.GfxNativeBootInfo = .{};
+            if (self.display.?.bootInfo(&boot) != a.gfx_output_ok or !self.geometry(&boot) or
+                boot.state != a.display_state_unavailable or boot.generation <= self.reset_original) return false;
+            self.reset_original = boot.generation;
+            state = .{};
+            result = self.display.?.deviceReset(&self.engine.?.binding, self.reset_original, false, &state);
+        }
+        if (result != a.gfx_output_ok) return false;
         self.native.?.hold.adoptReset(state) catch return false;
         self.reset_state = state;
         return true;

@@ -141,10 +141,13 @@ pub const Owner = struct {
         const self: *Owner = @ptrFromInt(raw);
         if (self.self_address != raw or !self.prepared or !self.started) return -1;
         while (@atomicLoad(u32, &self.stop, .acquire) == 0) {
-            const dispatched = self.call.invoke(&self.ctx.?, self.threads.?, self.clock.?, ownedStep, raw) catch {
+            const dispatched = self.call.invoke(&self.ctx.?, self.threads.?, self.clock.?, ownedStep, raw) catch |err| {
                 @atomicStore(u32, &self.wake_fault, 1, .release);
                 @atomicStore(u32, &self.stop, 1, .release);
-                self.ctx.?.logError("AMDGPU queue: owner dispatch failed; resources retained for joined recovery");
+                var text: [192]u8 = undefined;
+                const message = std.fmt.bufPrintZ(&text, "AMDGPU queue: owner dispatch failed error={s} ticket={d}; resources retained for joined recovery",
+                    .{ @errorName(err), self.call.handle }) catch unreachable;
+                self.ctx.?.logError(message);
                 return -1;
             };
             if (dispatched != 0) {

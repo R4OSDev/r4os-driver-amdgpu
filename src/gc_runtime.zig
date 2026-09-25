@@ -11,6 +11,7 @@ pub const Owner = struct {
     runtime: ?*@import("queue_runtime.zig").Owner = null,
     engine: @import("gc_engine.zig").Owner = .{},
     closed: bool = false,
+    close_step: enum { idle, gc_identity, gc_engine, gc_timeline, gc_contexts, renderer, closed } = .idle,
     contexts: @import("gc_contexts.zig").Owner = .{},
     renderer: @import("render_jobs.zig").Owner = .{},
     architecture: ?@import("r4amd").R4AmdArchitecture = null,
@@ -58,17 +59,23 @@ pub const Owner = struct {
     /// remains independently owned; only its enclosing owner releases arena.
     pub fn close(self: *Owner) bool {
         if (self.self_address == 0 or self.closed) return true;
+        self.close_step = .gc_identity;
         if (self.self_address != @intFromPtr(self)) return false;
         self.contexts.stopping = true;
+        self.close_step = .gc_engine;
         if (!(self.engine.stop(&self.memory.?.registers, &self.runtime.?.arena) catch false)) return false;
         const rt = self.runtime.?;
         if (rt.timeline.self_address != 0) {
+            self.close_step = .gc_timeline;
             rt.timeline.abort(.{ .epoch = rt.timeline.epoch, .engines = 6 }, @import("r4os").abi.gfx_queue_result_device_lost) catch return false;
             _ = rt.timeline.publish(rt.queue.?);
         }
+        self.close_step = .gc_contexts;
         if (!self.contexts.collect(rt)) return false;
+        self.close_step = .renderer;
         if (!self.renderer.close()) return false;
         self.closed = true;
+        self.close_step = .closed;
         return true;
     }
 };

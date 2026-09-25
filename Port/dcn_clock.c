@@ -64,7 +64,7 @@ int r4dcn_reference_clock_get(void *storage,uint32_t *actual_khz) {
  else *actual_khz=d->dprefclk_khz;
  r4dcn_leave(d);return result;
 }
-int r4dcn_reference_clock_program(void *storage,uint32_t index,uint32_t *actual_khz) {
+static int reference_clock_program(void *storage,uint32_t index,uint32_t *actual_khz,bool returns_hz) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(index>=4 || !d->links[index].bound || !actual_khz || d->fault)result=R4DCN_STATE;
  for(unsigned i=0;!result && i<d->limits.pipe_count;i++)
@@ -77,10 +77,21 @@ int r4dcn_reference_clock_program(void *storage,uint32_t index,uint32_t *actual_
   struct r4dcn_link *l=&d->links[index];l->clock_attempted=1;d->dprefclk_khz=0;
   unsigned cmd=offsetof(struct atom_master_list_of_command_functions_v2_1,setdceclock)/2;
   if(l->atom.execute(l->atom.context,cmd,words,ARRAY_SIZE(words)))d->fault=R4DCN_IO;
-  else if(words[0]<2400 || words[0]>120000)result=R4DCN_IO;
-  else { d->dprefclk_khz=words[0]*10;*actual_khz=d->dprefclk_khz; }
+  else {
+   uint64_t hz=(uint64_t)words[0]*(returns_hz?1:10000);
+   /* The private clock ABI represents whole kHz. Validate the declared
+    * unit before conversion; never infer it from a plausible magnitude. */
+   if(hz<24000000 || hz>1200000000 || hz%1000)result=R4DCN_IO;
+   else { d->dprefclk_khz=(uint32_t)(hz/1000);*actual_khz=d->dprefclk_khz; }
+  }
  }
  r4dcn_leave(d);return d->fault?d->fault:result;
+}
+int r4dcn_reference_clock_program(void *storage,uint32_t index,uint32_t *actual_khz) {
+ return reference_clock_program(storage,index,actual_khz,false);
+}
+int r4dcn_reference_clock_program_hz(void *storage,uint32_t index,uint32_t *actual_khz) {
+ return reference_clock_program(storage,index,actual_khz,true);
 }
 int r4dcn_pixel_clock_bind(void *storage,uint32_t index,uint32_t crystal_khz) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;

@@ -44,6 +44,26 @@ int r4dcn_prepare(void *, const struct r4dcn_mode *, uint32_t, struct r4dcn_plan
 /* Program only disabled/blanked DCN1 frontends after the owner has confirmed
  * clock, memory and link preparation. Output enable/pageflip belongs to /18. */
 int r4dcn_program(void *);
+enum r4dcn_program_step { R4DCN_PROGRAM_EMPTY, R4DCN_PROGRAM_ADMISSION,
+ R4DCN_PROGRAM_MPC_INIT, R4DCN_PROGRAM_MPC_DISCONNECTED, R4DCN_PROGRAM_WATERMARKS,
+ R4DCN_PROGRAM_CLOCKS, R4DCN_PROGRAM_DPP_CLOCK, R4DCN_PROGRAM_TIMING,
+ R4DCN_PROGRAM_REQUESTOR, R4DCN_PROGRAM_SURFACE, R4DCN_PROGRAM_VIEWPORT,
+ R4DCN_PROGRAM_DPP_BYPASS, R4DCN_PROGRAM_CNVC, R4DCN_PROGRAM_SCALER,
+ R4DCN_PROGRAM_MPC_INSERT, R4DCN_PROGRAM_MPC_COLOR, R4DCN_PROGRAM_FORMAT,
+ R4DCN_PROGRAM_EXPANSION, R4DCN_PROGRAM_ADDRESS, R4DCN_PROGRAM_READY };
+struct r4dcn_wait_diagnostic {
+ uint32_t valid,address,shift,mask,expected,observed,polls,delay_us,tries,line;
+ uint64_t elapsed_ns;
+ char function[64];
+};
+struct r4dcn_program_diagnostic {
+ uint32_t step,pipe;
+ int32_t fault;
+ struct r4dcn_wait_diagnostic wait;
+};
+/* Copies resident observations only; caller owns the display task or has
+ * joined it. No register access, wait or state transition. */
+int r4dcn_copy_program_diagnostic(const void *,struct r4dcn_program_diagnostic *);
 /* Confirmed fixed clock, full-rate DPP. Set only while every TG is stopped.
  * A live update consumes an independently prepared joint DML candidate;
  * only the changed, stopped head is reprogrammed. */
@@ -79,10 +99,15 @@ int r4dcn_link_aux(void *,uint32_t,struct r4dcn_aux *);
 int r4dcn_link_enable(void *,uint32_t,uint32_t rate,uint32_t lanes,uint32_t spread);
 int r4dcn_link_train(void *,uint32_t,uint32_t pattern,const uint8_t lane_settings[4]);
 int r4dcn_link_hpd(void *,uint32_t,uint32_t *);
+struct r4dcn_hpd_observation { uint32_t valid,index,status; };
+int r4dcn_link_hpd_observe(void *,uint32_t,uint32_t *,struct r4dcn_hpd_observation *);
 int r4dcn_link_restore_pads(void *,uint32_t);
 int r4dcn_panel_read(void *,struct r4dcn_panel_state *);
 int r4dcn_panel_pwm(void *,uint32_t);
 int r4dcn_link_video(void *,uint32_t,uint32_t pipe,uint32_t *);
+/* Copies only the registers already read by link_video; private diagnostics. */
+struct r4dcn_video_observation { uint32_t control,stream,source,source_valid,pipe,phy; };
+int r4dcn_link_video_observe(void *,uint32_t,uint32_t pipe,uint32_t *,struct r4dcn_video_observation *);
 /* SST eDP RGB6/8 stream. Enable is submission; link_video plus scanout
  * counter/address progress supplies the surrounding visibility proof. */
 int r4dcn_dp_stream_bind(void *,uint32_t);
@@ -107,6 +132,11 @@ struct r4dcn_scanout_sample {
  uint32_t frame,hpos,vpos,running,blank,pending,underflow,locked;
  uint64_t cursor_address;
  uint32_t cursor_x,cursor_y,cursor_hot_x,cursor_hot_y,cursor_width,cursor_height,cursor_enabled,cursor_dpp_enabled;
+ uint32_t hubp_underflow,optc_underflow;
+ /* Preserve the existing reads so blank-source diagnosis adds no MMIO. */
+ uint32_t hubp_control,otg_blank_control;
+ /* HUBP_IN_BLANK alone: retry active work, never a visibility receipt. */
+ uint32_t vblank_only;
 };
 struct r4dcn_cursor {
  uint64_t mc_address,buffer_bytes;
@@ -132,6 +162,9 @@ int r4dcn_scanout_cursor(void *,uint32_t pipe,const struct r4dcn_cursor *);
  * Bind has no MMIO effects; program requires the selected TG and DIG stopped. */
 int r4dcn_pixel_clock_bind(void *,uint32_t link,uint32_t crystal_khz);
 int r4dcn_reference_clock_program(void *,uint32_t link,uint32_t *actual_khz);
+/* Only for a positively identified ATOM implementation returning Hertz.
+ * Unknown tables retain the specified 10kHz contract above. */
+int r4dcn_reference_clock_program_hz(void *,uint32_t link,uint32_t *actual_khz);
 int r4dcn_reference_clock_get(void *,uint32_t *actual_khz);
 int r4dcn_pixel_clock_program(void *,uint32_t link,uint32_t pipe);
 /* Private DCN/HDA bridge. ELD admits exactly stereo PCM 48 kHz / S16. */

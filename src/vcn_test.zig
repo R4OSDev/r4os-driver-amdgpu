@@ -116,7 +116,7 @@ test "VCN 32-bit writebacks never wrap identity and IRQ hints cannot retire reso
     var writeback: [q.capacity]u64 = undefined;
     const binding: a.GfxBackendBinding = .{ .adapter_id = 4, .device_generation = 7, .reset_generation = 11 };
     try timeline.init(binding, &writeback, 1);
-    const fence: a.GfxFence = .{ .adapter_id = 4, .device_generation = 7, .reset_generation = 11, .timeline = 3, .point = 1, .slot = 0 };
+    const fence: a.GfxFence = .{ .adapter_id = 4, .device_generation = 7, .reset_generation = 11, .timeline = 3, .point = 1, .slot = 1 };
     const ticket = try timeline.reserve(fence, .decode, 100, .{ .context = 0, .retire = retire }); try timeline.arm(ticket);
     const event = @import("queue_ih.zig").Event.decode(.{ 0x10 | 124 << 8, 0, 0, 0, 0, 0, 0, 0 }, timeline.epoch);
     timeline.fault(event.faultMask()); timeline.poll(2);
@@ -166,7 +166,7 @@ test "VCN1 JPEG copies into VMID0, waits for video fence retirement and retains 
     try N.media.engine.begin(&io, &io, F.setup());
     _ = try N.media.engine.advance(&io); _ = try N.media.engine.advance(&io); F.regs[r.UVD_STATUS / 4] = 2;
     try t.expect(try N.media.engine.advance(&io));
-    const fence: a.GfxFence = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 8, .point = 1 };
+    const fence: a.GfxFence = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 8, .point = 1, .slot = 1 };
     const resources: q.Resources = .{ .context = 0, .retire = N.retire };
     try N.media.submit(.decode, fence, .{ .address = 0x5000010000, .dwords = 16 }, &.{}, 1000, resources);
     try t.expect(try N.media.canSubmit(.encode)); try t.expect(!try N.media.canSubmit(.jpeg));

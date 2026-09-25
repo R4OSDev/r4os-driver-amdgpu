@@ -187,26 +187,48 @@ int r4dcn_link_train(void *storage,uint32_t index,uint32_t pattern,const uint8_t
  }
  if(d->fault)result=d->fault;r4dcn_leave(d);return result;
 }
-int r4dcn_link_hpd(void *storage,uint32_t index,uint32_t *present) {
+int r4dcn_link_hpd_observe(void *storage,uint32_t index,uint32_t *present,struct r4dcn_hpd_observation *observation) {
+ if(observation)memset(observation,0,sizeof(*observation));
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  struct r4dcn_link *l=link_at(d,index);
+ static const uint32_t status_regs[]={ADDR(HPD0_DC_HPD_INT_STATUS),ADDR(HPD1_DC_HPD_INT_STATUS),ADDR(HPD2_DC_HPD_INT_STATUS),ADDR(HPD3_DC_HPD_INT_STATUS)};
  if(!l || !present || d->fault)result=R4DCN_STATE;
- else {*present=((rd(d,ADDR(DC_GPIO_HPD_Y))>>l->route.hpd_shift)&1)==l->route.hpd_active;if(d->fault)result=d->fault;}
+ else {
+  /* INIT transfers this pin to hardware (MASK=0), as original interrupt
+   * mode does. hw_hpd_get_value then reads controller SENSE_DELAYED;
+   * dcn10_get_hpd_state returns it directly, without BIOS GPIO polarity. */
+  uint32_t status=rd(d,status_regs[l->route.hpd]);
+  *present=!!(status&HPD0_DC_HPD_INT_STATUS__DC_HPD_SENSE_DELAYED_MASK);
+  if(observation) {observation->valid=!d->fault;observation->index=l->route.hpd;observation->status=status;}
+  if(d->fault)result=d->fault;
+ }
  r4dcn_leave(d);return result;
 }
-int r4dcn_link_video(void *storage,uint32_t index,uint32_t pipe,uint32_t *active) {
+int r4dcn_link_hpd(void *storage,uint32_t index,uint32_t *present) {
+ return r4dcn_link_hpd_observe(storage,index,present,NULL);
+}
+int r4dcn_link_video_observe(void *storage,uint32_t index,uint32_t pipe,uint32_t *active,struct r4dcn_video_observation *observation) {
+ if(observation)memset(observation,0,sizeof(*observation));
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  struct r4dcn_link *l=link_at(d,index);
  static const uint32_t video_regs[]={ADDR(DP0_DP_VID_STREAM_CNTL),ADDR(DP1_DP_VID_STREAM_CNTL),ADDR(DP2_DP_VID_STREAM_CNTL),ADDR(DP3_DP_VID_STREAM_CNTL)};
  if(!l || !active || pipe>=d->limits.pipe_count || d->fault)result=R4DCN_STATE;
  else {
   uint32_t tg=rd(d,tg_regs[pipe].OTG_CONTROL),video=rd(d,video_regs[l->route.phy]);
+  if(observation) {observation->control=tg;observation->stream=video;observation->pipe=pipe;observation->phy=l->route.phy;}
   *active=!!(tg&OTG0_OTG_CONTROL__OTG_CURRENT_MASTER_EN_STATE_MASK) &&
    !!(video&DP0_DP_VID_STREAM_CNTL__DP_VID_STREAM_ENABLE_MASK) && !!(video&DP0_DP_VID_STREAM_CNTL__DP_VID_STREAM_STATUS_MASK);
-  if(l->dp_stream_bound)*active&=l->stream.base.funcs->dig_source_otg(&l->stream.base)==pipe;
+  if(l->dp_stream_bound) {
+   uint32_t source=l->stream.base.funcs->dig_source_otg(&l->stream.base);
+   if(observation) {observation->source=source;observation->source_valid=1;}
+   *active&=source==pipe;
+  }
   if(d->fault)result=d->fault;
  }
  r4dcn_leave(d);return result;
+}
+int r4dcn_link_video(void *storage,uint32_t index,uint32_t pipe,uint32_t *active) {
+ return r4dcn_link_video_observe(storage,index,pipe,active,NULL);
 }
 int r4dcn_link_restore_pads(void *storage,uint32_t index) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;

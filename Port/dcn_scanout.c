@@ -39,6 +39,10 @@ static bool running(struct r4dcn *d,unsigned pipe) {
  return (ctl&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE))==
   (tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE);
 }
+static bool forced_or_otg_blank(uint32_t hub,uint32_t blank) {
+ return !!((hub&(hubp_mask.HUBP_BLANK_EN|hubp_mask.HUBP_DISABLE)) ||
+  (blank&(tg_mask.OTG_BLANK_DATA_EN|tg_mask.OTG_CURRENT_BLANK_STATE)));
+}
 int r4dcn_scanout_enable(void *storage,uint32_t pipe) {
  struct r4dcn *d=storage;int result=r4dcn_enter(d);if(result)return result;
  if(!admitted(d,pipe) || (d->running&(1u<<pipe)))return finish(d,R4DCN_STATE);
@@ -47,6 +51,9 @@ int r4dcn_scanout_enable(void *storage,uint32_t pipe) {
   return finish(d,R4DCN_BUSY);
  if(rd(d,tg_regs[pipe].OTG_CONTROL)&(tg_mask.OTG_MASTER_EN|tg_mask.OTG_CURRENT_MASTER_EN_STATE))
   return finish(d,R4DCN_STATE);
+ uint32_t hub=rd(d,hubp_regs[pipe].DCHUBP_CNTL);
+ if((hub&(hubp_mask.HUBP_BLANK_EN|hubp_mask.HUBP_IN_BLANK))!=
+  (hubp_mask.HUBP_BLANK_EN|hubp_mask.HUBP_IN_BLANK))return finish(d,R4DCN_STATE);
  /* Retain before any partial enable. The caller waits for running + matching
   * in-use BO + counter progress; enable_crtc returning true is not a receipt. */
  d->running|=1u<<pipe;
@@ -54,6 +61,14 @@ int r4dcn_scanout_enable(void *storage,uint32_t pipe) {
  d->hubps[pipe].base.funcs->hubp_disconnect(&d->hubps[pipe].base);
  dm_write_reg(&d->ctx,tf_regs[pipe].CURSOR0_CONTROL,rd(d,tf_regs[pipe].CURSOR0_CONTROL)&~tf_mask.CUR0_ENABLE);
  tg->funcs->tg_init(tg);
+ /* A stopped/blanked frontend can carry an inherited underflow. Use the
+  * original clear strobes and confirm both sources before starting a new
+  * scanout lifetime; later samples must continue to reject every underflow. */
+ struct hubp *selected=&d->hubps[pipe].base;
+ selected->funcs->hubp_clear_underflow(selected);
+ uint32_t hub_underflow=selected->funcs->hubp_get_underflow_status(selected);
+ bool optc_underflow=tg->funcs->is_optc_underflow_occurred(tg);
+ if(d->fault || hub_underflow || optc_underflow)return finish(d,R4DCN_IO);
  if(!tg->funcs->enable_crtc(tg))return finish(d,R4DCN_IO);
  hubp1_set_blank(&d->hubps[pipe].base,false);
  optc1_set_blank(tg,false);
@@ -154,9 +169,16 @@ int r4dcn_scanout_sample(void *storage,uint32_t pipe,struct r4dcn_scanout_sample
   s.pending=hubp1_is_flip_pending(&d->hubps[pipe].base);
   s.running=running(d,pipe);
   uint32_t hub=rd(d,hubp_regs[pipe].DCHUBP_CNTL),blank=rd(d,tg_regs[pipe].OTG_BLANK_CONTROL);
+  s.hubp_control=hub;s.otg_blank_control=blank;
+  /* HUBP_IN_BLANK also marks ordinary VBLANK on a running stream. Keep
+   * aggregate blank for visibility/stop receipts; only the isolated status
+   * may cause a bounded retry of active work. Every other blank still fails. */
+  s.vblank_only=!!(hub&hubp_mask.HUBP_IN_BLANK) && !forced_or_otg_blank(hub,blank);
   s.blank=!!((hub&(hubp_mask.HUBP_BLANK_EN|hubp_mask.HUBP_IN_BLANK|hubp_mask.HUBP_DISABLE)) ||
    (blank&(tg_mask.OTG_BLANK_DATA_EN|tg_mask.OTG_CURRENT_BLANK_STATE)));
-  s.underflow=!!(hub&hubp_mask.HUBP_UNDERFLOW_STATUS) || tg->funcs->is_optc_underflow_occurred(tg);
+  s.hubp_underflow=field(hub,hubp_mask.HUBP_UNDERFLOW_STATUS,hubp_shift.HUBP_UNDERFLOW_STATUS);
+  s.optc_underflow=tg->funcs->is_optc_underflow_occurred(tg);
+  s.underflow=!!s.hubp_underflow || !!s.optc_underflow;
   s.locked=!!(rd(d,tg_regs[pipe].OTG_MASTER_UPDATE_LOCK)&(tg_mask.OTG_MASTER_UPDATE_LOCK|tg_mask.UPDATE_LOCK_STATUS));
   s.locked|=!!((d->tg_locked|d->cursor_locked)&(1u<<pipe));
   s.locked|=!!(rd(d,mpc_regs.CUR[pipe])&mpc_mask.CUR_VUPDATE_LOCK_SET);
@@ -184,7 +206,11 @@ int r4dcn_scanout_flip(void *storage,uint32_t pipe,uint64_t address,uint64_t byt
  const struct dc_plane_state *p=&d->planes[pipe];
  if(!address || address%256 || address>=(1ull<<48) || bytes>(1ull<<48)-address ||
   bytes<(uint64_t)p->plane_size.surface_pitch*4*p->plane_size.surface_size.height)return finish(d,R4DCN_INVALID);
- if(!running(d,pipe) || hubp1_in_blank(&d->hubps[pipe].base))return finish(d,R4DCN_STATE);
+ if(!running(d,pipe))return finish(d,R4DCN_STATE);
+ uint32_t hub=rd(d,hubp_regs[pipe].DCHUBP_CNTL),blank=rd(d,tg_regs[pipe].OTG_BLANK_CONTROL);
+ if(forced_or_otg_blank(hub,blank))return finish(d,R4DCN_STATE);
+ /* VBLANK may begin after the caller's sample. Busy remains write-free. */
+ if(hub&hubp_mask.HUBP_IN_BLANK)return finish(d,R4DCN_BUSY);
  if(hubp1_is_flip_pending(&d->hubps[pipe].base) ||
   (rd(d,tg_regs[pipe].OTG_MASTER_UPDATE_LOCK)&(tg_mask.OTG_MASTER_UPDATE_LOCK|tg_mask.UPDATE_LOCK_STATUS)))return finish(d,R4DCN_BUSY);
  d->tg_locked|=1u<<pipe;

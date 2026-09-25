@@ -84,6 +84,13 @@ pub fn route(board: *const bios.Board) Error!Route {
 }
 pub const Link = struct { rate: u8 = 0, lanes: u8 = 0, enhanced: bool = false, table_index: ?u8 = null };
 pub const Phase = enum { empty, bound, discovering, discovered, training, trained, visible, off, retained };
+pub const DiscoverStep = enum { empty, initial, backlight_off, backlight_wait, init, initialized_state, power_wait, power_on, power_on_wait, hpd, receiver, receiver_extended, receiver_power, scrambling, rate_table, edid, current, brightness, ready };
+pub const LinkHealth = struct {
+    step: enum { idle, admission, hpd, video, status, lanes, ready } = .idle,
+    hpd: ?bool = null,
+    video: ?bool = null,
+    status: ?[6]u8 = null,
+};
 pub const Panel = struct {
     io: Io,
     route: Route,
@@ -107,6 +114,12 @@ pub const Panel = struct {
     powered: bool = false,
     lit: bool = false,
     off_at: ?u64 = null,
+    discover_step: DiscoverStep = .empty,
+    hpd_polls: u32 = 0,
+    hpd_present: bool = false,
+    initial_state: ?c.struct_r4dcn_panel_state = null,
+    initialized_state: ?c.struct_r4dcn_panel_state = null,
+    link_health: LinkHealth = .{},
     fn wait(self: *Panel, us: u32) Error!void {
         try self.io.delay(self.io.context, us);
     }
@@ -232,52 +245,85 @@ pub const Panel = struct {
         if (self.phase != .bound and self.phase != .off) return error.State;
         self.phase = .discovering;
         errdefer self.phase = .retained;
+        self.discover_step = .initial;
+        self.hpd_polls = 0;
+        self.hpd_present = false;
+        self.initial_state = null;
+        self.initialized_state = null;
         const initial = try self.io.status(self.io.context);
+        self.initial_state = initial;
         self.powered = initial.powered != 0;
         self.lit = initial.lit != 0;
         if (self.lit) {
+            self.discover_step = .backlight_off;
             try self.act(.backlight_off);
             self.lit = false;
+            self.discover_step = .backlight_wait;
             try self.wait(@as(u32, self.route.delays_ms[6]) * 1000);
         }
+        self.discover_step = .init;
         try self.act(.init);
+        // Firmware INIT is an effectful call, not a promise to preserve the
+        // previous power state. Like dce110_edp_power_control, decide from a
+        // fresh panel read. Newly observed power-off invalidates an older
+        // off timestamp; wait the full minimum from this observation.
+        self.discover_step = .initialized_state;
+        const initialized = try self.io.status(self.io.context);
+        self.initialized_state = initialized;
+        self.powered = initialized.powered != 0;
+        if (initial.powered != 0 and !self.powered) self.off_at = self.io.now(self.io.context);
         if (!self.powered) {
+            self.discover_step = .power_wait;
             const minimum = @as(u64, @max(500, self.route.delays_ms[4])) * 1_000_000;
             const now = self.io.now(self.io.context);
             const elapsed_ns = if (self.off_at) |off| if (now >= off) now - off else return error.Timeout else 0;
             if (elapsed_ns < minimum) try self.wait(@intCast((minimum - elapsed_ns + 999) / 1000));
+            self.discover_step = .power_on;
             try self.act(.power_on);
             self.powered = true;
+            self.discover_step = .power_on_wait;
             try self.wait(@as(u32, self.route.delays_ms[0]) * 1000);
         }
+        self.discover_step = .hpd;
         const begin = self.io.now(self.io.context);
         var present = false;
         for (0..1000) |_| {
             try self.elapsed(begin, 1_000_000_000);
-            if (try self.io.hpd(self.io.context)) {
+            self.hpd_polls += 1;
+            self.hpd_present = try self.io.hpd(self.io.context);
+            if (self.hpd_present) {
                 present = true;
                 break;
             }
             try self.wait(1000);
         }
         if (!present) return error.Timeout;
+        self.discover_step = .receiver;
         try self.read(0, &self.receiver);
+        self.discover_step = .receiver_extended;
         if (self.receiver[14] & 0x80 != 0) try self.read(0x2200, &self.receiver);
         if (self.receiver[0] < 0x11 or self.receiver[0] > 0x14 or self.receiver[14] & 0x7f > 4 or
             (self.receiver[2] & 31 != 1 and self.receiver[2] & 31 != 2 and self.receiver[2] & 31 != 4)) return error.Unsupported;
+        self.discover_step = .receiver_power;
         try self.receiverPower(true);
         // Explicit standard scrambling on both endpoints, no implicit PSR or
         // ASSR policy. Optimized eDP power states follow their later owner.
+        self.discover_step = .scrambling;
         if (self.receiver[13] & 1 != 0) {
             const old = try self.readByte(0x10a);
             try self.write(0x10a, &.{old & ~@as(u8, 1)});
         }
+        self.discover_step = .rate_table;
         if (self.receiver[1] == 0) try self.read(0x10, &self.rate_table);
+        self.discover_step = .edid;
         try self.readEdid();
+        self.discover_step = .current;
         const current = try self.io.status(self.io.context);
         if (current.powered == 0) return error.Io;
+        self.discover_step = .brightness;
         try self.selectBrightness(current);
         self.phase = .discovered;
+        self.discover_step = .ready;
     }
     fn selectBrightness(self: *Panel, initial: c.struct_r4dcn_panel_state) Error!void {
         self.brightness_path = .unavailable;
@@ -323,11 +369,20 @@ pub const Panel = struct {
         return false;
     }
     pub fn verifyLink(self: *Panel) Error!void {
-        if ((self.phase != .visible and self.phase != .trained) or self.link.lanes == 0 or !self.powered or
-            !try self.io.hpd(self.io.context) or !try self.io.video(self.io.context)) return error.Disconnected;
+        self.link_health = .{ .step = .admission };
+        if ((self.phase != .visible and self.phase != .trained) or self.link.lanes == 0 or !self.powered) return error.Disconnected;
+        self.link_health.step = .hpd;
+        self.link_health.hpd = try self.io.hpd(self.io.context);
+        if (!self.link_health.hpd.?) return error.Disconnected;
+        self.link_health.step = .video;
+        self.link_health.video = try self.io.video(self.io.context);
+        if (!self.link_health.video.?) return error.Disconnected;
+        self.link_health.step = .status;
         var status: [6]u8 = undefined;
         try self.read(0x202, &status);
+        self.link_health.status = status; self.link_health.step = .lanes;
         if (!self.lanesOk(status, 7) or status[2] & 1 == 0) return error.Training;
+        self.link_health.step = .ready;
     }
     fn eligibleFor(self: *const Panel, pixel_hz: u64, rate: u8, lanes: u8) ?Link {
         if (lanes > self.receiver[2] & 31 or (rate >= 20 and self.route.native.caps & 2 == 0) or

@@ -14,6 +14,15 @@ pub const BindDiagnostic = struct {
     route_valid: bool = false,
     route: c.struct_r4dcn_route = std.mem.zeroes(c.struct_r4dcn_route),
 };
+pub const ClockDiagnostic = struct {
+    step: enum { empty, reference_revision, pixel_revision, bind, reference, pixel, ready } = .empty,
+    native_result: c_int = 0,
+    reference_words: [4]u32 = @splat(0),
+    pixel_words: [4]u32 = @splat(0),
+    reference_calls: u32 = 0,
+    pixel_calls: u32 = 0,
+    reference_hz: bool = false,
+};
 pub const Runtime = struct {
     self_address: usize = 0,
     storage: ?*anyopaque = null,
@@ -28,6 +37,15 @@ pub const Runtime = struct {
     last_panel_error: ?panel.Error = null,
     brightness: @import("panel_brightness.zig").Bridge = .{},
     bind_diagnostic: BindDiagnostic = .{},
+    clock_diagnostic: ClockDiagnostic = .{},
+    clock_trace: atom.Trace = .{},
+    aux_calls: u32 = 0,
+    aux_native_result: c_int = 0,
+    last_aux: c.struct_r4dcn_aux = std.mem.zeroes(c.struct_r4dcn_aux),
+    video_native_result: c_int = 0,
+    last_video: c.struct_r4dcn_video_observation = std.mem.zeroes(c.struct_r4dcn_video_observation),
+    hpd_native_result: c_int = 0,
+    last_hpd: c.struct_r4dcn_hpd_observation = std.mem.zeroes(c.struct_r4dcn_hpd_observation),
     pub fn bind(self: *Runtime, storage: *anyopaque, board: *const bios.Board, io: atom.Io, pipe: u32) !void {
         self.bind_diagnostic.step = .gate;
         if (self.self_address != 0 or pipe >= 4) return error.State;
@@ -87,16 +105,50 @@ pub const Runtime = struct {
         try checked(c.r4dcn_dp_stream_configure(self.storage, 0, self.pipe, self.protocol.?.bpc));
     }
     fn pixelClock(self: *Runtime) panel.Error!void {
+        const diagnostic = &self.clock_diagnostic;
+        diagnostic.step = .reference_revision;
         const reference_revision = self.vm.revision(@offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2) catch return error.Unsupported;
         if (!std.mem.eql(u8, &reference_revision, &.{ 2, 1 })) return error.Unsupported;
+        // Observed Lenovo Raven2 command: SMU reply in MHz * 1000000,
+        // minus the firmware spread-spectrum correction, returned in Hertz.
+        // Bind this exception to both complete command implementations.
+        // The ATOM 2.1 header alone does not distinguish their output units.
+        diagnostic.reference_hz = self.commandMatches(
+            @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2,
+            "f6fc1b5a4a677c3f35184595de755d121d016e94391224661ad72e10ace235cf") and
+            self.commandMatches(19, "07d01c593fa585633f60cf71a7e22cf1f0d373bd4431a284f4f5083cd1d3713d");
         if (!self.clock_bound) {
+            diagnostic.step = .pixel_revision;
             const revision = self.vm.revision(@offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setpixelclock") / 2) catch return error.Unsupported;
             if (!std.mem.eql(u8, &revision, &.{ 1, 7 }) or self.crystal_khz == 0) return error.Unsupported;
-            try checked(c.r4dcn_pixel_clock_bind(self.storage, 0, self.crystal_khz));
+            diagnostic.step = .bind;
+            diagnostic.native_result = c.r4dcn_pixel_clock_bind(self.storage, 0, self.crystal_khz);
+            try checked(diagnostic.native_result);
             self.clock_bound = true;
         }
-        if (self.dprefclk_khz == 0) try checked(c.r4dcn_reference_clock_program(self.storage, 0, &self.dprefclk_khz));
-        try checked(c.r4dcn_pixel_clock_program(self.storage, 0, self.pipe));
+        if (self.dprefclk_khz == 0) {
+            diagnostic.step = .reference;
+            diagnostic.native_result = if (diagnostic.reference_hz)
+                c.r4dcn_reference_clock_program_hz(self.storage, 0, &self.dprefclk_khz)
+            else c.r4dcn_reference_clock_program(self.storage, 0, &self.dprefclk_khz);
+            try checked(diagnostic.native_result);
+        }
+        diagnostic.step = .pixel;
+        diagnostic.native_result = c.r4dcn_pixel_clock_program(self.storage, 0, self.pipe);
+        try checked(diagnostic.native_result);
+        diagnostic.step = .ready;
+    }
+    fn commandMatches(self: *const Runtime, index: u32, expected: []const u8) bool {
+        if (self.vm.commands.len < 4 or index >= (self.vm.commands.len - 4) / 2) return false;
+        const offset = bios.number(u16, self.vm.commands, 4 + @as(usize, index) * 2) catch return false;
+        if (offset < 0x4a) return false;
+        const length = bios.number(u16, self.vm.image, offset) catch return false;
+        if (length < 6) return false;
+        const bytes = bios.part(self.vm.image, offset, length) catch return false;
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+        const hex = std.fmt.bytesToHex(digest, .lower);
+        return std.mem.eql(u8, &hex, expected);
     }
     fn checked(result: c_int) panel.Error!void {
         switch (result) {
@@ -115,6 +167,22 @@ pub const Runtime = struct {
         const self: *Runtime = @ptrCast(@alignCast(raw.?));
         self.last_atom_error = null;
         if (self.self_address != @intFromPtr(self) or count > 256 or words == null or command > 255) return -1;
+        if (command == @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2) {
+            self.clock_trace = .{};
+            self.vm.trace = &self.clock_trace;
+        }
+        defer self.vm.trace = null;
+        // Copy only already-returned ATOM parameters; no additional hardware
+        // access. The display owner reads this snapshot after the worker joins.
+        defer if (count == 4) {
+            if (command == @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setdceclock") / 2) {
+                self.clock_diagnostic.reference_words = words[0..4].*;
+                self.clock_diagnostic.reference_calls +|= 1;
+            } else if (command == @offsetOf(bios.c.struct_atom_master_list_of_command_functions_v2_1, "setpixelclock") / 2) {
+                self.clock_diagnostic.pixel_words = words[0..4].*;
+                self.clock_diagnostic.pixel_calls +|= 1;
+            }
+        };
         self.vm.execute(@intCast(command), words[0..count]) catch |err| {
             self.last_atom_error = err;
             return -1;
@@ -122,7 +190,11 @@ pub const Runtime = struct {
         return 0;
     }
     fn transfer(raw: usize, p: *c.struct_r4dcn_aux) panel.Error!void {
-        try checked(c.r4dcn_link_aux(from(raw).storage, 0, p));
+        const self = from(raw);
+        self.aux_calls +|= 1;
+        self.aux_native_result = c.r4dcn_link_aux(self.storage, 0, p);
+        self.last_aux = p.*;
+        try checked(self.aux_native_result);
     }
     fn action(raw: usize, value: panel.Action) panel.Error!void {
         try checked(c.r4dcn_link_action(from(raw).storage, 0, @intFromEnum(value)));
@@ -142,14 +214,17 @@ pub const Runtime = struct {
         try checked(c.r4dcn_panel_pwm(from(raw).storage, value));
     }
     fn hpd(raw: usize) panel.Error!bool {
+        const self = from(raw);
         var value: u32 = 0;
-        try checked(c.r4dcn_link_hpd(from(raw).storage, 0, &value));
+        self.hpd_native_result = c.r4dcn_link_hpd_observe(self.storage, 0, &value, &self.last_hpd);
+        try checked(self.hpd_native_result);
         return value == 1;
     }
     fn video(raw: usize) panel.Error!bool {
         const self = from(raw);
         var value: u32 = 0;
-        try checked(c.r4dcn_link_video(self.storage, 0, self.pipe, &value));
+        self.video_native_result = c.r4dcn_link_video_observe(self.storage, 0, self.pipe, &value, &self.last_video);
+        try checked(self.video_native_result);
         return value == 1;
     }
     fn now(raw: usize) u64 {

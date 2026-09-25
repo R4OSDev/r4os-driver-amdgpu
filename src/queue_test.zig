@@ -7,7 +7,7 @@ const Runtime = @import("queue_runtime.zig").Owner;
 const Ring = @import("queue_ring.zig").Ring;
 const binding: a.GfxBackendBinding = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 };
 const epoch: q.Epoch = .{ .adapter = 7, .device = 11, .reset = 5 };
-fn fence(point: u64) a.GfxFence { return .{ .slot = @intCast(point % 128), .adapter_id = 7, .timeline = 3, .point = point, .device_generation = 11, .reset_generation = 5 }; }
+fn fence(point: u64) a.GfxFence { return .{ .slot = @intCast((point - 1) % a.gfx_queue_fence_capacity + 1), .adapter_id = 7, .timeline = 3, .point = point, .device_generation = 11, .reset_generation = 5 }; }
 const F = struct {
     var api: a.DriverApi = undefined;
     var memory: @import("memory_owner.zig").Owner = .{};
@@ -41,6 +41,9 @@ const F = struct {
         out.* = .{ .state = a.driver_work_state_completed, .result = work_result }; return 0;
     }
     fn releaseWork(handle: u32) callconv(.c) i32 { std.debug.assert(handle == 19); return 0; }
+    fn waitWork(handle: u32, ticks: u64, result: *i32) callconv(.c) i32 {
+        std.debug.assert(handle == 19 and ticks == 1); result.* = work_result; return 0;
+    }
     fn reset() void {
         run = .{}; memory = .{}; regs = @splat(0); arena = @splat(0); bells = @splat(0); clock = 100; dispatch_fail = false;
         dummy = @splat(0xff); dummy_live = false; dummy_dma = false; dummy_cpu = false; dma_release_fail = false; dummy_address = 0x334400000;
@@ -53,6 +56,7 @@ const F = struct {
         api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
         api.log_error = log;
         api.driver_work_submit_owned = submitOwned; api.driver_completion_status = workStatus; api.driver_completion_release = releaseWork;
+        api.driver_completion_wait = waitWork;
         api.gfx_memory_query = memoryQuery; api.gfx_queue_query = queueQuery; api.resource_query = resourceQuery;
         api.thread_query = threadQuery; api.semaphore_query = semQuery; api.timer_frequency = frequency;
         api.pci_read_config32 = config; api.pci_enable_msi = msiEnable; api.pci_disable_msi = msiDisable;
@@ -303,4 +307,25 @@ test "AMD worker publishes exact writebacks, polls lost IRQs and retains timeout
     try t.expectError(error.Capacity, F.run.timeline.reserve(fence(100), .gfx, 1000, resources));
     F.run.timeline.poll(99); try t.expectEqual(@as(q.EngineMask, 63), F.run.timeline.failed_engines);
     try t.expect(!F.run.close(null)); try t.expect(F.run.close(proof)); try t.expectEqual(@as(usize, q.capacity), F.completed);
+    // Public queue slots are one-based (kernel Store.submit uses index + 1),
+    // independently of this driver's zero-based private writeback slots.
+    F.reset(); try F.prepare(); try F.start();
+    for (1..a.gfx_queue_fence_capacity + 1) |slot| {
+        var value = fence(slot); value.slot = @intCast(slot);
+        const external = try F.run.timeline.reserve(value, .gfx, 1000, resources);
+        try t.expect(external.slot < q.capacity);
+        try F.run.timeline.arm(external);
+        F.run.timeline.writeback[external.slot] = external.token;
+        F.run.timeline.poll(100);
+        try t.expect(F.run.timeline.publish(F.queueContext()));
+        try t.expect(std.meta.eql(value, F.last_fence));
+        try t.expect(F.run.timeline.empty());
+    }
+    try t.expectEqual(@as(usize, a.gfx_queue_fence_capacity), F.completed);
+    var outside = fence(1); outside.slot = 0;
+    try t.expectError(error.Invalid, F.run.timeline.reserve(outside, .gfx, 1000, resources));
+    outside.slot = a.gfx_queue_fence_capacity + 1;
+    try t.expectError(error.Invalid, F.run.timeline.reserve(outside, .gfx, 1000, resources));
+    try t.expect(F.run.timeline.empty());
+    try t.expect(!F.run.close(proof)); F.clock += 1_000_000; try t.expect(F.run.close(proof));
 }

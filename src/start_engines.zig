@@ -43,19 +43,30 @@ pub const mec_mask = g.CP_MEC_CNTL__MEC_INVALIDATE_ICACHE_MASK | g.CP_MEC_CNTL__
     mec_halt_mask;
 pub const Park = struct {
     include_sdma: bool = true,
+    // Enabled only by Raven2 final cleanup after the outer engine stop.
+    // gfx_v9_0_soft_reset selects SOFT_RESET_RLC for RLC_BUSY; its dedicated
+    // reset holds and settles for50us. No CP/GFX reset or relaxed idle proof.
+    allow_rlc_reset: bool = false,
+    rlc_reset: enum { none, asserted, settling, done } = .none,
+    rlc_reset_earliest: u64 = 0,
+    rlc_reset_sample: u32 = 0,
     touched: bool = false, confirmed: bool = false, deadline: c.Deadline = .{},
-    wait: enum { settle, cp, mec, rlc, sdma_halt, sdma_rb, sdma_ib, sdma_idle, gui, rlc_busy, serdes_cu, serdes_noncu, ready } = .settle,
+    wait: enum { settle, cp, mec, rlc, sdma_halt, sdma_rb, sdma_ib, sdma_idle, gui, rlc_busy, serdes_cu, serdes_noncu, rlc_reset_assert, rlc_reset_settle, ready } = .settle,
     samples: [11]u32 = @splat(0), sampled: u16 = 0, polls: u32 = 0,
     /// Revalidate an engine owner's completed stop without repeating reset
     /// commands after GMC has restored the firmware memory configuration.
     /// The same independent HALT/idle checks and deadline remain mandatory.
     pub fn recheck(self: *Park, io: anytype) Error!void {
         if (!self.touched) return error.Unconfirmed;
+        if (self.rlc_reset == .asserted or self.rlc_reset == .settling) return error.Retained;
+        self.rlc_reset = .none;
         self.confirmed = false;
         self.wait = .settle; self.samples = @splat(0); self.sampled = 0; self.polls = 0;
         try self.deadline.start(io.nowNs(), 500_000_000, 50_000);
     }
     pub fn begin(self: *Park, io: anytype) Error!void {
+        if (self.rlc_reset == .asserted or self.rlc_reset == .settling) return error.Retained;
+        self.rlc_reset = .none;
         self.confirmed = false;
         self.wait = .settle; self.samples = @splat(0); self.sampled = 0; self.polls = 0;
         try self.deadline.start(io.nowNs(), 500_000_000, 50_000);
@@ -77,6 +88,22 @@ pub const Park = struct {
         if (!self.touched) return error.State;
         if (!try self.deadline.check(io.nowNs())) return false;
         self.polls +|= 1;
+        if (self.rlc_reset == .asserted) {
+            self.wait = .rlc_reset_assert;
+            if (io.nowNs() < self.rlc_reset_earliest) return false;
+            try c.set(io, g.GRBM_SOFT_RESET, g.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK, 0);
+            try io.barrier();
+            self.rlc_reset_sample = try c.read(io, g.GRBM_SOFT_RESET);
+            if (self.rlc_reset_sample & g.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK != 0) return error.Unconfirmed;
+            self.rlc_reset = .settling;
+            self.rlc_reset_earliest = @import("std").math.add(u64, io.nowNs(), 50_000) catch return error.Deadline;
+            return false;
+        }
+        if (self.rlc_reset == .settling) {
+            self.wait = .rlc_reset_settle;
+            if (io.nowNs() < self.rlc_reset_earliest) return false;
+            self.rlc_reset = .done;
+        }
         self.wait = .cp;
         if (try self.sample(io, 0, g.CP_ME_CNTL) & cp_halt_mask != cp_halt_mask) return false;
         self.wait = .mec;
@@ -95,8 +122,7 @@ pub const Park = struct {
         }
         self.wait = .gui;
         if (try self.sample(io, 7, g.GRBM_STATUS) & g.GRBM_STATUS__GUI_ACTIVE_MASK != 0) return false;
-        self.wait = .rlc_busy;
-        if (try self.sample(io, 8, g.GRBM_STATUS2) & (g.GRBM_STATUS2__RLC_BUSY_MASK | g.GRBM_STATUS2__RLC_RQ_PENDING_MASK) != 0) return false;
+        const rlc_status = try self.sample(io, 8, g.GRBM_STATUS2);
         // Picasso has one shader engine/array. Select the actual bank for the
         // CU SERDES read, and restore the caller's index even on a failed read.
         const index = try c.read(io, g.GRBM_GFX_INDEX);
@@ -109,6 +135,24 @@ pub const Park = struct {
         if (cu != 0) return false;
         self.wait = .serdes_noncu;
         if (try self.sample(io, 10, g.RLC_SERDES_NONCU_MASTER_BUSY) & mask != 0) return false;
+        self.wait = .rlc_busy;
+        // Never reset over pending requests or active SERDES. Every other
+        // engine's current stop receipt has been checked above, not cached.
+        if (rlc_status & g.GRBM_STATUS2__RLC_RQ_PENDING_MASK != 0) return false;
+        if (rlc_status & g.GRBM_STATUS2__RLC_BUSY_MASK != 0) {
+            if (!self.allow_rlc_reset or !self.include_sdma or self.rlc_reset != .none) return false;
+            self.rlc_reset_sample = try c.read(io, g.GRBM_SOFT_RESET);
+            if (self.rlc_reset_sample & g.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK != 0) return error.Unconfirmed;
+            // Set ownership before the uncertain write. A failed write or
+            // readback retains firmware and cannot restart this attempt.
+            self.rlc_reset = .asserted; self.wait = .rlc_reset_assert;
+            try io.write(g.GRBM_SOFT_RESET, self.rlc_reset_sample | g.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK);
+            try io.barrier();
+            self.rlc_reset_sample = try c.read(io, g.GRBM_SOFT_RESET);
+            if (self.rlc_reset_sample & g.GRBM_SOFT_RESET__SOFT_RESET_RLC_MASK == 0) return error.Unconfirmed;
+            self.rlc_reset_earliest = @import("std").math.add(u64, io.nowNs(), 50_000) catch return error.Deadline;
+            return false;
+        }
         self.confirmed = true; self.wait = .ready; return true;
     }
     fn sample(self: *Park, io: anytype, comptime index: usize, address: u32) Error!u32 {

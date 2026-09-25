@@ -32,6 +32,7 @@ pub const Owner = struct {
     profile: ?@import("asic_profile.zig").Profile = null,
     self_address: usize = 0, epoch: q.Epoch = .{ .adapter = 0, .device = 0, .reset = 0 },
     contexts: [8]Context = @splat(.{}), jobs: [8]Job = @splat(.{}), gds: u16 = 0,
+    failure_reports: u8 = 0,
     generation: u64 = 0, serial: u64 = 0, dispatches: u64 = 0, stopping: bool = false,
     pub fn init(self: *Owner, epoch: q.Epoch, profile: @import("asic_profile.zig").Profile) c.Error!void {
         if (self.self_address != 0 or epoch.adapter == 0 or epoch.device == 0 or epoch.reset == 0) return error.Invalid;
@@ -154,7 +155,14 @@ pub const Owner = struct {
             const ring = &engine.rings[@intFromEnum(kind)];
             if (ring.available() < 48) continue;
             self.dispatches +|= 1;
-            self.submit(rt, engine, job, kind) catch {
+            self.submit(rt, engine, job, kind) catch |err| {
+                if (self.failure_reports < 4) if (rt.ctx) |ctx| {
+                    self.failure_reports += 1;
+                    var text: [256]u8 = undefined;
+                    if (std.fmt.bufPrintZ(&text, "AMDGPU gc-submit: error={s} engine={s} slot={d} timeline={d} point={d} ticket={} available={d}; exact cleanup retained", .{
+                        @errorName(err), @tagName(kind), job.fence.slot, job.fence.timeline, job.fence.point,
+                        job.ticket != null, ring.available() })) |message| ctx.logError(message) else |_| {}
+                };
                 job.failed = true;
                 if (job.ticket) |ticket| rt.timeline.cancelUnsubmitted(ticket) catch {
                     engine.faulted = true; rt.timeline.fault(6);

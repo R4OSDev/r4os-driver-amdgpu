@@ -46,6 +46,19 @@ const Frame = struct {
     workspace: [256]u32 = @splat(0),
 };
 const Segment = struct { first: usize = 0, end: usize = 0 };
+pub const Trace = struct {
+    pub const Entry = struct {
+        pc: u32 = 0,
+        depth: u32 = 0,
+        ps: u32 = 0,
+        words: [3]u32 = @splat(0),
+        quotient: u32 = 0,
+        remainder: u32 = 0,
+    };
+    entries: [128]Entry = @splat(.{}),
+    count: u32 = 0,
+    commands: [256]bool = @splat(false),
+};
 const masks = [_]u32{ 0xffffffff, 0xffff, 0xffff00, 0xffff0000, 0xff, 0xff00, 0xff0000, 0xff000000 };
 const shifts = [_]u5{ 0, 0, 8, 16, 0, 8, 16, 24 };
 const defaults = [_]u8{ 0, 0, 1, 2, 0, 1, 2, 3 };
@@ -84,6 +97,7 @@ pub const Vm = struct {
     budget: u32 = 0,
     last_pc: u32 = 0,
     last_opcode: u8 = 0,
+    trace: ?*Trace = null,
     pub fn revision(self: *const Vm, command: u32) Error![2]u8 {
         if (self.commands.len < 4 or command >= (self.commands.len - 4) / 2) return error.Missing;
         const at = try number(u16, self.commands, 4 + command * 2);
@@ -168,6 +182,7 @@ pub const Vm = struct {
         const f = &self.frames[self.depth];
         f.* = .{ .first = at, .end = at + bytes.len, .pc = at + 6, .ps = ps, .shift = ps_shift, .ws_count = bytes[4] };
         self.depth += 1;
+        if (self.trace) |trace| trace.commands[index] = true;
     }
     fn fetch(self: *Vm, f: *Frame, comptime T: type) Error!T {
         if (f.pc < f.first + 6 or f.pc > f.end or @sizeOf(T) > f.end - f.pc) return error.Bounds;
@@ -386,6 +401,13 @@ pub const Vm = struct {
         while (self.depth != 0) {
             try self.tick();
             const f = &self.frames[self.depth - 1];
+            if (self.trace) |trace| {
+                const entry = &trace.entries[trace.count % trace.entries.len];
+                entry.* = .{ .pc = @intCast(f.pc), .depth = @intCast(self.depth), .ps = @intCast(f.ps),
+                    .quotient = self.divmul[0], .remainder = self.divmul[1] };
+                for (&entry.words, 0..) |*word, i| if (f.ps + i < params.len) { word.* = params[f.ps + i]; };
+                trace.count +|= 1;
+            }
             self.last_pc = @intCast(f.pc);
             const opcode = try self.fetch(f, u8);
             self.last_opcode = opcode;

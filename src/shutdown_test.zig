@@ -21,9 +21,9 @@ pub fn check(api: *a.DriverApi, owner: *@import("native_worker.zig").Owner, comp
             releases += 1;
             return 0;
         }
-        fn now() callconv(.c) u64 { return (@as(u64, waits) + 1) * std.time.ns_per_ms; }
+        fn now() callconv(.c) u64 { return (@as(u64, waits) + 1) * 10 * std.time.ns_per_ms; }
         fn wait(ticks: u64) callconv(.c) void {
-            std.debug.assert(ticks == 1 and worker.stop == 1 and worker.thread == 77 and releases == 0);
+            std.debug.assert(ticks == 10 and worker.stop == 1 and worker.thread == 77 and releases == 0);
             waits += 1;
             if (waits == 2) done = true;
         }
@@ -32,6 +32,7 @@ pub fn check(api: *a.DriverApi, owner: *@import("native_worker.zig").Owner, comp
     api.wait_ticks = F.wait;
     owner.* = .{
         .self_address = @intFromPtr(owner), .ctx = r4os.r4dev.DriverContext.init(api), .thread = 77,
+        .interval_ticks = 10, // captured at init on the real1000Hz timer
         .threads = .{ .table = .{ .join = @intFromPtr(&F.join), .release = @intFromPtr(&F.release) } },
         .clock = .{ .table = .{ .now_ns = @intFromPtr(&F.now) } },
     };

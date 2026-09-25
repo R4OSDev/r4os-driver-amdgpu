@@ -47,6 +47,7 @@ struct r4dcn {
  struct r4dcn_limits limits;
  uint64_t self;
  int fault;
+ struct r4dcn_program_diagnostic program_diagnostic;
  unsigned count,mask,prepared,programmed;
  unsigned running,tg_locked,cursor_locked;
  uint32_t dprefclk_khz;
@@ -66,6 +67,7 @@ struct r4dcn {
  struct dcn10_ipp ipps[R4DCN_PIPES];
  struct optc tgs[R4DCN_PIPES];
  struct dcn10_hubbub hubbub;
+ struct dcn_mpc_registers mpc_registers;
  struct dcn10_mpc mpc;
  struct dc_bios bios;
  struct r4dcn_link links[R4DCN_PIPES];
