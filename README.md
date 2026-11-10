@@ -455,7 +455,7 @@ missing HALT during readback-only cleanup; no missing receipt admits release.
 All 43 groups and 27 resources pass. Package51 was transferred, verified and staged as batch55; COMMIT was requested, but SSH has not returned. Postboot installation and physical51 qualification remain unconfirmed. The package includes passive CONFIG for the next boot. Resume evidence: Temp/AMD08039/Native51/Pending-Boot-Proof.json.
 
 API-Migration 0.90.53: AMDGPU 0.1.97
-Aktueller Einstieg DriverInit2/DriverApi2/Query2:2 mit SDK194/Contract93.
+Aktueller Einstieg DriverInit2/DriverApi2/Query2:2 mit SDK195/Contract93.
 Die technischen API2-Callbacks werden wirklich ueber die neue Tabelle
 aufgerufen; eigenstaendige Grafik-/Memory-/Thread-/Resource-Records
 behalten ihre eigene Revision1. Alte DriverApi-Versionszahlen in den
