@@ -17,7 +17,7 @@ pub const Capture = struct {
     board: bios.Board = undefined, valid: bool = false,
     sha256: [32]u8 = @splat(0),
 
-    pub fn capture(self: *Capture, ctx: *const r4os.r4dev.DriverContext, snapshot: *const identity.Snapshot) Error!void {
+    pub fn capture(self: *Capture, ctx: *const r4os.r4dev.DriverContext2, snapshot: *const identity.Snapshot) Error!void {
         if (self.allocation.handle != 0 or self.window.handle.id != 0 or self.cleanup_pending or self.valid) return error.Busy;
         self.heap = ctx.heap() orelse return error.Heap;
         const device: bios.Device = .{ .bus = snapshot.pci.bus, .device = snapshot.pci.device, .function = snapshot.pci.function,
@@ -82,7 +82,7 @@ pub const Capture = struct {
         const pointer: [*]u8 = @ptrFromInt(allocation.cpu_address);
         return pointer[0..@intCast(bytes)];
     }
-    fn shadow(self: *Capture, ctx: *const r4os.r4dev.DriverContext, snapshot: *const identity.Snapshot, device: bios.Device) Error!void {
+    fn shadow(self: *Capture, ctx: *const r4os.r4dev.DriverContext2, snapshot: *const identity.Snapshot, device: bios.Device) Error!void {
         // amdgpu_bios.c APU shadow source, but without PCI BAR sizing or writes.
         // A bare BAR address is insufficient. Direct UMA cache aliases are not
         // invented when the measured prefetchable aperture is unavailable.
@@ -110,7 +110,7 @@ pub const Capture = struct {
         self.source = .measured_bar0_shadow; self.valid = true;
         std.crypto.hash.sha2.Sha256.hash(self.board.image, &self.sha256, .{});
     }
-    fn parseBoard(self: *Capture, ctx: *const r4os.r4dev.DriverContext, image: []const u8, device: bios.Device, verified_vfct: bool) Error!void {
+    fn parseBoard(self: *Capture, ctx: *const r4os.r4dev.DriverContext2, image: []const u8, device: bios.Device, verified_vfct: bool) Error!void {
         self.stage = .atom;
         var diagnostic: bios.Diagnostic = .{};
         bios.parseDetailed(image, device, &self.board, &diagnostic, .{ .verified_vfct = verified_vfct }) catch |err| {
@@ -141,14 +141,14 @@ pub const Capture = struct {
             return err;
         };
     }
-    fn logTable(ctx: *const r4os.r4dev.DriverContext, label: []const u8, image: []const u8, offset: usize) void {
+    fn logTable(ctx: *const r4os.r4dev.DriverContext2, label: []const u8, image: []const u8, offset: usize) void {
         const declared = bios.number(u16, image, offset) catch 0;
         if (offset >= image.len) return;
         const length: usize = @min(image.len - offset, if (declared >= 4) @min(declared, 256) else 32);
         var relative: usize = 0;
         while (relative < length) : (relative += 32) logPrefix(ctx, label, image[0 .. offset + length], offset + relative);
     }
-    fn logPrefix(ctx: *const r4os.r4dev.DriverContext, label: []const u8, image: []const u8, offset: usize) void {
+    fn logPrefix(ctx: *const r4os.r4dev.DriverContext2, label: []const u8, image: []const u8, offset: usize) void {
         if (offset >= image.len) return;
         const length: usize = @min(image.len - offset, 32);
         var bytes: [32]u8 = @splat(0);

@@ -18,7 +18,7 @@ pub const Owner = struct {
     registers: io.Registers = .{}, table_window: io.Window = .{}, context_window: io.Window = .{},
     gart: ?pages.Flat = null, virtual: pages.Virtual = .{}, controller: hubs.Controller = .{},
     records: [128]Record = @splat(.{}), orphan_release: a.GfxOwnedBufferRelease = .{},
-    pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, map: *l.Layout, bar: u64, adapter: u32, memory_epoch: u64) Error!void {
+    pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, map: *l.Layout, bar: u64, adapter: u32, memory_epoch: u64) Error!void {
         if (self.self_address != 0) return error.Busy;
         if (adapter == 0 or memory_epoch == 0 or map.native_budget == 0) return error.Invalid;
         const memory = ctx.memory() orelse return error.Unsupported;

@@ -8,7 +8,7 @@ const timeline = @import("queue_timeline.zig");
 pub const Error = ih.Error;
 pub const Wake = struct { context: usize, signal: *const fn (usize) void };
 pub const Owner = struct {
-    self_address: usize = 0, ctx: ?r4os.r4dev.DriverContext = null,
+    self_address: usize = 0, ctx: ?r4os.r4dev.DriverContext2 = null,
     registers: ?*@import("memory_io.zig").Registers = null, arena: ?*storage.Owner = null,
     pci: a.PciDeviceInfo = .{}, wake: ?Wake = null, irq: u8 = 0,
     msi: bool = false, registered: bool = false, routing_uncertain: bool = false,
@@ -17,7 +17,7 @@ pub const Owner = struct {
     // 2 capturing resident metadata, 3 close requested during capture.
     gate: u32 = 0, inflight: u32 = 0, fault_code: u32 = 0,
     interrupts: u64 = 0, vectors: u64 = 0,
-    pub fn open(self: *Owner, ctx: *const r4os.r4dev.DriverContext, arena: *storage.Owner,
+    pub fn open(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, arena: *storage.Owner,
         snapshot: *const @import("identity.zig").Snapshot, epoch: timeline.Epoch, wake: Wake) Error!void
     {
         if (self.self_address != 0) return error.Busy;

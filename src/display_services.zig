@@ -4,7 +4,7 @@
 const r4os = @import("r4os");
 const a = r4os.abi;
 pub const Owner = struct {
-    ctx: r4os.r4dev.DriverContext,
+    ctx: r4os.r4dev.DriverContext2,
     threads: r4os.r4dev.DriverThreadContext,
     clock: r4os.r4dev.DriverResourceContext,
     outputs: r4os.driver_outputs.Context,

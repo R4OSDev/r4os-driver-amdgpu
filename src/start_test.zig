@@ -496,7 +496,7 @@ const N = struct {
     var run: @import("start_runtime.zig").Owner = .{};
     var memory: @import("memory_owner.zig").Owner = .{};
     var map: @import("memory_layout.zig").Layout = undefined;
-    var api: a.DriverApi = undefined;
+    var api: a.DriverApi2 = undefined;
     var expected: a.GfxNativeBootInfo = .{};
     var request: a.GfxBootHoldRequest = .{};
     var command: u32 = 2; var held = false; var effects = false; var mapped = false;
@@ -515,17 +515,17 @@ const N = struct {
             .{ .base = 0x100000000, .bytes = 512 * 1024 * 1024 }, 0x100000, 2 * 1024 * 1024, null);
         expected = .{ .generation = 11, .state = a.display_state_bootfb, .physical_address = 0x220100000,
             .byte_length = 4096, .width = 32, .height = 32, .pitch = 128, .format = a.gfx_buffer_format_xrgb8888 };
-        api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+        api = undefined; api.magic = r4os.technical2.abi.driver_magic; api.version = r4os.technical2.abi.driver_version; api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
         api.gfx_memory_query = memoryQuery; api.gfx_display_query = displayQuery; api.resource_query = resourceQuery;
         api.pci_read_config32 = config; api.pci_write_config32 = configWrite;
         memory.self_address = @intFromPtr(&memory); memory.layout = &map; memory.epoch = 23; memory.adapter = 7; memory.prepared = true;
-        memory.memory = r4os.r4dev.DriverContext.init(&api).memory().?;
-        memory.registers.clock = r4os.r4dev.DriverContext.init(&api).resources().?;
+        memory.memory = r4os.r4dev.DriverContext2.init(&api).memory().?;
+        memory.registers.clock = r4os.r4dev.DriverContext2.init(&api).resources().?;
         memory.registers.window.value = .{ .handle = .{ .id = 1, .generation = 1 }, .physical_address = 0xf0000000, .cpu_address = @intFromPtr(&F.words), .byte_length = @sizeOf(@TypeOf(F.words)) };
         F.view = try s.View.create(&F.arena, try map.mcAddress(map.firmware.span), try map.physicalAddress(map.firmware.span));
     }
     fn prepare() !void {
-        const ctx = r4os.r4dev.DriverContext.init(&api);
+        const ctx = r4os.r4dev.DriverContext2.init(&api);
         var snapshot: @import("identity.zig").Snapshot = .{ .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 }, .pci_revision = F.store.profile.?.pci_revision, .command = 2 };
         snapshot.bars[5] = .{ .raw = 0xf0000000, .base = 0xf0000000, .kind = .memory32 };
         try run.prepare(&ctx, &memory, &snapshot, try @import("identity.zig").chip(0x15d8, if (map.profile == .raven2) 0x090015d8 else 0x010015d8), &F.store, expected, 0x100000, .standard);

@@ -10,12 +10,12 @@ const boot = @import("boot_snapshot.zig");
 pub const Error = @import("start_common.zig").Error || boot.Error;
 pub const Owner = struct {
     prepare_step: enum { empty, admission, storage, hold, guard, identity, latch, flow, pci, ready } = .empty,
-    self_address: usize = 0, memory: ?*mem.Owner = null, ctx: ?r4os.r4dev.DriverContext = null,
+    self_address: usize = 0, memory: ?*mem.Owner = null, ctx: ?r4os.r4dev.DriverContext2 = null,
     snapshot: identity.Snapshot = .{}, chip: ?identity.Chip = null, pci_changed: bool = false, old_command: u16 = 0,
     flow: @import("start_flow.zig").Flow = .{}, storage: @import("start_storage.zig").Owner = .{},
     hold: boot.Snapshot = .{}, guard: @import("start_guard.zig").Guard = .{},
     restored_guard: ?@import("start_guard.zig").Guard = null,
-    pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner,
+    pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, memory: *mem.Owner,
         snapshot: *const identity.Snapshot, chip: identity.Chip, store: *const @import("firmware_store.zig").Store,
         expected: a.GfxNativeBootInfo, boot_offset: u64, pitch_policy: @import("boot_pitch.zig").Policy) Error!void {
         if (self.self_address != 0) return error.Busy;
@@ -140,6 +140,6 @@ pub const Owner = struct {
 };
 
 const Reader = struct {
-    ctx: r4os.r4dev.DriverContext, pci: a.PciDeviceInfo,
+    ctx: r4os.r4dev.DriverContext2, pci: a.PciDeviceInfo,
     pub fn read(self: *Reader, offset: u16) u32 { return self.ctx.pciReadConfig32(self.pci, offset); }
 };

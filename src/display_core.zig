@@ -47,7 +47,7 @@ pub const Owner = struct {
     self_address: usize = 0,
     memory: ?*mem.Owner = null,
     native: ?*start.Owner = null,
-    ctx: ?r4os.r4dev.DriverContext = null,
+    ctx: ?r4os.r4dev.DriverContext2 = null,
     heap: ?r4os.r4dev.DriverHeapContext = null,
     threads: ?r4os.r4dev.DriverThreadContext = null,
     clock: ?r4os.r4dev.DriverResourceContext = null,
@@ -112,14 +112,14 @@ pub const Owner = struct {
     scanout_error: ?scanout.Error = null,
     abort_step: enum { idle, admission, output_stop, scanout_stop, frontend_quiet, restore, boot_guard, done } = .idle,
     abort_reported: bool = false,
-    pub fn prepareBoot(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
+    pub fn prepareBoot(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
         const held = &native.hold;
         if (mode.mc_address != native.guard.boot_mc or mode.buffer_bytes != held.boot.byte_length or
             mode.width != held.boot.width or mode.height != held.boot.height or mode.pitch_bytes != held.boot.pitch or
             held.boot.format != a.gfx_buffer_format_xrgb8888 or mode.pipe >= 4) return error.Invalid;
         try self.prepareImpl(ctx, memory, native, board, limits, mode);
     }
-    pub fn prepareOwned(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner,
+    pub fn prepareOwned(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, memory: *mem.Owner, native: *start.Owner,
         board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode, reference: a.GfxBufferReference) Error!void
     {
         if (!memory.prepared or memory.self_address != @intFromPtr(memory) or reference.reference.id == 0) return error.Stale;
@@ -137,7 +137,7 @@ pub const Owner = struct {
             backing.bytes != mode.buffer_bytes) return error.Invalid;
         try self.prepareImpl(ctx, memory, native, board, limits, mode);
     }
-    fn prepareImpl(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
+    fn prepareImpl(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, memory: *mem.Owner, native: *start.Owner, board: *const @import("bios.zig").Board, limits: c.struct_r4dcn_limits, mode: c.struct_r4dcn_mode) Error!void {
         if (self.self_address != 0) return error.Busy;
         const integrated = board.integrated orelse return error.Unsupported;
         const layout = memory.layout orelse return error.Stale;

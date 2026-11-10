@@ -10,7 +10,7 @@ pub const Capture = struct {
     window: a.GfxMmioWindow = .{},
     cleanup_pending: bool = false,
 
-    pub fn close(self: *Capture, ctx: *const r4os.r4dev.DriverContext) bool {
+    pub fn close(self: *Capture, ctx: *const r4os.r4dev.DriverContext2) bool {
         if (self.window.handle.id == 0 and !self.cleanup_pending) return true;
         const memory = ctx.memory() orelse return false;
         // There are no DMA jobs, IRQs, callbacks or writes in the probe. The
@@ -24,7 +24,7 @@ pub const Capture = struct {
         self.cleanup_pending = false;
         return true;
     }
-    fn page(self: *Capture, ctx: *const r4os.r4dev.DriverContext, base: u64, offset: u64) Error!void {
+    fn page(self: *Capture, ctx: *const r4os.r4dev.DriverContext2, base: u64, offset: u64) Error!void {
         if (self.window.handle.id != 0 or self.cleanup_pending) return error.Busy;
         const memory = ctx.memory() orelse return error.MemoryContract;
         const request: a.GfxMmioRequest = .{ .resource_base = base, .resource_bytes = memregs.required_prefix,
@@ -41,7 +41,7 @@ pub const Capture = struct {
         const words: [*]const volatile u32 = @ptrFromInt(self.window.cpu_address);
         return words[(offset % regs.page_bytes) / 4];
     }
-    pub fn measure(self: *Capture, ctx: *const r4os.r4dev.DriverContext, snapshot: *const identity.Snapshot) Error!boot.Measurement {
+    pub fn measure(self: *Capture, ctx: *const r4os.r4dev.DriverContext2, snapshot: *const identity.Snapshot) Error!boot.Measurement {
         if (!identity.target(snapshot.pci) or snapshot.command & 2 == 0 or snapshot.bars[5].kind != .memory32 or
             (snapshot.bars[5].bytes != 0 and snapshot.bars[5].bytes < memregs.required_prefix) or
             snapshot.bars[5].prefetch or snapshot.bars[5].base == 0 or snapshot.bars[5].base & 0xfff != 0) return error.Resource;

@@ -11,11 +11,11 @@ pub const Snapshot = struct {
     native_adopted: bool = false, native_generation: u64 = 0,
     boot: a.GfxNativeBootInfo = .{}, sha256: [32]u8 = @splat(0), valid: bool = false, effects: bool = false,
 
-    pub fn capture(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext, adapter: u32, expected: a.GfxNativeBootInfo) Error!void {
+    pub fn capture(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext2, adapter: u32, expected: a.GfxNativeBootInfo) Error!void {
         try self.captureHeld(ctx, adapter, expected, @intFromPtr(&refuseRecovery), 0);
         if (!self.releaseHold()) return error.Release;
     }
-    pub fn captureHeld(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext, adapter: u32, expected: a.GfxNativeBootInfo, callback: u64, cookie: u64) Error!void {
+    pub fn captureHeld(self: *Snapshot, ctx: *const r4os.r4dev.DriverContext2, adapter: u32, expected: a.GfxNativeBootInfo, callback: u64, cookie: u64) Error!void {
         if (self.reference.reference.id != 0 or self.read.lease.id != 0 or self.held_generation != 0) return error.Busy;
         const memory = ctx.memory() orelse return error.Unsupported;
         const display = ctx.graphicsDisplay() orelse return error.Unsupported;

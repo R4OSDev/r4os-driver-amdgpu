@@ -32,7 +32,7 @@ pub const Store = struct {
     last_ns: u64 = 0,
     deadline: u64 = 0,
 
-    pub fn load(self: *Store, ctx: *const r4os.r4dev.DriverContext, snapshot: *const identity.Snapshot, chip: identity.Chip) Error!void {
+    pub fn load(self: *Store, ctx: *const r4os.r4dev.DriverContext2, snapshot: *const identity.Snapshot, chip: identity.Chip) Error!void {
         if (self.allocation.handle != 0 or self.profile != null or self.valid) return error.Busy;
         self.last_resource = "profile";
         const profile = try fw.select(snapshot, chip);

@@ -4,15 +4,14 @@
 const r4os = @import("r4os");
 const a = r4os.abi;
 pub const Error = error{ Unsupported, Busy, Admission, Completion, Cancelled, Deadline, Wait, Clock };
-pub fn supported(ctx: *const r4os.r4dev.DriverContext) bool {
-    return ctx.apiVersion() >= a.driver_api_owned_work_version and ctx.api.size >= @offsetOf(a.DriverApi, "driver_work_submit_owned") + 8 and
-        ctx.api.driver_work_submit_owned != null;
+pub fn supported(ctx: *const r4os.r4dev.DriverContext2) bool {
+    return ctx.requires(.{ "driver_work_submit_owned", "driver_work_cancel", "driver_completion_status", "driver_completion_wait", "driver_completion_release" });
 }
 pub const Call = struct {
     handle: u32 = 0,
     /// Context is resident owner storage, never a callback argument on the
     /// caller stack. A retained ticket blocks owner retirement after failure.
-    pub fn invoke(self: *Call, ctx: *const r4os.r4dev.DriverContext, threads: r4os.r4dev.DriverThreadContext,
+    pub fn invoke(self: *Call, ctx: *const r4os.r4dev.DriverContext2, threads: r4os.r4dev.DriverThreadContext,
         clock: r4os.r4dev.DriverResourceContext, handler: a.DriverWorkHandler, context: usize) Error!i32
     {
         if (!supported(ctx)) return error.Unsupported;
@@ -21,7 +20,8 @@ pub const Call = struct {
         if (begin == ~@as(u64, 0)) return error.Clock;
         var last = begin;
         // Time and iteration bounds cover both a stuck completion and clock.
-        for (0..4096) |_| {
+        var budget = r4os.driver_poll_budget.DriverPollBudget.initIterations(4096, .task);
+        while (budget.step(null, false) == .proceed) {
             const now = clock.nowNs();
             if (now < last or now == ~@as(u64, 0)) return error.Clock;
             last = now;
@@ -47,7 +47,7 @@ pub const Call = struct {
         if (self.handle != 0) _ = ctx.workCancel(self.handle);
         return error.Deadline;
     }
-    pub fn poll(self: *Call, ctx: *const r4os.r4dev.DriverContext) Error!?i32 {
+    pub fn poll(self: *Call, ctx: *const r4os.r4dev.DriverContext2) Error!?i32 {
         if (self.handle == 0) return null;
         var status: a.DriverCompletionStatus = .{};
         if (ctx.completionStatus(self.handle, &status) != 0) return error.Completion;
@@ -63,7 +63,7 @@ pub const Call = struct {
         if (status.state == a.driver_work_state_cancelled) return error.Cancelled;
         return status.result;
     }
-    pub fn retired(self: *Call, ctx: *const r4os.r4dev.DriverContext) bool {
+    pub fn retired(self: *Call, ctx: *const r4os.r4dev.DriverContext2) bool {
         if (self.handle == 0) return true;
         _ = self.poll(ctx) catch {};
         return self.handle == 0;
@@ -75,7 +75,7 @@ pub const Call = struct {
 pub fn check() !void {
     const t = @import("std").testing;
     const F = struct {
-        var api: a.DriverApi = undefined;
+        var api: a.DriverApi2 = undefined;
         var now: u64 = 1;
         var busy: u32 = 0;
         var hits: u32 = 0;
@@ -91,6 +91,7 @@ pub fn check() !void {
         var held = false;
         var fail_wait = false;
         var fail_release = false;
+        var frozen_clock = false;
         var result: i32 = 0;
         var pending: ?a.DriverWorkHandler = null;
         var context: usize = 0;
@@ -125,7 +126,7 @@ pub fn check() !void {
             }
             out.* = result; return 0;
         }
-        fn clock() callconv(.c) u64 { return now; }
+        fn clock() callconv(.c) u64 { return if (frozen_clock) 1 else now; }
         fn callback(raw: usize) callconv(.c) i32 { tryAssert(raw == 73); hits += 1; return 7; }
         fn brightness(value: *const a.GfxOutputBrightness) callconv(.c) i32 { level = value.current; return a.gfx_output_ok; }
         fn register(adapter: u32, out: *a.GfxReceiverSource) callconv(.c) i32 { out.* = .{ .adapter_id = adapter, .generation = 2 }; return a.gfx_output_ok; }
@@ -135,11 +136,11 @@ pub fn check() !void {
         fn tryAssert(ok: bool) void { @import("std").debug.assert(ok); }
         fn finish() void { held = false; result = pending.?(context); pending = null; }
     };
-    F.api = undefined; F.api.magic = a.driver_magic; F.api.reserved = 0; F.api.version = a.driver_api_version; F.api.size = @sizeOf(a.DriverApi);
+    F.api = undefined; F.api.magic = r4os.technical2.abi.driver_magic; F.api.reserved = 0; F.api.version = r4os.technical2.abi.driver_version; F.api.size = @sizeOf(a.DriverApi2); F.api.reserved = 0;
     F.api.driver_work_submit_owned = F.submit; F.api.driver_completion_status = F.status; F.api.driver_completion_release = F.release;
     F.api.driver_completion_wait = F.wait;
     F.api.driver_work_cancel = F.cancel;
-    const ctx = r4os.r4dev.DriverContext.init(&F.api);
+    const ctx = r4os.r4dev.DriverContext2.init(&F.api);
     const threads: r4os.r4dev.DriverThreadContext = .{ .table = .{ .sleep_ticks = @intFromPtr(&F.sleep) } };
     const clock: r4os.r4dev.DriverResourceContext = .{ .table = .{ .now_ns = @intFromPtr(&F.clock) } };
     var call: Call = .{};
@@ -175,7 +176,15 @@ pub fn check() !void {
     F.cancelled = true; F.held = true;
     try t.expectError(error.Cancelled, call.invoke(&ctx, threads, clock, F.callback, 73));
     try t.expect(call.handle == 0 and F.hits == cancel_hits and F.releases == cancel_releases + 1);
-    F.cancelled = false; F.held = false; F.pending = null; F.fail_wait = true;
+    F.cancelled = false; F.held = false; F.pending = null;
+    const frozen_hits = F.hits; const frozen_releases = F.releases;
+    F.frozen_clock = true; F.held = true;
+    try t.expectError(error.Deadline, call.invoke(&ctx, threads, clock, F.callback, 73));
+    try t.expect(call.handle == 3 and F.hits == frozen_hits and F.releases == frozen_releases);
+    // Budget exhaustion requests cancellation; it is no callback receipt.
+    F.frozen_clock = false; F.finish();
+    try t.expect(call.retired(&ctx) and F.hits == frozen_hits + 1 and F.releases == frozen_releases + 1);
+    F.fail_wait = true;
     var services: @import("display_services.zig").Owner = .{ .ctx = ctx, .threads = threads, .clock = clock, .outputs = .{ .table = .{
         .brightness_publish = @intFromPtr(&F.brightness), .brightness_read = @intFromPtr(&F.read),
         .register_source = @intFromPtr(&F.register), .replace_receivers = @intFromPtr(&F.replace), .close_source = @intFromPtr(&F.close),

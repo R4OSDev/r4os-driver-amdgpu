@@ -14,7 +14,7 @@ const samples = @import("firmware_samples");
 const bios_fixture = @import("bios_fixture.zig");
 
 const Fixture = struct {
-    var api: a.DriverApi = undefined;
+    var api: a.DriverApi2 = undefined;
     var pci: a.PciDeviceInfo = undefined;
     var config: [1024]u32 = undefined;
     var page: [1024]u32 align(4096) = undefined;
@@ -110,7 +110,7 @@ const Fixture = struct {
         bad_window = false; unstable = false; pci_loss = false; pm_loss = false; bar_size_loss = false; boot_loss = false; boot_reads = 0;
         saw_picasso = false; saw_raven2 = false; saw_retained = false; reason_len = 0;
         api = undefined;
-        api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+        api.magic = @import("r4os").technical2.abi.driver_magic; api.version = @import("r4os").technical2.abi.driver_version; api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
         api.log_info = log; api.log_warn = log; api.log_error = log;
         api.get_option = option; api.pci_device_count = deviceCount; api.pci_device_at = deviceAt;
         api.pci_read_config32 = readConfig; api.gfx_display_query = displayQuery; api.gfx_memory_query = memoryQuery;

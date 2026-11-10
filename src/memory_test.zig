@@ -248,7 +248,7 @@ test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and conf
     try t.expectError(error.Disconnected, controller.flush(&hw, 0));
 }
 const F = struct {
-    var api: a.DriverApi = undefined;
+    var api: a.DriverApi2 = undefined;
     var owner: Owner = .{};
     var layout: l.Layout = undefined;
     var regs: [r.required_prefix / 4]u32 align(4096) = undefined;
@@ -306,9 +306,9 @@ const F = struct {
         charged = 0;
         closed = false; logically_lost = false;
         api = undefined;
-        api.magic = a.driver_magic;
-        api.version = a.driver_api_version;
-        api.size = @sizeOf(a.DriverApi);
+        api.magic = r4os.technical2.abi.driver_magic;
+        api.version = r4os.technical2.abi.driver_version;
+        api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
         api.gfx_memory_query = query;
         api.resource_query = resources;
         api.heap_query = heapQuery;
@@ -483,7 +483,7 @@ const F = struct {
         return 1;
     }
     fn prepare() !void {
-        const ctx = r4os.r4dev.DriverContext.init(&api);
+        const ctx = r4os.r4dev.DriverContext2.init(&api);
         try owner.prepare(&ctx, &layout, 0xf0000000, 7, 23);
     }
 };
@@ -888,7 +888,7 @@ fn checkWindowRetirement() !void {
     // which also reports unfinished driver BO destruction. That work may
     // need a later shutdown owner: it cannot gate this released window.
     F.reset();
-    const ctx = r4os.r4dev.DriverContext.init(&F.api);
+    const ctx = r4os.r4dev.DriverContext2.init(&F.api);
     const memory = ctx.memory().?;
     var window: @import("memory_io.zig").Window = .{};
     try window.open(memory, 0xf0000000, r.required_prefix, 0, 4096, false);

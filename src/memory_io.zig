@@ -57,7 +57,7 @@ pub const Registers = struct {
         @import("std").debug.assert(previous == null);
     }
 
-    pub fn open(self: *Registers, ctx: *const r4os.r4dev.DriverContext, base: u64) Error!void {
+    pub fn open(self: *Registers, ctx: *const r4os.r4dev.DriverContext2, base: u64) Error!void {
         self.clock = ctx.resources() orelse return error.Unsupported;
         try self.window.open(ctx.memory() orelse return error.Unsupported, base, regs.required_prefix, 0, regs.required_prefix, false);
     }

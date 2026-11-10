@@ -16,7 +16,7 @@ pub const Hooks = struct {
     quiesce: *const fn (usize, q.Epoch, @import("queue_ring.zig").EngineMask) ?q.Quiescence,
 };
 pub const Owner = struct {
-    self_address: usize = 0, ctx: ?r4os.r4dev.DriverContext = null,
+    self_address: usize = 0, ctx: ?r4os.r4dev.DriverContext2 = null,
     memory: ?*@import("memory_owner.zig").Owner = null,
     queue: ?r4os.driver_queue.Context = null, threads: ?r4os.r4dev.DriverThreadContext = null,
     semaphores: ?r4os.r4dev.DriverSemaphoreContext = null, clock: ?r4os.r4dev.DriverResourceContext = null,
@@ -29,7 +29,7 @@ pub const Owner = struct {
     binding: a.GfxBackendBinding = .{},
     thread_stop_requested: bool = false, thread_joined: bool = false, worker_result: i32 = 0,
     call: @import("owned_work.zig").Call = .{},
-    pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext, memory: *@import("memory_owner.zig").Owner,
+    pub fn prepare(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, memory: *@import("memory_owner.zig").Owner,
         snapshot: *const @import("identity.zig").Snapshot, binding: a.GfxBackendBinding, gate: @import("memory_hubs.zig").Gate) Error!void
     {
         if (self.self_address != 0) return error.Busy;

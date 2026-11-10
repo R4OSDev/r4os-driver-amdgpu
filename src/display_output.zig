@@ -13,7 +13,7 @@ const sdma = @import("sdma_jobs.zig");
 const start = @import("start_runtime.zig");
 const clocks = @import("display_clocks.zig");
 const bios = @import("bios.zig");
-const Outputs = @TypeOf(@as(r4os.r4dev.DriverContext, undefined).graphicsOutputs().?);
+const Outputs = @TypeOf(@as(r4os.r4dev.DriverContext2, undefined).graphicsOutputs().?);
 pub const Phase = enum { empty, allocate, copy, publish_buffer, prepare_core, wait_core, bind_panel, wait_panel, bind_hdmi, wait_hdmi, commit_core, wait_commit,
     shadow, publication, prepare_common, bind_scanout, wait_bind, enable, wait_enable, stream, wait_stream, sample, wait_sample,
     acknowledge, wait_ack, light, wait_light, handoff, active, failed, closing };
@@ -25,7 +25,7 @@ pub const Owner = struct {
     request_caps: u16 = 0,
     request_display_bytes: u32 = 0,
     request_output_bytes: u32 = 0,
-    ctx: ?r4os.r4dev.DriverContext = null,
+    ctx: ?r4os.r4dev.DriverContext2 = null,
     native: ?*start.Owner = null,
     engine: ?*sdma.Owner = null,
     core: ?*dc.Owner = null,
@@ -83,7 +83,7 @@ pub const Owner = struct {
     primary_stop_pending: bool = false,
     primary_stop_attempted: bool = false,
     primary_stopped: bool = false,
-    pub fn request(self: *Owner, ctx: *const r4os.r4dev.DriverContext, native: *start.Owner, engine: *sdma.Owner,
+    pub fn request(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, native: *start.Owner, engine: *sdma.Owner,
         core: *dc.Owner, pipe: *pipeline.Owner, presentation: *present.Owner, frames: [2]*buffers.Image,
         board: *const @import("bios.zig").Board, table: clocks.Table, gb_addr_config: u32) !void
     {

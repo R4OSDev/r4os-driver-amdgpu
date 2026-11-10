@@ -19,7 +19,7 @@ pub fn check() !void {
     const F = struct {
         var owner: Owner = .{};
         var output: @import("display_output.zig").Owner = .{};
-        var api: a.DriverApi = undefined;
+        var api: a.DriverApi2 = undefined;
         var request: a.DriverThreadRequest = .{};
         var time: u64 = 1000;
         var advances: u32 = 0;
@@ -93,7 +93,7 @@ pub fn check() !void {
             runtime_fault = false; fail_restart = false; stop_in_recover = false; restart_calls = 0;
             owner = .{}; output = .{}; time = 1000; advances = 0; recovers = 0; sleeps = 0; ran = false;
             fail_release = false; hold_recovery = false; fail_start = false; fail_advance = false;
-            api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+            api = undefined; api.magic = r4os.technical2.abi.driver_magic; api.version = r4os.technical2.abi.driver_version; api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
             api.thread_query = query; api.resource_query = resources; api.timer_frequency = frequency; api.log_error = log;
             api.driver_work_submit_owned = submit; api.driver_completion_status = status; api.driver_completion_release = releaseWork;
             api.driver_completion_wait = waitWork;
@@ -104,7 +104,7 @@ pub fn check() !void {
             result = callback(request.context); ran = true;
         }
     };
-    F.reset(); const ctx = r4os.r4dev.DriverContext.init(&F.api);
+    F.reset(); const ctx = r4os.r4dev.DriverContext2.init(&F.api);
     try t.expect(supported(&ctx));
     try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover });
     try t.expect(!F.owner.join()); F.run();
@@ -143,7 +143,7 @@ pub fn check() !void {
     try t.expect(F.advances == 2 and F.recovers == 3 and F.owner.recovered == 1 and F.owner.join());
     std.debug.print("[amd-native-worker] real Task callbacks, asynchronous admission, output-loss recovery, bounded retention and late join/release; model only\n", .{});
 }
-pub fn supported(ctx: *const r4os.r4dev.DriverContext) bool {
+pub fn supported(ctx: *const r4os.r4dev.DriverContext2) bool {
     if (!@import("owned_work.zig").supported(ctx)) return false;
     const threads = ctx.threads() orelse return false;
     const clock = ctx.resources() orelse return false;
@@ -152,7 +152,7 @@ pub fn supported(ctx: *const r4os.r4dev.DriverContext) bool {
 }
 pub const Owner = struct {
     self_address: usize = 0,
-    ctx: ?r4os.r4dev.DriverContext = null,
+    ctx: ?r4os.r4dev.DriverContext2 = null,
     threads: ?r4os.r4dev.DriverThreadContext = null,
     clock: ?r4os.r4dev.DriverResourceContext = null,
     hooks: ?Hooks = null,
@@ -169,7 +169,7 @@ pub const Owner = struct {
     call: @import("owned_work.zig").Call = .{},
     operation: enum { advance, recover, restart } = .advance,
     call_failure: ?anyerror = null,
-    pub fn start(self: *Owner, ctx: *const r4os.r4dev.DriverContext, output: *@import("display_output.zig").Owner, hooks: Hooks) !void {
+    pub fn start(self: *Owner, ctx: *const r4os.r4dev.DriverContext2, output: *@import("display_output.zig").Owner, hooks: Hooks) !void {
         if (self.self_address != 0) return error.Busy;
         if (!supported(ctx)) return error.Unsupported;
         const threads = ctx.threads() orelse return error.Unsupported;

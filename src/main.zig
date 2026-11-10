@@ -4,7 +4,7 @@ const std = @import("std");
 const a = r4os.abi;
 const identity = @import("identity.zig");
 const boot = @import("boot.zig");
-var driver_api: ?*const a.DriverApi = null;
+var driver_api: ?*const a.DriverApi2 = null;
 var probe: @import("probe.zig").Capture = .{};
 pub var firmware_package: @import("firmware_store.zig").Store = .{};
 pub var firmware: @import("bios_source.zig").Capture = .{};
@@ -30,11 +30,11 @@ var audio_peer: ?@import("display_audio.zig").Peer = null;
 pub var boot_association: ?boot.Association = null;
 
 comptime {
-    if (!@import("builtin").is_test) asm (r4os.r4dev.driverEntriesAsm("amdgpu_init", "amdgpu_shutdown"));
+    if (!@import("builtin").is_test) asm (r4os.technical2.driverEntriesAsm("amdgpu_init", "amdgpu_shutdown"));
 }
-pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
-    const ctx = r4os.r4dev.DriverContext.init(api);
-    if (!ctx.apiCompatible() or driver_api != null) return -1;
+pub export fn amdgpu_init(api: *const a.DriverApi2) callconv(.c) i32 {
+    const ctx = r4os.r4dev.DriverContext2.init(api);
+    if (!ctx.requires(.{"gfx_display_query"}) or driver_api != null) return -1;
     driver_api = api;
     device_count = 0;
     boot_association = null;
@@ -154,7 +154,7 @@ pub export fn amdgpu_init(api: *const a.DriverApi) callconv(.c) i32 {
 /// The passive bind has already pinned one exact board/firmware generation.
 var native_step: []const u8 = "idle";
 pub fn beginNative(memory_epoch: u64) !void {
-    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+    const ctx = r4os.r4dev.DriverContext2.init(driver_api orelse return error.State);
     const selected = boot_association orelse return error.State;
     if (!boot_snapshot.valid or memory_layout == null) return error.State;
     const device = &devices[selected.index];
@@ -213,7 +213,7 @@ pub fn advanceNative() !bool {
     native_step = "power-prepare";
     if (!try sdma_runtime.power.prepare(&sdma_runtime, &native_start)) return false;
     if (!sdma_runtime.active) {
-        const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+        const ctx = r4os.r4dev.DriverContext2.init(driver_api orelse return error.State);
         if (display_runtime.self_address == 0) display_runtime.audio_peer = audio_peer;
         native_step = "display-request";
         if (display_output.self_address == 0) try display_output.request(&ctx, &native_start, &sdma_runtime, &display_runtime, &display_pipeline,
@@ -299,7 +299,7 @@ fn diagnoseGc() void {
         .{ gc.park.samples[0], gc.park.samples[1], gc.park.samples[2], gc.park.samples[7], gc.park.samples[8], gc.park.samples[9], gc.park.samples[10] });
 }
 pub export fn amdgpu_shutdown() callconv(.c) i32 {
-    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return 0);
+    const ctx = r4os.r4dev.DriverContext2.init(driver_api orelse return 0);
     native_worker.requestStop();
     if (native_worker.self_address == 0) {
         if (!recoverNative()) return -1;
@@ -327,7 +327,7 @@ pub export fn amdgpu_shutdown() callconv(.c) i32 {
     return 0;
 }
 const ShutdownIo = struct {
-    ctx: r4os.r4dev.DriverContext,
+    ctx: r4os.r4dev.DriverContext2,
     // Captured during init: querying a new resource service after the
     // kernel's admission close may already be forbidden.
     clock: r4os.r4dev.DriverResourceContext,
@@ -434,7 +434,7 @@ fn recoverNative() bool {
     return true;
 }
 fn restartNative() !void {
-    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return error.State);
+    const ctx = r4os.r4dev.DriverContext2.init(driver_api orelse return error.State);
     if (native_start.self_address != 0 or memory_runtime.self_address != 0 or queue_runtime.self_address != 0 or
         display_output.self_address != 0 or !boot_snapshot.valid) return error.Unconfirmed;
     const display = ctx.graphicsDisplay() orelse return error.Unsupported;
@@ -450,14 +450,14 @@ fn restartNative() !void {
     log("AMDGPU recovery: boot scanout confirmed; fresh start generation={d}; old application contexts remain lost", .{current.generation});
 }
 const Reader = struct {
-    ctx: r4os.r4dev.DriverContext,
+    ctx: r4os.r4dev.DriverContext2,
     pci: a.PciDeviceInfo,
     pub fn read(self: *Reader, offset: u16) u32 {
         return self.ctx.pciReadConfig32(self.pci, offset);
     }
 };
 fn log(comptime format: []const u8, args: anytype) void {
-    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return);
+    const ctx = r4os.r4dev.DriverContext2.init(driver_api orelse return);
     var buffer: [384]u8 = undefined;
     const message = std.fmt.bufPrintZ(&buffer, format, args) catch return;
     ctx.logInfo(message);
@@ -482,7 +482,7 @@ pub export fn amdgpu_native_advance() callconv(.c) i32 {
 /// connector/modeset owner supplies and confirms the physical clock point.
 pub export fn amdgpu_display_prepare(limits: *const @import("display_core.zig").c.struct_r4dcn_limits, mode: *const @import("display_core.zig").c.struct_r4dcn_mode) callconv(.c) i32 {
     if (native_worker.self_address != 0) return -1;
-    const ctx = r4os.r4dev.DriverContext.init(driver_api orelse return -1);
+    const ctx = r4os.r4dev.DriverContext2.init(driver_api orelse return -1);
     if (gc_runtime.engine.phase != .ready or !sdma_runtime.active) return -1;
     const architecture = gc_runtime.architecture orelse return -1;
     if (limits.gb_addr_config != architecture.gb_addr_config) return -1;

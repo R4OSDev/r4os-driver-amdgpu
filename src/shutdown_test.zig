@@ -4,7 +4,7 @@
 const std = @import("std");
 const r4os = @import("r4os");
 const a = r4os.abi;
-pub fn check(api: *a.DriverApi, owner: *@import("native_worker.zig").Owner, comptime shutdown: anytype) !void {
+pub fn check(api: *a.DriverApi2, owner: *@import("native_worker.zig").Owner, comptime shutdown: anytype) !void {
     const F = struct {
         var worker: *@import("native_worker.zig").Owner = undefined;
         var waits: u32 = 0;
@@ -31,7 +31,7 @@ pub fn check(api: *a.DriverApi, owner: *@import("native_worker.zig").Owner, comp
     F.worker = owner; F.waits = 0; F.done = false; F.releases = 0;
     api.wait_ticks = F.wait;
     owner.* = .{
-        .self_address = @intFromPtr(owner), .ctx = r4os.r4dev.DriverContext.init(api), .thread = 77,
+        .self_address = @intFromPtr(owner), .ctx = r4os.r4dev.DriverContext2.init(api), .thread = 77,
         .interval_ticks = 10, // captured at init on the real1000Hz timer
         .threads = .{ .table = .{ .join = @intFromPtr(&F.join), .release = @intFromPtr(&F.release) } },
         .clock = .{ .table = .{ .now_ns = @intFromPtr(&F.now) } },

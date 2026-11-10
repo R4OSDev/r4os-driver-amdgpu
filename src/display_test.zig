@@ -437,7 +437,7 @@ const Runtime = struct {
     var memory: @import("memory_owner.zig").Owner = .{};
     var native: @import("start_runtime.zig").Owner = .{};
     var board: @import("bios.zig").Board = undefined;
-    var api: a.DriverApi = undefined;
+    var api: a.DriverApi2 = undefined;
     var request: a.DriverThreadRequest = .{};
     var running = false;
     var ran = false;
@@ -493,9 +493,9 @@ const Runtime = struct {
         fail_restore = false;
         fail_prepare = false;
         api = undefined;
-        api.magic = a.driver_magic;
-        api.version = a.driver_api_version;
-        api.size = @sizeOf(a.DriverApi);
+        api.magic = r4os.technical2.abi.driver_magic;
+        api.version = r4os.technical2.abi.driver_version;
+        api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
         api.thread_query = threadQuery;
         api.heap_query = heapQuery;
         api.resource_query = resourceQuery;
@@ -653,7 +653,7 @@ const Runtime = struct {
     }
     const hooks: core.Hooks = .{ .context = 0, .prepare = prepare, .restore = restore };
     fn open() !void {
-        const ctx = r4os.r4dev.DriverContext.init(&api);
+        const ctx = r4os.r4dev.DriverContext2.init(&api);
         try owner.prepareBoot(&ctx, &memory, &native, &board, limits, mode);
     }
 };
@@ -1615,7 +1615,7 @@ const Pipeline = struct {
         try environment();
         var selected_limits = limits; selected_limits.fabric_khz = 1066000;
         var selected = mode; selected.mc_address += 16 * 1024 * 1024;
-        const ctx = r4os.r4dev.DriverContext.init(&R.api);
+        const ctx = r4os.r4dev.DriverContext2.init(&R.api);
         // The task preparation is genuine; the outer BO fixture is exercised
         // separately. This private model plans the alternate retained address.
         try R.open(); R.owner.mode = selected; R.owner.limits = selected_limits;
@@ -2175,7 +2175,7 @@ const Integration = struct {
             F.words[reg("DC_GPIO_HPD_Y")] |= 256;
         }
         R.api.gfx_memory_query = memoryQuery; R.api.gfx_display_query = displayQuery; R.api.gfx_output_query = outputQuery;
-        const ctx = r4os.r4dev.DriverContext.init(&R.api);
+        const ctx = r4os.r4dev.DriverContext2.init(&R.api);
         layout = try @import("memory_layout.zig").Layout.create(.picasso, .{ .base = 0x220000000, .bytes = 512 * 1024 * 1024 },
             .{ .base = mode.mc_address, .bytes = 512 * 1024 * 1024 }, 0, mode.buffer_bytes, null);
         R.memory.layout = &layout; R.memory.memory = ctx.memory();
@@ -2834,10 +2834,10 @@ const Integration = struct {
                 return if (stale) 0xffffffff else switch (offset) { 0 => 0x15de1002, 8 => 0x04030000, else => unreachable };
             }
         };
-        var api: a.DriverApi = undefined;
-        api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+        var api: a.DriverApi2 = undefined;
+        api.magic = r4os.technical2.abi.driver_magic; api.version = r4os.technical2.abi.driver_version; api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
         api.pci_device_count = P.deviceCount; api.pci_device_at = P.deviceAt; api.pci_read_config32 = P.readConfig;
-        const ctx = r4os.r4dev.DriverContext.init(&api);
+        const ctx = r4os.r4dev.DriverContext2.init(&api);
         const capture = @import("display_audio.zig").capture;
         for ([_]u8{1, 2}) |kind| {
             const gpu: a.PciDeviceInfo = .{ .bus_kind = kind, .bus = 6, .device = 0, .function = 0, .vendor_id = 0x1002, .device_id = 0x15d8 };

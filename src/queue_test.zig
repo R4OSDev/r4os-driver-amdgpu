@@ -9,7 +9,7 @@ const binding: a.GfxBackendBinding = .{ .adapter_id = 7, .device_generation = 11
 const epoch: q.Epoch = .{ .adapter = 7, .device = 11, .reset = 5 };
 fn fence(point: u64) a.GfxFence { return .{ .slot = @intCast((point - 1) % a.gfx_queue_fence_capacity + 1), .adapter_id = 7, .timeline = 3, .point = point, .device_generation = 11, .reset_generation = 5 }; }
 const F = struct {
-    var api: a.DriverApi = undefined;
+    var api: a.DriverApi2 = undefined;
     var memory: @import("memory_owner.zig").Owner = .{};
     var layout: @import("memory_layout.zig").Layout = undefined;
     var run: Runtime = .{};
@@ -53,7 +53,7 @@ const F = struct {
         loss_calls = 0; lost = false; loss_error = false; loss_logs = 0;
         completed = 0; last_fence = .{}; last_result = 0; complete_fail = false; retire_fail = false; retired = 0;
         worker_stop = false; worker_calls = 0; event_calls = 0; prove_quiescence = false;
-        api = undefined; api.magic = a.driver_magic; api.version = a.driver_api_version; api.size = @sizeOf(a.DriverApi);
+        api = undefined; api.magic = r4os.technical2.abi.driver_magic; api.version = r4os.technical2.abi.driver_version; api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
         api.log_error = log;
         api.driver_work_submit_owned = submitOwned; api.driver_completion_status = workStatus; api.driver_completion_release = releaseWork;
         api.driver_completion_wait = waitWork;
@@ -75,7 +75,7 @@ const F = struct {
         value.bars[2] = .{ .kind = .memory64, .base = 0xe0000000, .bytes = 4096 }; return value;
     }
     fn prepare() !void {
-        const ctx = r4os.r4dev.DriverContext.init(&api);
+        const ctx = r4os.r4dev.DriverContext2.init(&api);
         try run.prepare(&ctx, &memory, &snapshot(), binding, .{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true });
     }
     fn start() !void { try run.start(&snapshot(), .{ .context = 7, .work = work, .event = event, .quiesce = quiesce }); }

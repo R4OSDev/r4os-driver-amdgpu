@@ -1,6 +1,6 @@
 ﻿# AMDGPU
 
-Version 0.1.95 retains the Picasso display, rendering, compute, video,
+Version 0.1.97 retains the Picasso display, rendering, compute, video,
 power and recovery integration prepared through R4OS 0.80.38.
 The target is PCI1002:15D8. Raven2 passive discovery is implemented. Native
 qualification is now admitted only for the measured Lenovo17AA:3808,PCI C4,
@@ -453,3 +453,18 @@ cleanup rechecks every HALT/idle condition without repeating CP reset writes.
 The existing startup group covers post-upload HALT loss, RLC busy, and a
 missing HALT during readback-only cleanup; no missing receipt admits release.
 All 43 groups and 27 resources pass. Package51 was transferred, verified and staged as batch55; COMMIT was requested, but SSH has not returned. Postboot installation and physical51 qualification remain unconfirmed. The package includes passive CONFIG for the next boot. Resume evidence: Temp/AMD08039/Native51/Pending-Boot-Proof.json.
+
+API-Migration 0.90.53: AMDGPU 0.1.97
+Aktueller Einstieg DriverInit2/DriverApi2/Query2:2 mit SDK194/Contract93.
+Die technischen API2-Callbacks werden wirklich ueber die neue Tabelle
+aufgerufen; eigenstaendige Grafik-/Memory-/Thread-/Resource-Records
+behalten ihre eigene Revision1. Alte DriverApi-Versionszahlen in den
+folgenden historischen Abschnitten beschreiben den damaligen Stand.
+Pflichtfaehigkeiten und optionale passive/software Modi bleiben getrennt.
+Shared DriverPollBudget begrenzt die AMD4096-Versuche und NVIDIA8-Schritt-
+Callbacks zusaetzlich zu ihren urspruenglichen Zeitgrenzen. Ablauf bestaetigt
+weder Work noch DMA, Mapping, GPU-Fence oder Unload. Bestehende Original-
+Ownerorakel bleiben erhalten. Konkrete Host-/Windowskompilat-/native
+Modellbelege und physische Grenzen: Docs/API/ConsumerMigration.txt und
+Research/API-ABI/Migration/0.90.53/Abnahme.json. AMD/NVIDIA-Hardware und
+bekannte NVIDIA-Hang-/Shutdownbefunde werden dadurch nicht abgenommen.

@@ -8,7 +8,7 @@ const edid = @import("r4gfx_edid");
 const c = @import("panel.zig").c;
 pub const Peer = struct { location: u32, device: u32 = 0x15de1002 };
 /// Read-only companion capture is restricted to the actual driver Init.
-pub fn capture(ctx: *const r4os.r4dev.DriverContext, gpu: a.PciDeviceInfo) ?Peer {
+pub fn capture(ctx: *const r4os.r4dev.DriverContext2, gpu: a.PciDeviceInfo) ?Peer {
     const count = ctx.pciDeviceCount();
     if (count > 4096) return null;
     var found: ?Peer = null;
