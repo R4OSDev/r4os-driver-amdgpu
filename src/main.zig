@@ -145,7 +145,8 @@ pub export fn amdgpu_init(api: *const a.DriverApi2) callconv(.c) i32 {
     if (native_requested) {
         audio_peer = @import("display_audio.zig").capture(&ctx, device.snapshot.pci);
         log("AMDGPU display audio: HDA companion={s} format=48000-stereo-S16 physical-verified=no", .{if (audio_peer != null) @as([]const u8, "1002:15de") else "unavailable"});
-        native_worker.start(&ctx, &display_output, .{ .advance = advanceNative, .recover = recoverNative, .restart = restartNative, .fault = nativeWorkerFault }) catch return reject("native-worker-unavailable", -8);
+        native_worker.start(&ctx, &display_output, .{ .advance = advanceNative, .recover = recoverNative, .restart = restartNative,
+            .fault = nativeWorkerFault, .bind_fault_wake = bindNativeRecoveryWake }) catch return reject("native-worker-unavailable", -8);
         ctx.logInfo("AMDGPU native start: asynchronous worker admitted; output ownership awaits confirmed scanout");
     }
     return 0;
@@ -170,6 +171,9 @@ pub fn beginNative(memory_epoch: u64) !void {
 /// Preemptible native-start pump. Physical activation stays behind the normal
 /// bind policy until the display milestones integrate the full transition.
 fn nativeWorkerFault() bool { return @atomicLoad(u32, &queue_runtime.wake_fault, .acquire) != 0; }
+fn bindNativeRecoveryWake(raw: usize, signal: *const fn (usize) void) void {
+    queue_runtime.recovery_wake = .{ .context = raw, .signal = signal };
+}
 pub fn advanceNative() !bool {
     errdefer |failure| diagnoseNative(failure);
     if (native_start.self_address == 0) {

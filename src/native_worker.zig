@@ -9,6 +9,7 @@ pub const Hooks = struct {
     recover: *const fn () bool,
     restart: ?*const fn () anyerror!void = null,
     fault: ?*const fn () bool = null, // atomic notification only, no owner APIs
+    bind_fault_wake: ?*const fn (usize, *const fn (usize) void) void = null,
 };
 
 /// Part of the existing init/unbind host test; every clock/Task event here is
@@ -34,6 +35,42 @@ pub fn check() !void {
         var runtime_fault = false; var fail_restart = false; var stop_in_recover = false; var restart_calls: u32 = 0;
         var work_result: i32 = 0;
         var in_work = false;
+        var permits: u32 = 0;
+        var semaphore_open = false;
+        var semaphore_signals: u32 = 0;
+        var semaphore_destroys: u32 = 0;
+        var fail_destroy = false;
+        var fail_signal = false;
+        var fail_create = false;
+        var fail_acquire = false;
+        var idle_waits: u32 = 0;
+        fn semaphores(out: *a.DriverSemaphoreApi) callconv(.c) i32 {
+            out.* = .{ .create = @intFromPtr(&createSemaphore), .acquire = @intFromPtr(&acquireSemaphore),
+                .release = @intFromPtr(&signalSemaphore), .destroy = @intFromPtr(&destroySemaphore) }; return 0;
+        }
+        fn createSemaphore(initial: u32, maximum: u32, handle: *u64) callconv(.c) i32 {
+            std.debug.assert(!semaphore_open and initial == 0 and maximum == 1);
+            if (fail_create) { handle.* = 0; return a.driver_semaphore_error_memory; }
+            semaphore_open = true; permits = 0; handle.* = 99; return 0;
+        }
+        fn signalSemaphore(handle: u64) callconv(.c) i32 {
+            std.debug.assert(semaphore_open and handle == 99); semaphore_signals += 1;
+            if (fail_signal) return a.driver_semaphore_error_context;
+            if (permits == 1) return a.driver_semaphore_error_overflow;
+            permits = 1; return 0;
+        }
+        fn acquireSemaphore(handle: u64, ticks: u64) callconv(.c) i32 {
+            std.debug.assert(semaphore_open and handle == 99 and ticks == 1000); idle_waits += 1;
+            if (fail_acquire) return a.driver_semaphore_error_context;
+            if (permits == 0) pace(ticks);
+            if (permits != 0) { permits -= 1; return 0; }
+            return a.driver_semaphore_error_timeout;
+        }
+        fn destroySemaphore(handle: u64) callconv(.c) i32 {
+            std.debug.assert(semaphore_open and handle == 99 and ran);
+            if (fail_destroy) return -1;
+            semaphore_open = false; semaphore_destroys += 1; return 0;
+        }
         fn submit(handler: a.DriverWorkHandler, raw: usize, handle: *u32) callconv(.c) i32 {
             t.expect(!in_work) catch unreachable;
             in_work = true; work_result = handler(raw); in_work = false;
@@ -67,12 +104,14 @@ pub fn check() !void {
         }
         fn release(id: u64) callconv(.c) i32 { std.debug.assert(id == 77 and ran); return if (fail_release) -1 else 0; }
         fn sleep(ticks: u64) callconv(.c) i32 {
-            std.debug.assert(ticks == 10); time += ticks * std.time.ns_per_ms; sleeps += 1;
+            std.debug.assert(ticks == 10); pace(ticks); return 0;
+        }
+        fn pace(ticks: u64) void {
+            time += ticks * std.time.ns_per_ms; sleeps += 1;
             if (sleeps == 4 or (restart_calls != 0 and sleeps == 8)) {
                 @atomicStore(u32, &output.recovery_fault, if (runtime_fault) 2 else 0, .release);
-                @atomicStore(u32, &output.restore_requested, 1, .release);
+                output.requestRestore();
             }
-            return 0;
         }
         fn advance() !bool { std.debug.assert(in_work); advances += 1; if (fail_advance) return error.Firmware; return advances % 2 == 0; }
         fn recover() bool {
@@ -98,6 +137,9 @@ pub fn check() !void {
             api.driver_work_submit_owned = submit; api.driver_completion_status = status; api.driver_completion_release = releaseWork;
             api.driver_completion_wait = waitWork;
             in_work = false; work_result = 0;
+            permits = 0; semaphore_open = false; semaphore_signals = 0; semaphore_destroys = 0; fail_destroy = false; fail_signal = false; idle_waits = 0;
+            fail_create = false; fail_acquire = false;
+            api.semaphore_query = semaphores;
         }
         fn run() void {
             const callback: *const fn (usize) callconv(.c) i32 = @ptrFromInt(request.handler);
@@ -110,7 +152,24 @@ pub fn check() !void {
     try t.expect(!F.owner.join()); F.run();
     try t.expect(F.owner.ready and F.advances == 2 and F.recovers == 3 and F.owner.recovered == 1);
     F.fail_release = true; try t.expect(!F.owner.join() and F.owner.thread == 77 and F.owner.joined);
-    F.fail_release = false; try t.expect(F.owner.join() and F.owner.thread == 0);
+    F.fail_release = false; F.fail_destroy = true;
+    try t.expect(!F.owner.join() and F.owner.thread == 0 and F.owner.semaphore == 99);
+    const signals = F.semaphore_signals;
+    Owner.notify(@intFromPtr(&F.owner));
+    try t.expect(F.semaphore_signals == signals); // Closed producer admission retains the failed destroy.
+    F.fail_destroy = false;
+    try t.expect(F.owner.join() and F.owner.semaphore == 0 and F.semaphore_destroys == 1 and F.idle_waits != 0);
+    F.reset(); F.fail_signal = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover }); F.run();
+    try t.expect(F.owner.recovered == 1 and F.result == 0 and F.owner.join());
+    F.reset(); F.fail_create = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover }); F.run();
+    try t.expect(F.owner.failure.? == error.Capacity and F.result == -1 and F.advances == 0);
+    try t.expect(F.owner.join() and F.owner.semaphore == 0 and F.semaphore_destroys == 0);
+    F.reset(); F.fail_acquire = true;
+    try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover }); F.run();
+    try t.expect(F.owner.failure.? == error.Wait and F.result == -1 and F.owner.recovered == 0);
+    try t.expect(F.owner.join() and F.owner.semaphore == 0 and F.semaphore_destroys == 1);
     F.reset(); F.fail_advance = true; F.hold_recovery = true;
     try F.owner.start(&ctx, &F.output, .{ .advance = F.advance, .recover = F.recover }); F.run();
     try t.expect(F.owner.failure.? == error.Firmware and F.owner.recovered == 0 and F.result == -1 and F.time >= 30 * std.time.ns_per_s);
@@ -147,14 +206,20 @@ pub fn supported(ctx: *const r4os.r4dev.DriverContext2) bool {
     if (!@import("owned_work.zig").supported(ctx)) return false;
     const threads = ctx.threads() orelse return false;
     const clock = ctx.resources() orelse return false;
+    const semaphores = ctx.semaphores() orelse return false;
     return threads.table.start != 0 and threads.table.join != 0 and threads.table.release != 0 and threads.table.sleep_ticks != 0 and
-        threads.canAbort() and threads.hasCurrentRequest() and clock.table.now_ns != 0 and ctx.timerFrequency() != 0;
+        threads.canAbort() and threads.hasCurrentRequest() and clock.table.now_ns != 0 and ctx.timerFrequency() != 0 and
+        semaphores.table.create != 0 and semaphores.table.acquire != 0 and semaphores.table.release != 0 and semaphores.table.destroy != 0;
 }
 pub const Owner = struct {
     self_address: usize = 0,
     ctx: ?r4os.r4dev.DriverContext2 = null,
     threads: ?r4os.r4dev.DriverThreadContext = null,
     clock: ?r4os.r4dev.DriverResourceContext = null,
+    semaphores: ?r4os.r4dev.DriverSemaphoreContext = null,
+    semaphore: u64 = 0,
+    notify_state: u32 = 0x80000000,
+    idle_ticks: u64 = 1,
     hooks: ?Hooks = null,
     output: ?*@import("display_output.zig").Owner = null,
     thread: u64 = 0,
@@ -174,24 +239,64 @@ pub const Owner = struct {
         if (!supported(ctx)) return error.Unsupported;
         const threads = ctx.threads() orelse return error.Unsupported;
         const clock = ctx.resources() orelse return error.Unsupported;
+        const semaphores = ctx.semaphores() orelse return error.Unsupported;
         const frequency = ctx.timerFrequency();
         if (frequency == 0 or threads.table.sleep_ticks == 0) return error.Unsupported;
         self.* = .{ .self_address = @intFromPtr(self), .ctx = ctx.*, .threads = threads, .clock = clock, .hooks = hooks,
-            .output = output, .interval_ticks = @import("shutdown_drain.zig").intervalTicks(frequency) };
+            .output = output, .interval_ticks = @import("shutdown_drain.zig").intervalTicks(frequency),
+            .semaphores = semaphores, .idle_ticks = frequency, .notify_state = 0 };
+        self.bindWake();
         if (threads.start(worker, self.self_address, a.driver_thread_flag_parallel, &self.thread) != 0 or self.thread == 0) return error.Capacity;
     }
-    pub fn requestStop(self: *Owner) void { if (self.self_address != 0) @atomicStore(u32, &self.stop, 1, .release); }
+    fn bindWake(self: *Owner) void {
+        self.output.?.recovery_wake = .{ .context = self.self_address, .signal = notify };
+        if (self.hooks.?.bind_fault_wake) |bind| bind(self.self_address, notify);
+    }
+    pub fn requestStop(self: *Owner) void {
+        if (self.self_address == 0) return;
+        @atomicStore(u32, &self.stop, 1, .release);
+        notify(self.self_address);
+    }
+    /// A latched permit closes signal-before-wait. Close admission and drain
+    /// these resident publishers before destroying the semaphore at join.
+    pub fn notify(raw: usize) void {
+        const self: *Owner = @ptrFromInt(raw);
+        if (self.self_address != raw) return;
+        for (0..4) |_| {
+            const state = @atomicLoad(u32, &self.notify_state, .acquire);
+            if (state & 0x80000000 != 0 or state == 0x7fffffff) return;
+            if (@cmpxchgStrong(u32, &self.notify_state, state, state + 1, .acq_rel, .acquire) == null) {
+                defer _ = @atomicRmw(u32, &self.notify_state, .Sub, 1, .release);
+                const semaphore = @atomicLoad(u64, &self.semaphore, .acquire);
+                if (semaphore == 0) return; // The Task has not created it yet; predicates remain published.
+                // This is only a scheduling hint. Overflow coalesces a permit;
+                // any missed hint leaves predicates for the finite clock wait.
+                _ = self.semaphores.?.release(semaphore);
+                return;
+            }
+        }
+        // The one-second clock check also covers a contended hint.
+    }
     pub fn join(self: *Owner) bool {
         if (self.self_address == 0) return true;
         if (self.self_address != @intFromPtr(self)) return false;
-        if (self.thread == 0) return self.call.retired(&self.ctx.?);
-        if (!self.joined) {
-            if (self.threads.?.join(self.thread, 0, &self.result) != 0) return false;
-            self.joined = true;
+        if (self.thread != 0) {
+            if (!self.joined) {
+                if (self.threads.?.join(self.thread, 0, &self.result) != 0) return false;
+                self.joined = true;
+            }
+            if (self.threads.?.release(self.thread) != 0) return false;
+            self.thread = 0;
         }
-        if (self.threads.?.release(self.thread) != 0) return false;
-        self.thread = 0;
-        return self.call.retired(&self.ctx.?);
+        if (!self.call.retired(&self.ctx.?)) return false;
+        _ = @atomicRmw(u32, &self.notify_state, .Or, 0x80000000, .acq_rel);
+        if (@atomicLoad(u32, &self.notify_state, .acquire) & 0x7fffffff != 0) return false;
+        const semaphore = @atomicLoad(u64, &self.semaphore, .acquire);
+        if (semaphore != 0) {
+            if (self.semaphores.?.destroy(semaphore) != 0) return false;
+            @atomicStore(u64, &self.semaphore, 0, .release);
+        }
+        return true;
     }
     fn invoke(self: *Owner, operation: @FieldType(Owner, "operation")) !bool {
         if (self.call.handle != 0) return error.Busy;
@@ -214,6 +319,11 @@ pub const Owner = struct {
     fn worker(raw: usize) callconv(.c) i32 {
         const self: *Owner = @ptrFromInt(raw);
         if (self.self_address != raw) return -1;
+        // Create only in the actual Task, not in a possibly early Init context.
+        var semaphore: u64 = 0;
+        const created = self.semaphores.?.create(0, 1, &semaphore);
+        @atomicStore(u64, &self.semaphore, semaphore, .release);
+        if (created != 0 or semaphore == 0) { self.failure = error.Capacity; return -1; }
         var last = self.clock.?.nowNs();
         var begin = last;
         var cleanup_begin: ?u64 = null;
@@ -264,6 +374,7 @@ pub const Owner = struct {
                             return -1;
                         };
                         self.ready = false; self.failure = null; recovering = false; restart_allowed = false;
+                        self.bindWake();
                         cleanup_begin = null; begin = now;
                         continue;
                     }
@@ -275,7 +386,16 @@ pub const Owner = struct {
                     self.ctx.?.logError("AMDGPU recovery: resources quarantined; unconfirmed scanout stays blocked; restart with R4OS Software Graphics if needed"); return -1;
                 }
             }
-            if (self.threads.?.sleepTicks(self.interval_ticks) != 0) {
+            const waited = if (self.ready and !recovering) idle: {
+                // Recheck after publication/binding and before parking. A later
+                // producer latches a permit; a prior producer leaves a predicate.
+                if (@atomicLoad(u32, &self.stop, .acquire) != 0 or
+                    @atomicLoad(u32, &self.output.?.restore_requested, .acquire) != 0 or
+                    (if (self.hooks.?.fault) |fault| fault() else false)) continue;
+                const result = self.semaphores.?.acquire(semaphore, self.idle_ticks);
+                break :idle if (result == a.driver_semaphore_error_timeout) 0 else result;
+            } else self.threads.?.sleepTicks(self.interval_ticks);
+            if (waited != 0) {
                 self.failure = error.Wait;
                 // A cancelled pacing task cannot submit a new recovery call.
                 // Its joined parent performs recovery under Shutdown's owner.

@@ -56,6 +56,7 @@ pub const Owner = struct {
     deadline: u64 = 0,
     last_time: u64 = 0,
     restore_requested: u32 = 0,
+    recovery_wake: ?struct { context: usize, signal: *const fn (usize) void } = null,
     recovery_fault: u32 = 0, // 1: startup failure; 2: previously active output
     restore_ready: u32 = 0,
     reset_original: u64 = 0,
@@ -121,7 +122,7 @@ pub const Owner = struct {
         self.request_step = .reference_clock;
         const ref_khz = try board.displayReferenceClock();
         self.* = .{ .self_address = @intFromPtr(self), .ctx = ctx.*, .native = native, .engine = engine, .core = core, .pipeline = pipe,
-            .request_step = .ready, .request_caps = self.request_caps,
+            .request_step = .ready, .request_caps = self.request_caps, .recovery_wake = self.recovery_wake,
             .request_display_bytes = self.request_display_bytes, .request_output_bytes = self.request_output_bytes,
             .present = presentation, .frames = frames, .board = board, .clocks = table, .mode = mode, .shape = shape,
             .display = display, .outputs = outputs, .phase = .allocate, .last_time = now, .deadline = now + 120 * std.time.ns_per_s,
@@ -524,7 +525,7 @@ pub const Owner = struct {
             @atomicStore(u32, &self.recovery_fault, if (self.phase == .active) 2 else 1, .release);
         }
         if (self.engine) |engine| _ = engine.closeAdmission();
-        self.phase = .failed; @atomicStore(u32, &self.restore_requested, 1, .release);
+        self.phase = .failed; self.requestRestore();
         self.statistics.publish(self);
         if (self.output.connection_generation != 0) _ = self.outputs.?.pauseOutput(&self.output, true);
         var buffer: [220]u8 = undefined;
@@ -713,8 +714,12 @@ pub const Owner = struct {
         // CpuWrite.finish may initiate recovery without a driver transition
         // caller to receive its advanced generation. Signal the outer owner,
         // but never adopt a callback token or claim physical stop here.
-        @atomicStore(u32, &self.restore_requested, 1, .release);
+        self.requestRestore();
         return @intFromBool(generation == held and @atomicLoad(u32, &self.restore_ready, .acquire) == 1);
+    }
+    pub fn requestRestore(self: *Owner) void {
+        @atomicStore(u32, &self.restore_requested, 1, .release);
+        if (self.recovery_wake) |wake| wake.signal(wake.context);
     }
     /// Called only after the queue worker joins, display restores boot, every
     /// copy/GC mapping retires, GMC restores and native.quiesce finishes.

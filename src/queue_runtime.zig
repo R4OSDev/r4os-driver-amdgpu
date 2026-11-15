@@ -26,6 +26,7 @@ pub const Owner = struct {
     activity_sequence: u64 = 0, notify_state: u32 = 0x80000000, closed: bool = false,
     loss_announced: bool = false, loss_logged: bool = false,
     fault_event: ?ih.Event = null,
+    recovery_wake: ?struct { context: usize, signal: *const fn (usize) void } = null,
     binding: a.GfxBackendBinding = .{},
     thread_stop_requested: bool = false, thread_joined: bool = false, worker_result: i32 = 0,
     call: @import("owned_work.zig").Call = .{},
@@ -69,7 +70,11 @@ pub const Owner = struct {
         if (self.self_address != raw or self.semaphore == 0) return;
         const result = self.semaphores.?.release(self.semaphore);
         // One queued permit already covers additional IRQ/job notifications.
-        if (result != 0 and result != a.driver_semaphore_error_overflow) @atomicStore(u32, &self.wake_fault, 1, .release);
+        if (result != 0 and result != a.driver_semaphore_error_overflow) self.publishWakeFault();
+    }
+    fn publishWakeFault(self: *Owner) void {
+        @atomicStore(u32, &self.wake_fault, 1, .release);
+        if (self.recovery_wake) |wake| wake.signal(wake.context);
     }
     pub fn notify(raw: usize) callconv(.c) void {
         const self: *Owner = @ptrFromInt(raw);
@@ -142,7 +147,7 @@ pub const Owner = struct {
         if (self.self_address != raw or !self.prepared or !self.started) return -1;
         while (@atomicLoad(u32, &self.stop, .acquire) == 0) {
             const dispatched = self.call.invoke(&self.ctx.?, self.threads.?, self.clock.?, ownedStep, raw) catch |err| {
-                @atomicStore(u32, &self.wake_fault, 1, .release);
+                self.publishWakeFault();
                 @atomicStore(u32, &self.stop, 1, .release);
                 var text: [192]u8 = undefined;
                 const message = std.fmt.bufPrintZ(&text, "AMDGPU queue: owner dispatch failed error={s} ticket={d}; resources retained for joined recovery",
@@ -151,7 +156,7 @@ pub const Owner = struct {
                 return -1;
             };
             if (dispatched != 0) {
-                @atomicStore(u32, &self.wake_fault, 1, .release);
+                self.publishWakeFault();
                 @atomicStore(u32, &self.stop, 1, .release);
                 return -1;
             }
@@ -159,7 +164,7 @@ pub const Owner = struct {
             const result = self.semaphores.?.acquire(self.semaphore, self.poll_ticks);
             if (result != 0 and result != a.driver_semaphore_error_timeout) {
                 if (@atomicLoad(u32, &self.stop, .acquire) == 0) {
-                    @atomicStore(u32, &self.wake_fault, 1, .release);
+                    self.publishWakeFault();
                     @atomicStore(u32, &self.stop, 1, .release);
                     // Attempt bounded recovery in this owning task before
                     // returning. Unproved DMA/failed release remains retained

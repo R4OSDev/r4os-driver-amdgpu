@@ -1,6 +1,6 @@
 ﻿# AMDGPU
 
-Version 0.1.97 retains the Picasso display, rendering, compute, video,
+Version 0.1.98 retains the Picasso display, rendering, compute, video,
 power and recovery integration prepared through R4OS 0.80.38.
 The target is PCI1002:15D8. Raven2 passive discovery is implemented. Native
 qualification is now admitted only for the measured Lenovo17AA:3808,PCI C4,
@@ -151,6 +151,13 @@ bridge. No common Work callback waits for that DCN task. Busy completion
 means no callback ran. Failed waits retain callback storage until terminal
 completion and release; late receiver registrations are explicitly closed.
 An atomic queue-dispatch failure also wakes the native recovery pump.
+Once native startup reaches READY, that pump parks on a binary semaphore;
+stop, restore and queue faults publish their state before signaling it.
+A one-second timeout retains the clock check and covers missed wake hints.
+Startup, active recovery and the separate queue worker retain their original
+pacing. The semaphore is created in the worker Task and destroyed only after
+physical join/release, owned-work retirement and notifier drain. A failed
+release or destroy retains the corresponding resource for a later join.
 The preceding physical 0.1.35 attempt was rejected before native memory
 admission and restored bootfb. It is not a native hardware pass.
 The physical 0.1.36 trial passed that boundary but returned `Unconfirmed`
