@@ -21,14 +21,20 @@ const Hardware = struct {
     clock: u64 = 1000,
     backward: bool = false,
     disconnected: bool = false,
-    require_semaphore: bool = false, semaphore_busy: bool = false, semaphore_held: bool = false,
-    fail_release: bool = false, missing_mm_ack: bool = false,
-    semaphore_acquires: usize = 0, semaphore_releases: usize = 0,
+    require_semaphore: bool = false,
+    semaphore_busy: bool = false,
+    semaphore_held: bool = false,
+    fail_release: bool = false,
+    missing_mm_ack: bool = false,
+    semaphore_acquires: usize = 0,
+    semaphore_releases: usize = 0,
     pub fn read(self: *@This(), offset: u32) hubs.Error!u32 {
         if (self.disconnected) return 0xffffffff;
         if (offset == r.mm.VM_INVALIDATE_ENG17_SEM) {
             if (self.semaphore_busy or self.semaphore_held) return 0;
-            self.semaphore_held = true; self.semaphore_acquires += 1; return 1;
+            self.semaphore_held = true;
+            self.semaphore_acquires += 1;
+            return 1;
         }
         if (offset == r.gfx.VM_INVALIDATE_ENG17_ACK or offset == r.mm.VM_INVALIDATE_ENG17_ACK) {
             if (offset == r.mm.VM_INVALIDATE_ENG17_ACK and self.missing_mm_ack) return 0;
@@ -43,7 +49,8 @@ const Hardware = struct {
         if (offset == r.mm.VM_INVALIDATE_ENG17_SEM) {
             std.debug.assert(value == 0);
             if (self.fail_release) return error.Unconfirmed;
-            self.semaphore_held = false; self.semaphore_releases += 1;
+            self.semaphore_held = false;
+            self.semaphore_releases += 1;
         }
         self.words[offset / 4] = value;
         self.writes += 1;
@@ -118,11 +125,12 @@ test "Picasso UMA partitions conserve capacity and GPU page tables reject holes 
     try t.expectEqual(Profile.picasso, try Profile.select(try identity.chip(0x15d8, 1 << shift)));
     var raven2 = try identity.chip(0x15d8, 9 << shift);
     try t.expectEqual(Profile.raven2, try Profile.select(raven2));
-    var board: identity.Snapshot = .{ .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 },
-        .pci_revision = 0xc4, .subsystem_vendor = 0x17aa, .subsystem_device = 0x3808 };
+    var board: identity.Snapshot = .{ .pci = .{ .bus_kind = 2, .vendor_id = 0x1002, .device_id = 0x15d8, .class_code = 3 }, .pci_revision = 0xc4, .subsystem_vendor = 0x17aa, .subsystem_device = 0x3808 };
     try t.expect(Profile.nativeBoard(board, raven2));
-    board.pci_revision = 0x94; try t.expect(!Profile.nativeBoard(board, raven2));
-    board.pci_revision = 0xc4; board.subsystem_device = 0;
+    board.pci_revision = 0x94;
+    try t.expect(!Profile.nativeBoard(board, raven2));
+    board.pci_revision = 0xc4;
+    board.subsystem_device = 0;
     try t.expect(!Profile.nativeBoard(board, raven2));
     raven2.gc = 0x090100;
     try t.expectError(error.Unsupported, Profile.select(raven2));
@@ -223,13 +231,16 @@ test "Picasso PTE and hub state uses hardware fields, bounded ACK waits and conf
     controller = .{ .invalidator = .{ .profile = .raven2 } };
     try t.expectError(error.Deadline, controller.flush(&hw, 1));
     try t.expect(hw.words[r.mm.VM_INVALIDATE_ENG17_REQ / 4] == 0 and !controller.invalidator.mm_semaphore);
-    hw.semaphore_busy = false; hw.missing_mm_ack = true;
+    hw.semaphore_busy = false;
+    hw.missing_mm_ack = true;
     try t.expectError(error.Deadline, controller.flush(&hw, 1));
     try t.expect(!hw.semaphore_held and !controller.invalidator.mm_semaphore and hw.semaphore_releases == 1);
-    hw.missing_mm_ack = false; hw.fail_release = true;
+    hw.missing_mm_ack = false;
+    hw.fail_release = true;
     try t.expectError(error.Unconfirmed, controller.flush(&hw, 1));
     try t.expect(hw.semaphore_held and controller.invalidator.mm_semaphore);
-    hw.fail_release = false; try controller.flush(&hw, 1);
+    hw.fail_release = false;
+    try controller.flush(&hw, 1);
     try t.expect(!hw.semaphore_held and !controller.invalidator.mm_semaphore);
     // Failure before the first enable write still requires stop to preserve
     // every BIOS register which only the shutdown path subsequently touches.
@@ -279,10 +290,12 @@ const F = struct {
     var span_fail = false;
     var windows: usize = 0;
     var charged: u64 = 0;
-    var closed = false; var logically_lost = false;
+    var closed = false;
+    var logically_lost = false;
     fn reset() void {
         for (&heap_slots) |*slot| std.debug.assert(slot.* == null);
-        heap_fail = false; heap_release_fail = false;
+        heap_fail = false;
+        heap_release_fail = false;
         owner = .{};
         layout = plan() catch unreachable;
         regs = @splat(0);
@@ -304,11 +317,13 @@ const F = struct {
         span_fail = false;
         windows = 0;
         charged = 0;
-        closed = false; logically_lost = false;
+        closed = false;
+        logically_lost = false;
         api = undefined;
         api.magic = r4os.technical2.abi.driver_magic;
         api.version = r4os.technical2.abi.driver_version;
-        api.size = @sizeOf(a.DriverApi2); api.reserved = 0;
+        api.size = @sizeOf(a.DriverApi2);
+        api.reserved = 0;
         api.gfx_memory_query = query;
         api.resource_query = resources;
         api.heap_query = heapQuery;
@@ -330,7 +345,8 @@ const F = struct {
     fn heapRelease(handle: u64) callconv(.c) i32 {
         if (heap_release_fail) return a.err_no_fn;
         const slot = &heap_slots[handle - 1];
-        t.allocator.free(slot.*.?); slot.* = null;
+        t.allocator.free(slot.*.?);
+        slot.* = null;
         return a.driver_heap_ok;
     }
     fn query(out: *a.GfxDriverMemoryApi) callconv(.c) i32 {
@@ -521,6 +537,10 @@ const Render = struct {
     var native_unregister_error: i32 = 1;
     var native_unregister_calls: u32 = 0;
     var allocation_complete_error: i32 = 1;
+    var cache_probe = false;
+    var cache_live = false;
+    var expected_fence: a.GfxFence = fence;
+    var next_alias: u32 = 105;
     const binding: a.GfxBackendBinding = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5 };
     const fence: a.GfxFence = .{ .adapter_id = 7, .device_generation = 11, .reset_generation = 5, .timeline = 3, .point = 1, .slot = 1 };
     fn registerNative(input: *const a.GfxNativeProvider, out: *a.GfxBufferHandle) callconv(.c) i32 {
@@ -578,22 +598,23 @@ const Render = struct {
         return 1;
     }
     fn retain(exact: *const a.GfxFence, side: u32, out: *a.GfxBufferReference) callconv(.c) i32 {
-        std.debug.assert(std.meta.eql(exact.*, fence) and side == 1 and F.committed);
+        std.debug.assert(std.meta.eql(exact.*, if (cache_probe) expected_fence else fence) and side == 1 and F.committed);
         F.native_refs += 1;
-        out.* = .{ .buffer = F.ticket.buffer, .reference = .{ .id = 105, .generation = 19 }, .flags = a.gfx_buffer_reference_mapping_only };
+        const alias = if (cache_probe) next_alias else 105;
+        if (cache_probe) next_alias += 1;
+        out.* = .{ .buffer = F.ticket.buffer, .reference = .{ .id = alias, .generation = 19 }, .flags = a.gfx_buffer_reference_mapping_only };
         return 1;
     }
     fn complete(exact: *const a.GfxFence, result: u32, quiet: u32) callconv(.c) i32 {
-        std.debug.assert(std.meta.eql(exact.*, fence) and result == native_result and quiet == 1 and
-            (if (raw_mode) F.gpu and F.native_refs == 2 else !F.gpu and F.native_refs == 1));
+        std.debug.assert(std.meta.eql(exact.*, if (cache_probe) expected_fence else fence) and result == native_result and quiet == 1 and
+            (if (raw_mode or (cache_probe and owner.cacheBytes() != 0)) F.gpu and F.native_refs == 2 else !F.gpu and F.native_refs == 1));
         if (complete_fail) return a.gfx_queue_error_busy;
         completed += 1;
         return 1;
     }
     fn nativeInfo(exact: *const a.GfxFence, out: *a.GfxNativeJobInfo) callconv(.c) i32 {
         std.debug.assert(std.meta.eql(exact.*, fence) and raw_mode);
-        out.* = .{ .interface_id_lo = amd.backend_v1_header.interface_id_lo, .interface_id_hi = amd.backend_v1_header.interface_id_hi,
-            .revision = 1, .command_bytes = @sizeOf(@TypeOf(native_packet)), .resource_count = 1 };
+        out.* = .{ .interface_id_lo = amd.backend_v1_header.interface_id_lo, .interface_id_hi = amd.backend_v1_header.interface_id_hi, .revision = 1, .command_bytes = @sizeOf(@TypeOf(native_packet)), .resource_count = 1 };
         return 1;
     }
     fn nativeData(exact: *const a.GfxFence, offset: u32, output: [*]u8, length: u32) callconv(.c) i32 {
@@ -619,15 +640,13 @@ const Render = struct {
             engine.rings[1] = try @import("queue_ring.zig").Ring.init(try rt.arena.words32(storage.ringOffset(.compute), storage.ring_bytes), 8, 0);
             allocation_pending = true;
             try t.expect(owner.allocations.step());
-            virtual_job = .{ .resource = .{ .id = 300, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7,
-                .memory_generation = 23, .byte_length = 131072, .alignment = 4096, .deadline_ns = 1_000_000, .location = 1 } };
-            virtual_pending = true; try t.expect(owner.virtual.step());
+            virtual_job = .{ .resource = .{ .id = 300, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7, .memory_generation = 23, .byte_length = 131072, .alignment = 4096, .deadline_ns = 1_000_000, .location = 1 } };
+            virtual_pending = true;
+            try t.expect(owner.virtual.step());
             const range = virtual_done;
-            virtual_job = .{ .resource = .{ .id = 301, .generation = 31 }, .request = .{ .kind = 2, .adapter_id = 7,
-                .memory_generation = 23, .parent = range.resource, .reference = .{ .id = 101, .generation = 19 }, .byte_length = 131072,
-                .deadline_ns = 1_000_000 }, .parent_token = range.token,
-                .reference = .{ .buffer = F.ticket.buffer, .reference = .{ .id = 101, .generation = 19 } } };
-            virtual_pending = true; try t.expect(owner.virtual.step());
+            virtual_job = .{ .resource = .{ .id = 301, .generation = 31 }, .request = .{ .kind = 2, .adapter_id = 7, .memory_generation = 23, .parent = range.resource, .reference = .{ .id = 101, .generation = 19 }, .byte_length = 131072, .deadline_ns = 1_000_000 }, .parent_token = range.token, .reference = .{ .buffer = F.ticket.buffer, .reference = .{ .id = 101, .generation = 19 } } };
+            virtual_pending = true;
+            try t.expect(owner.virtual.step());
             const bound = virtual_done;
             native_binding = .{ .binding = bound.resource, .token = bound.token, .address = bound.address, .byte_length = 131072, .access = 1 };
             try t.expect((try F.owner.virtual.lookup(bound.address)) & 16 != 0); // Executable PTE for actual IB/shader fetch.
@@ -635,35 +654,132 @@ const Render = struct {
             native_packet.header = .{ .version = 1, .size = @sizeOf(amd.R4AmdNativeSubmit), .engine = @intCast(kind), .ib_count = 1, .flags = 0, .reserved0 = 0, .reserved1 = 0 };
             native_packet.ib = .{ .address = bound.address, .dwords = 8, .binding_index = 0 };
             const job: a.GfxDriverJob = .{ .operation = a.gfx_queue_operation_native, .fence = fence, .deadline_ns = 1_000_000 };
-            native_fail = true; native_result = a.gfx_queue_result_failed;
-            owner.accept(job); try t.expect(owner.collect());
+            native_fail = true;
+            native_result = a.gfx_queue_result_failed;
+            owner.accept(job);
+            try t.expect(owner.collect());
             try t.expect(!contexts.contains(fence) and completed == 1);
-            native_fail = false; native_binding.token.opaque0 += 1;
-            owner.accept(job); try t.expect(owner.collect());
+            native_fail = false;
+            native_binding.token.opaque0 += 1;
+            owner.accept(job);
+            try t.expect(owner.collect());
             try t.expect(!contexts.contains(fence) and completed == 2);
-            native_binding.token.opaque0 -= 1; native_result = a.gfx_queue_result_complete;
+            native_binding.token.opaque0 -= 1;
+            native_result = a.gfx_queue_result_complete;
             owner.accept(job);
             try t.expect(contexts.contains(fence));
             contexts.step(&rt, &engine);
             try t.expectEqual(@import("queue_timeline.zig").Phase.submitted, rt.timeline.entries[0].phase);
             const token = rt.timeline.entries[0].token;
-            virtual_job.operation = 1; virtual_job.token = bound.token; virtual_pending = true;
+            virtual_job.operation = 1;
+            virtual_job.token = bound.token;
+            virtual_pending = true;
             try t.expect(!owner.virtual.step());
             (try rt.arena.fences())[0] = token + 1;
-            rt.timeline.poll(1000); _ = rt.timeline.publish(rt.queue.?);
+            rt.timeline.poll(1000);
+            _ = rt.timeline.publish(rt.queue.?);
             try t.expect(!owner.virtual.step() and completed == 2);
             (try rt.arena.fences())[0] = token;
-            rt.timeline.poll(1000); try t.expect(rt.timeline.publish(rt.queue.?));
-            try t.expect(contexts.collect(&rt)); try t.expect(owner.collect());
+            rt.timeline.poll(1000);
+            try t.expect(rt.timeline.publish(rt.queue.?));
+            try t.expect(contexts.collect(&rt));
+            try t.expect(owner.collect());
             try t.expect(completed == 3 and F.gpu);
             try t.expect(owner.virtual.step());
             virtual_job = .{ .resource = range.resource, .operation = 1, .request = .{ .kind = 1 }, .token = range.token };
-            virtual_pending = true; try t.expect(owner.virtual.step());
+            virtual_pending = true;
+            try t.expect(owner.virtual.step());
             try t.expect(owner.close());
             try t.expectEqual(@as(i32, 1), F.release(&.{ .id = 101, .generation = 19 }));
             try t.expect(F.owner.collect());
             try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
         }
+    }
+    fn ownerInfo(input: *const a.GfxBackendBinding, timeline: u64, output: *a.GfxQueueOwnerInfo) callconv(.c) i32 {
+        std.debug.assert(cache_probe and std.meta.eql(input.*, binding) and timeline == fence.timeline);
+        output.* = .{ .timeline = timeline, .closing = @intFromBool(!cache_live), .producer_kind = 1, .producer_id = 40, .producer_generation = 3 };
+        return a.gfx_queue_ok;
+    }
+    fn cacheFrame(point: u32) !void {
+        expected_fence = fence;
+        expected_fence.point = point;
+        expected_fence.slot = point;
+        const job: a.GfxDriverJob = .{ .fence = expected_fence, .operation = a.gfx_queue_operation_render, .target_buffer = F.ticket.buffer, .deadline_ns = 1_000_000, .render = .{ .target_rect = .{ .width = 256, .height = 128 }, .scissor = .{ .width = 256, .height = 128 }, .color = 0xff112233, .opacity = 255 } };
+        const parameters: [*]u8 = @ptrFromInt(owner.window.value.cpu_address + renderer.parameter_offset);
+        @memset(parameters[0..4096], 0xc7);
+        owner.accept(job);
+        try t.expect(contexts.contains(expected_fence) and F.gpu and F.native_refs == 2);
+        const used = 1024 + @sizeOf(@import("r4amd_driver").batch.Push);
+        try t.expectEqualSlices(u8, owner.payload[0..used], parameters[0..used]);
+        for (parameters[used..4096]) |byte| try t.expectEqual(@as(u8, 0xc7), byte);
+        contexts.step(&rt, &engine);
+        var submitted: ?usize = null;
+        for (rt.timeline.entries, 0..) |entry, i| if (entry.phase == .submitted) {
+            submitted = i;
+            break;
+        };
+        const index = submitted orelse return error.TestUnexpectedResult;
+        (try rt.arena.fences())[index] = rt.timeline.entries[index].token;
+        rt.timeline.poll(1000);
+        try t.expect(rt.timeline.publish(rt.queue.?));
+        try t.expect(contexts.collect(&rt));
+        try t.expect(owner.collect());
+    }
+    fn checkCache() !void {
+        try reset();
+        cache_probe = true;
+        cache_live = true;
+        rt.binding = binding;
+        rt.queue.?.table.version = 1;
+        rt.queue.?.table.size = @sizeOf(a.GfxDriverQueueApi);
+        rt.queue.?.table.queue_owner_info = @intFromPtr(&ownerInfo);
+        allocation_pending = true;
+        try t.expect(owner.allocations.step());
+        const address = renderer.resource_va + 0x08000000;
+        for (1..4) |point| {
+            try cacheFrame(@intCast(point));
+            std.debug.print("[amd-cache-probe] point={d} maps={d} layout={d} hits={d} retained={d}\n", .{ point, owner.mapping_builds, owner.layout_builds, owner.cache_hits, owner.cacheBytes() });
+            try t.expectEqual(@as(u64, 131072), owner.cacheBytes());
+            try t.expectEqual(@as(u64, 1), owner.mapping_builds);
+            try t.expectEqual(@as(u64, 1), owner.layout_builds);
+            try t.expectEqual(@as(u64, point - 1), owner.cache_hits);
+            try t.expect(F.gpu and F.native_refs == 2 and (try F.owner.virtual.lookup(address)) != 0);
+            try t.expectEqual(@as(u32, 105), owner.jobs[0].maps[1].reference.reference.id);
+        }
+        try t.expectEqual(@as(u64, 3 * 1184), owner.parameter_bytes);
+        try t.expectEqual(@as(u64, 3 * 296), owner.parameter_stores);
+        // Cache retirement is still physical PTE/TLB/lease retirement. A
+        // failed release retains the exact old alias and cannot be reused.
+        cache_live = false;
+        F.release_fail = true;
+        try t.expect(!owner.collect());
+        try t.expect(owner.cacheBytes() == 131072 and F.native_refs == 2 and !owner.jobs[0].maps[1].ready);
+        F.release_fail = false;
+        try t.expect(owner.collect());
+        try t.expect(owner.cacheBytes() == 0 and !F.gpu and F.native_refs == 1 and (try F.owner.virtual.lookup(address)) == 0);
+        cache_live = true;
+        try cacheFrame(4);
+        owner.cache_limit = 0;
+        try t.expect(owner.collect());
+        try t.expect(owner.cacheBytes() == 0 and !F.gpu and F.native_refs == 1);
+        owner.cache_limit = renderer.max_cache_bytes;
+        try cacheFrame(5);
+        const pressure = owner.allocations.before_allocate.?;
+        try t.expect(pressure.trim(pressure.context));
+        try t.expect(owner.cacheBytes() == 0 and !F.gpu and F.native_refs == 1);
+        try cacheFrame(6);
+        rt.timeline.epoch.reset += 1;
+        try t.expect(owner.collect());
+        try t.expect(owner.cacheBytes() == 0 and !F.gpu and F.native_refs == 1);
+        rt.timeline.epoch.reset -= 1; // restore the fixture's context after identity fault injection
+        try cacheFrame(7);
+        std.debug.print("[amd-render-reuse] warm3: map/layout1 hits2 PTE32 retained; payload3552bytes/888dword-stores vs12288bytes/12288byte-stores; closing/budget/allocation/failed-release retirement verified\n", .{});
+        try t.expect(owner.close());
+        try t.expect(owner.cacheBytes() == 0 and !F.gpu and F.native_refs == 1 and F.owner.mapping_users == 0);
+        try t.expectEqual(@as(i32, 1), F.release(&.{ .id = 101, .generation = 19 }));
+        try t.expect(F.owner.collect());
+        try t.expect(F.owner.close(.{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true }));
+        try t.expect(F.windows == 0 and F.charged == 0);
     }
     fn reset() !void {
         owner = .{};
@@ -673,15 +789,24 @@ const Render = struct {
         data = @splat(0);
         bells = @splat(0);
         completed = 0;
+        cache_probe = false;
+        cache_live = false;
+        expected_fence = fence;
+        next_alias = 105;
         allocation_ack = 0;
         allocation_pending = false;
-        allocation_format = a.gfx_buffer_format_argb8888; allocation_width = 256; allocation_height = 128;
+        allocation_format = a.gfx_buffer_format_argb8888;
+        allocation_width = 256;
+        allocation_height = 128;
         virtual_pending = false;
         virtual_job = .{};
         virtual_done = .{};
         virtual_ack_fail = false;
         complete_fail = false;
-        raw_mode = false; native_binding = .{}; native_fail = false; native_result = a.gfx_queue_result_complete;
+        raw_mode = false;
+        native_binding = .{};
+        native_fail = false;
+        native_result = a.gfx_queue_result_complete;
         native_registered = false;
         virtual_registered = false;
         native_unregister_error = 1;
@@ -714,6 +839,7 @@ const Render = struct {
 
 test "AMD renderer crosses real allocation mapping PM4 timeline and canonical retirement facades" {
     const R = Render;
+    try R.checkCache();
     // Kernel closingDriver/service may retire an empty provider before this
     // joined renderer closes. Stale then acknowledges only provider retirement.
     try R.reset();
@@ -766,7 +892,9 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
 
     for ([_]u32{ a.gfx_buffer_format_nv12, a.gfx_buffer_format_p010 }, [_]u64{ 512, 768 }, [_]u64{ 131072, 196608 }, [_]u64{ 196608, 327680 }) |format, pitch, uv, bytes| {
         try R.reset();
-        R.allocation_format = format; R.allocation_width = 320; R.allocation_height = 240;
+        R.allocation_format = format;
+        R.allocation_width = 320;
+        R.allocation_height = 240;
         R.allocation_pending = true;
         try t.expect(R.owner.allocations.step());
         try t.expect(F.native.format == format and F.native.modifier == 0 and F.native.plane_count == 2 and F.native.usage & 3 == 0);
@@ -796,7 +924,7 @@ test "AMD renderer crosses real allocation mapping PM4 timeline and canonical re
     try t.expect(R.rt.timeline.entries[0].phase == .submitted);
     var copied: [2048]u32 = undefined;
     const emitted = R.contexts.jobs[0].count;
-    for ((try R.rt.arena.ib(0))[0..emitted],copied[0..emitted]) |word,*dest| dest.* = word;
+    for ((try R.rt.arena.ib(0))[0..emitted], copied[0..emitted]) |word, *dest| dest.* = word;
     try @import("r4amd_pm4").packetBoundaries(copied[0..emitted]);
     const token = R.rt.timeline.entries[0].token;
     const fences = try R.rt.arena.fences();
@@ -979,13 +1107,15 @@ test "AMD actual memory facades retain SG/UMA backing until fence and both TLB a
     try t.expect(F.charged == 0 and !F.committed);
     try t.expect(F.owner.close(gate));
     try t.expect(F.closed and F.windows == 0);
-    F.reset(); try F.prepare();
+    F.reset();
+    try F.prepare();
     _ = try F.owner.create(.{ .byte_length = 8192, .usage = 12, .location = a.gfx_buffer_location_device_local, .adapter_id = 7, .device_generation = 23 });
     try t.expect(F.owner.closeAdmission() and F.logically_lost and !F.closed and F.native_refs == 1);
     try t.expect(F.owner.collect() and F.committed and F.charged == 8192);
     F.owner.engine_users = 1;
     try t.expect(!F.owner.close(gate) and !F.closed and F.committed);
-    F.owner.engine_users = 0; F.release_fail = true;
+    F.owner.engine_users = 0;
+    F.release_fail = true;
     try t.expect(!F.owner.close(gate) and F.closed and F.claimed and F.charged == 8192);
     F.release_fail = false;
     try t.expect(F.owner.close(gate) and F.owner.close(gate) and F.charged == 0 and F.native_refs == 1);
@@ -1024,29 +1154,33 @@ const DisplayBuffers = struct {
     var image: buffers.Image = .{};
     fn check() !void {
         const gate: hubs.Gate = .{ .memory_epoch = 23, .boot_held = true, .engines_quiesced = true };
-        F.reset(); try F.prepare();
-        F.regs[r.gfx.VM_INVALIDATE_ENG17_ACK / 4] = 3; F.regs[r.mm.VM_INVALIDATE_ENG17_ACK / 4] = 3;
+        F.reset();
+        try F.prepare();
+        F.regs[r.gfx.VM_INVALIDATE_ENG17_ACK / 4] = 3;
+        F.regs[r.mm.VM_INVALIDATE_ENG17_ACK / 4] = 3;
         try F.owner.enable(gate);
         const shape = try buffers.Shape.make(17, 17, false);
         try t.expect(shape.pitch == 256 and shape.bytes == 8192);
         const Present = @import("display_present.zig");
-        const source_desc: a.GfxBufferDescriptor = .{ .width = 17, .height = 17, .format = a.gfx_buffer_format_xrgb8888, .plane_count = 1,
-            .plane_pitches = .{68, 0, 0, 0}, .byte_length = 68 * 17, .usage = a.gfx_buffer_usage_transfer_source };
+        const source_desc: a.GfxBufferDescriptor = .{ .width = 17, .height = 17, .format = a.gfx_buffer_format_xrgb8888, .plane_count = 1, .plane_pitches = .{ 68, 0, 0, 0 }, .byte_length = 68 * 17, .usage = a.gfx_buffer_usage_transfer_source };
         var upload: a.GfxDriverJob = .{ .operation = a.gfx_queue_operation_upload, .source_offset = 68 * 4 + 12, .byte_length = 68 * 2 + 20 };
         const damage = try Present.Plan.make(upload, source_desc, shape);
         try t.expect(damage.preserve and damage.row_bytes == 20 and damage.rows == 3 and damage.target == 256 * 4 + 12);
-        upload.source_offset = 64; upload.byte_length = 8;
+        upload.source_offset = 64;
+        upload.byte_length = 8;
         try t.expectError(error.Invalid, Present.Plan.make(upload, source_desc, shape));
-        upload.source_offset = 0; upload.byte_length = 68 * 17;
+        upload.source_offset = 0;
+        upload.byte_length = 68 * 17;
         try t.expect(!(try Present.Plan.make(upload, source_desc, shape)).preserve);
-        upload.operation = a.gfx_queue_operation_present; upload.row_count = 17; upload.source_pitch = 68; upload.byte_length = 68;
+        upload.operation = a.gfx_queue_operation_present;
+        upload.row_count = 17;
+        upload.source_pitch = 68;
+        upload.byte_length = 68;
         try t.expect(!(try Present.Plan.make(upload, source_desc, shape)).preserve);
 
         try image.allocate(&F.owner, shape, 0);
         try t.expect(F.owner.engine_users == 1 and F.native_refs == 1 and F.charged == 8192);
-        const snapshot: @import("boot_snapshot.zig").Snapshot = .{ .valid = true, .effects = true, .held_generation = 4,
-            .boot = .{ .width = 17, .height = 17, .pitch = 72, .format = a.gfx_buffer_format_xrgb8888 },
-            .read = .{ .lease = .{ .id = 20, .generation = 19 }, .cpu_address = @intFromPtr(&F.cpu), .byte_length = F.cpu.len } };
+        const snapshot: @import("boot_snapshot.zig").Snapshot = .{ .valid = true, .effects = true, .held_generation = 4, .boot = .{ .width = 17, .height = 17, .pitch = 72, .format = a.gfx_buffer_format_xrgb8888 }, .read = .{ .lease = .{ .id = 20, .generation = 19 }, .cpu_address = @intFromPtr(&F.cpu), .byte_length = F.cpu.len } };
         try t.expect(try image.copyBoot(&snapshot));
         try t.expectEqual(@as(u8, 255), F.frame_data[16 * 256 + 67]);
         try t.expectEqual(@as(u8, 0), F.frame_data[16 * 256 + 68]);
@@ -1073,21 +1207,24 @@ const DisplayBuffers = struct {
         try t.expect(F.owner.engine_users == 0 and F.owner.mapping_users == 0 and F.native_refs == 0 and F.charged == 0);
         const cursor = try buffers.Shape.make(3, 2, true);
         try image.allocate(&F.owner, cursor, 4);
-        try image.copyCursor(&.{0xff010203, 0x80010203, 0, 4, 5, 6});
+        try image.copyCursor(&.{ 0xff010203, 0x80010203, 0, 4, 5, 6 });
         try t.expectEqual(@as(u32, 0xff010203), std.mem.readInt(u32, F.frame_data[0..4], .little));
         try t.expectEqual(@as(u32, 6), std.mem.readInt(u32, F.frame_data[264..268], .little));
         try t.expect(std.mem.allEqual(u8, F.frame_data[268..4096], 0));
-        try image.publish(); _ = try image.scanout();
+        try image.publish();
+        _ = try image.scanout();
         try t.expect(image.close(true));
         var shadow: buffers.Shadow = .{};
         try shadow.create(F.owner.memory.?, 32, 64);
         try t.expect(shadow.ready and F.descriptor.location == a.gfx_buffer_location_system and F.descriptor.adapter_id == 0 and
             F.descriptor.plane_pitches[0] == 128 and F.descriptor.usage & a.gfx_buffer_usage_transfer_source != 0);
-        F.release_fail = true; try t.expect(!shadow.close()); F.release_fail = false; try t.expect(shadow.close());
+        F.release_fail = true;
+        try t.expect(!shadow.close());
+        F.release_fail = false;
+        try t.expect(shadow.close());
         try t.expect(F.owner.close(gate));
     }
 };
-
 
 test "AMD native VA extents fit 1 GB plus SMEM padding, preserve holes and retain failed acknowledgements" {
     const R = Render;
@@ -1095,28 +1232,37 @@ test "AMD native VA extents fit 1 GB plus SMEM padding, preserve holes and retai
     const large = @import("render_virtual.zig").max_backing_bytes;
     try R.reset();
     R.virtual_job = .{ .resource = .{ .id = 700, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7, .memory_generation = 23, .byte_length = large, .alignment = 65536, .deadline_ns = 1_000_000 } };
-    R.virtual_pending = true; R.virtual_ack_fail = true;
+    R.virtual_pending = true;
+    R.virtual_ack_fail = true;
     try t.expect(!R.owner.virtual.step());
     const serial = R.owner.virtual.serial;
-    R.virtual_ack_fail = false; try t.expect(R.owner.virtual.step());
+    R.virtual_ack_fail = false;
+    try t.expect(R.owner.virtual.step());
     const first = R.virtual_done;
     try t.expect(first.result == 1 and first.address == amd.native_va_start and R.owner.virtual.serial == serial);
-    R.virtual_job.resource.id += 1; R.virtual_job.request.byte_length = 65536;
-    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    R.virtual_job.resource.id += 1;
+    R.virtual_job.request.byte_length = 65536;
+    R.virtual_pending = true;
+    try t.expect(R.owner.virtual.step());
     const second = R.virtual_done;
     try t.expect(second.result == 1 and second.address >= first.address + large and second.address % 65536 == 0);
-    R.virtual_job.resource.id += 1; R.virtual_job.request.fixed_address = first.address;
-    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    R.virtual_job.resource.id += 1;
+    R.virtual_job.request.fixed_address = first.address;
+    R.virtual_pending = true;
+    try t.expect(R.owner.virtual.step());
     try t.expectEqual(a.gfx_buffer_error_oom, R.virtual_done.result);
     R.virtual_job = .{ .resource = first.resource, .operation = 1, .request = .{ .kind = 1 }, .token = first.token };
-    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    R.virtual_pending = true;
+    try t.expect(R.owner.virtual.step());
     R.virtual_job = .{ .resource = .{ .id = 704, .generation = 31 }, .request = .{ .kind = 1, .adapter_id = 7, .memory_generation = 23, .byte_length = 65536, .alignment = 65536, .deadline_ns = 1_000_000 } };
-    R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+    R.virtual_pending = true;
+    try t.expect(R.owner.virtual.step());
     const reused = R.virtual_done;
     try t.expect(reused.result == 1 and reused.address == first.address and !std.meta.eql(reused.token, first.token));
-    for ([_]a.GfxVirtualCompletion{second, reused}) |range| {
+    for ([_]a.GfxVirtualCompletion{ second, reused }) |range| {
         R.virtual_job = .{ .resource = range.resource, .operation = 1, .request = .{ .kind = 1 }, .token = range.token };
-        R.virtual_pending = true; try t.expect(R.owner.virtual.step());
+        R.virtual_pending = true;
+        try t.expect(R.owner.virtual.step());
     }
     // Use the real page-table algorithm over RAM, without allocating fake
     // payload backing or treating these page entries as a hardware proof.
@@ -1137,7 +1283,8 @@ test "AMD large SG admission preserves page order and retains validation metadat
     const physical = try t.allocator.alloc(u64, count);
     defer t.allocator.free(physical);
     for (0..4) |attempt| {
-        F.reset(); try F.prepare();
+        F.reset();
+        try F.prepare();
         F.shared = true;
         F.descriptor = .{ .byte_length = count * 4096, .usage = 15 };
         F.heap_fail = attempt == 1;
@@ -1149,13 +1296,13 @@ test "AMD large SG admission preserves page order and retains validation metadat
             try result;
             try t.expect(mapping.prepared and F.dma and !F.gpu);
             for (physical, 0..) |value, i| try t.expectEqual(@as(u64, 0x1000000) + i * 4096 * 3, value);
-        } else if (attempt == 1) try t.expectError(error.Capacity, result)
-        else if (attempt == 2) {
+        } else if (attempt == 1) try t.expectError(error.Capacity, result) else if (attempt == 2) {
             try t.expectError(error.Busy, result);
             try t.expect(mapping.validation.handle != 0 and !mapping.prepared);
             try t.expect(!mapping.close(&F.owner.virtual, &hw));
         } else try t.expectError(error.Invalid, result);
-        F.heap_fail = false; F.heap_release_fail = false;
+        F.heap_fail = false;
+        F.heap_release_fail = false;
         try t.expect(mapping.close(&F.owner.virtual, &hw));
         try t.expect(!F.shared and !F.dma and !F.gpu and F.owner.mapping_users == 0);
         for (&F.heap_slots) |*slot| try t.expect(slot.* == null);

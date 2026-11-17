@@ -19,6 +19,14 @@ pub const max_pages = 64 * 1024 * 1024 / 4096;
 pub const program_va: u64 = 0x8100000000;
 pub const resource_va: u64 = 0x4200000000;
 pub const parameter_offset = 32768;
+pub const max_cache_bytes: u64 = 32 * 1024 * 1024;
+const Cached = struct {
+    descriptor: a.GfxBufferDescriptor,
+    image: batch.Image,
+    filter: u32,
+    epoch: q.Epoch,
+    timeline: u64,
+};
 pub const operations: u64 = (@as(u64, 1) << a.gfx_queue_operation_render) | (@as(u64, 1) << a.gfx_queue_operation_render_list) |
     (@as(u64, 1) << a.gfx_queue_operation_render_grid_list) | (@as(u64, 1) << a.gfx_queue_operation_render_color_list) | (@as(u64, 1) << a.gfx_queue_operation_render_color_grid_list) | (@as(u64, 1) << a.gfx_queue_operation_native);
 pub fn supports(operation: u32) bool {
@@ -36,12 +44,20 @@ const Job = struct {
     retired: bool = false,
     result: u32 = a.gfx_queue_result_failed,
     maps: [2]Mapping = .{ .{}, .{} },
+    cached: [2]?Cached = .{ null, null },
     references: [2]a.GfxBufferReference = .{ .{}, .{} },
     held: [2]bool = .{ false, false },
     native: [pm4.max_resources]?*Virtual.Binding = @splat(null),
     native_serial: [pm4.max_resources]u64 = @splat(0),
     native_held: [pm4.max_resources]bool = @splat(false),
     pages: [2][max_pages]u64 = undefined,
+    fn available(self: *const Job) bool {
+        if (self.owner != null) return false;
+        for (&self.maps, self.cached) |*map, key| {
+            if (map.self_address != 0 and (!map.ready or key == null)) return false;
+        }
+        return true;
+    }
     fn retire(raw: usize, fence: a.GfxFence) bool {
         const self: *Job = @ptrFromInt(raw);
         const owner = self.owner orelse return false;
@@ -62,18 +78,26 @@ const Job = struct {
                 serial.* = 0;
             }
         }
-        for (&self.maps, &self.held) |*map, *held| {
+        for (&self.maps, &self.held, 0..) |*map, *held, side| {
             if (held.*) {
                 map.complete(fence) catch return false;
                 held.* = false;
             }
-            if (!map.close(&memory.virtual, &memory.registers)) return false;
+            const keep = self.enqueued and owner.ready and self.cached[side] != null and
+                owner.cacheBytes() <= @min(owner.cache_limit, max_cache_bytes) and
+                owner.cacheCurrent(self.cached[side].?);
+            if (!keep and !self.dropCache(side, memory)) return false;
         }
         for (&self.references) |*ref| if (ref.reference.id != 0) {
             if (memory.memory.?.bufferRelease(&ref.reference) != 1) return false;
             ref.* = .{};
         };
         self.retired = true;
+        return true;
+    }
+    fn dropCache(self: *Job, side: usize, memory: *mem.Owner) bool {
+        if (!self.maps[side].close(&memory.virtual, &memory.registers)) return false;
+        self.cached[side] = null;
         return true;
     }
     fn clear(self: *Job) void {
@@ -106,6 +130,12 @@ pub const Owner = struct {
     close_step: enum { idle, renderer_identity, render_jobs, allocation_provider, virtual_provider, render_context, compute_context, render_unmap, render_flush, render_window, render_mapping_count, closed } = .idle,
     admission: u64 = 0,
     failure_reports: u8 = 0,
+    cache_limit: u64 = max_cache_bytes,
+    cache_hits: u64 = 0,
+    mapping_builds: u64 = 0,
+    layout_builds: u64 = 0,
+    parameter_bytes: u64 = 0,
+    parameter_stores: u64 = 0,
     submit_step: enum { validate, decode, retain, describe, image, adopt, map, encode, payload, hold, enqueue } = .validate,
     jobs: [capacity]Job = @splat(.{}),
     scratch: [65536]u8 align(16) = undefined,
@@ -141,22 +171,68 @@ pub const Owner = struct {
         self.compute_context = try contexts.create(.compute, .normal, .{});
         try self.virtual.prepare(memory, rt);
         try self.allocations.prepare(memory, rt, arch);
+        self.allocations.before_allocate = .{ .context = @intFromPtr(self), .trim = allocationPressure };
         self.ready = true;
+    }
+    pub fn cacheBytes(self: *const Owner) u64 {
+        var bytes: u64 = 0;
+        for (&self.jobs) |*job| for (job.cached, &job.maps) |key, *map| {
+            if (key != null) bytes += map.bytes;
+        };
+        return bytes;
+    }
+    fn cacheCurrent(self: *const Owner, key: Cached) bool {
+        const memory = self.memory orelse return false;
+        const rt = self.rt orelse return false;
+        if (!memory.prepared or !memory.controller.enabled or memory.controller.epoch != memory.epoch or
+            key.descriptor.adapter_id != memory.adapter or key.descriptor.device_generation != memory.epoch or
+            !std.meta.eql(key.epoch, rt.timeline.epoch)) return false;
+        var info: a.GfxQueueOwnerInfo = .{};
+        const rc = rt.queue.?.queueOwnerInfo(&rt.binding, key.timeline, &info);
+        return rc == a.gfx_queue_ok and info.version == 1 and info.size >= @sizeOf(a.GfxQueueOwnerInfo) and
+            info.timeline == key.timeline and info.closing == 0 and info.producer_kind >= 1 and info.producer_kind <= 3 and
+            info.producer_id != 0 and info.producer_generation != 0;
+    }
+    /// An idle mapping grants no execution permission. Its exact fence uses
+    /// have retired; a drained/closing producer, budget pressure or owner close
+    /// removes PTEs and confirms both TLBs before releasing its retained alias.
+    pub fn trimCache(self: *Owner, force: bool) bool {
+        const memory = self.memory orelse return true;
+        var complete = true;
+        for (&self.jobs) |*job| {
+            if (job.owner != null) continue;
+            for (job.cached, 0..) |key, side| if (key) |cached| {
+                if (!force and self.ready and self.cacheBytes() <= @min(self.cache_limit, max_cache_bytes) and self.cacheCurrent(cached)) continue;
+                if (!job.dropCache(side, memory)) complete = false;
+            };
+        }
+        return complete;
+    }
+    fn allocationPressure(raw: usize) bool {
+        const self: *Owner = @ptrFromInt(raw);
+        if (!self.trimCache(true)) return false;
+        // Retired canonical BO tickets become reusable UMA extents only after
+        // this physical owner acknowledges them too, before pool allocation.
+        return self.memory.?.collect();
     }
     pub fn available(self: *const Owner) bool {
         if (!self.ready) return false;
-        for (&self.jobs) |*job| if (job.owner == null) return true;
+        for (&self.jobs) |*job| if (job.available()) return true;
         return false;
     }
     pub fn collect(self: *Owner) bool {
         var idle = true;
         for (&self.jobs) |*job| {
             if (job.owner == null) continue;
-            if (job.pending != null) { idle = false; continue; }
+            if (job.pending != null) {
+                idle = false;
+                continue;
+            }
             if (job.enqueued) {
                 if (job.retired and !self.contexts.?.contains(job.fence)) job.clear() else idle = false;
             } else if (Job.retire(@intFromPtr(job), job.fence) and self.rt.?.queue.?.complete(&job.fence, job.result, 1) == 1) job.clear() else idle = false;
         }
+        if (!self.trimCache(!self.ready)) idle = false;
         return idle;
     }
     pub fn work(self: *Owner) void {
@@ -172,7 +248,7 @@ pub const Owner = struct {
     /// validation failure transfers ownership here until cleanup is confirmed.
     pub fn accept(self: *Owner, input: a.GfxDriverJob) void {
         std.debug.assert(self.available());
-        for (&self.jobs, 0..) |*job, index| if (job.owner == null) {
+        for (&self.jobs, 0..) |*job, index| if (job.available()) {
             job.owner = self;
             job.fence = input.fence;
             if (self.admission == std.math.maxInt(u64)) return;
@@ -229,17 +305,43 @@ pub const Owner = struct {
             if (memory.memory.?.bufferDescribe(&job.references[side].reference, &desc) != 1 or desc.byte_length == 0 or desc.byte_length > 64 * 1024 * 1024 or
                 !std.meta.eql(job.references[side].buffer, if (side == 0) input.source_buffer else input.target_buffer)) return error.Invalid;
             const address = resource_va + index * 0x10000000 + side * 0x08000000;
+            const filter = if (side == 1) 0 else input.render.filter;
+            if (job.cached[side]) |key| {
+                if (job.maps[side].ready and job.maps[side].epoch == memory.epoch and
+                    job.maps[side].address == address and std.meta.eql(job.maps[side].reference.buffer, job.references[side].buffer) and
+                    std.meta.eql(key.descriptor, desc) and key.filter == filter and key.timeline == input.fence.timeline and
+                    key.epoch.matches(input.fence) and self.cacheCurrent(key))
+                {
+                    // This fresh queue alias is redundant; the canonical job
+                    // retains its independent execution lease through completion.
+                    if (memory.memory.?.bufferRelease(&job.references[side].reference) != 1) return error.Busy;
+                    job.references[side] = .{};
+                    views[side] = key.image;
+                    self.cache_hits +|= 1;
+                    continue;
+                }
+            }
+            if (!job.dropCache(side, memory)) return error.Busy;
             self.submit_step = .image;
-            views[side] = batch.image(self.architecture, memory.adapter, desc, address, side == 1, if (side == 1) 0 else input.render.filter, &self.scratch) catch return error.Invalid;
+            views[side] = batch.image(self.architecture, memory.adapter, desc, address, side == 1, filter, &self.scratch) catch return error.Invalid;
+            self.layout_builds +|= 1;
             self.submit_step = .adopt;
             try job.maps[side].adopt(memory, &job.references[side], address, job.pages[side][0..@intCast((desc.byte_length + 4095) / 4096)]);
             self.submit_step = .map;
             try job.maps[side].publish(&memory.virtual, &memory.registers, side == 1, false);
+            self.mapping_builds +|= 1;
+            const key: Cached = .{ .descriptor = desc, .image = views[side].?, .filter = filter, .epoch = self.rt.?.timeline.epoch, .timeline = input.fence.timeline };
+            const limit = @min(self.cache_limit, max_cache_bytes);
+            // Prefer the repeated target when this pair exceeds the retention
+            // budget. Removing the source's cache candidate keeps its active
+            // mapping through the exact draw fence, then retires it normally.
+            if (side == 1 and desc.byte_length <= limit and desc.byte_length > limit - @min(self.cacheBytes(), limit)) job.cached[0] = null;
+            if (desc.byte_length <= limit - @min(self.cacheBytes(), limit) and self.cacheCurrent(key)) job.cached[side] = key;
         }
         const offset = parameter_offset + index * 4096;
         self.submit_step = .encode;
         const count = batch.encode(views[0], views[1].?, list.commands[0..list.count], grids[0..list.count], color, program_va, program_va + offset, &self.payload, &self.commands) catch return error.Invalid;
-        return self.publish(job, input, offset, count);
+        return self.publish(job, input, offset, count, 1024 + list.count * @sizeOf(batch.Push));
     }
     fn reportFailure(self: *Owner, job: *const Job, input: a.GfxDriverJob, failure: Error) void {
         if (self.failure_reports >= 4) return;
@@ -247,9 +349,7 @@ pub const Owner = struct {
         const ctx = rt.ctx orelse return;
         self.failure_reports += 1;
         var text: [256]u8 = undefined;
-        const message = std.fmt.bufPrintZ(&text, "AMDGPU render-submit: error={s} step={s} slot={d} timeline={d} point={d} operation={d} enqueued={} maps={}/{}; exact cleanup retained", .{
-            @errorName(failure), @tagName(self.submit_step), input.fence.slot, input.fence.timeline, input.fence.point,
-            input.operation, job.enqueued, job.maps[0].ready, job.maps[1].ready }) catch return;
+        const message = std.fmt.bufPrintZ(&text, "AMDGPU render-submit: error={s} step={s} slot={d} timeline={d} point={d} operation={d} enqueued={} maps={}/{}; exact cleanup retained", .{ @errorName(failure), @tagName(self.submit_step), input.fence.slot, input.fence.timeline, input.fence.point, input.operation, job.enqueued, job.maps[0].ready, job.maps[1].ready }) catch return;
         ctx.logError(message);
     }
     fn submitYuv(self: *Owner, job: *Job, index: usize, input: a.GfxDriverJob) Error!void {
@@ -286,7 +386,7 @@ pub const Owner = struct {
             std.meta.eql(part.?.map.reference.buffer, target.map.reference.buffer)) return error.Invalid;
         const offset = parameter_offset + index * 4096;
         const count = api.yuv.encode(self.architecture, memory.adapter, packet, views[0..info.resource_count], program_va, program_va + offset, &self.scratch, &self.payload, &self.commands) catch return error.Invalid;
-        return self.publish(job, input, offset, count);
+        return self.publish(job, input, offset, count, 1024 + @sizeOf(batch.Push));
     }
     fn submitPm4(self: *Owner, job: *Job, input: a.GfxDriverJob, info: a.GfxNativeJobInfo) Error!void {
         const queue = self.rt.?.queue.?;
@@ -305,8 +405,14 @@ pub const Owner = struct {
             if (job.until == 0) job.until = @min(input.deadline_ns, std.math.add(u64, now, 2_000_000_000) catch return error.Deadline);
             if (now >= job.until) return error.Deadline;
             var available_now = try self.media.?.canSubmit(engine);
-            for (&self.jobs) |*prior| if (prior.pending != null and prior.order < job.order) { available_now = false; break; };
-            if (!available_now) { job.pending = input; return; }
+            for (&self.jobs) |*prior| if (prior.pending != null and prior.order < job.order) {
+                available_now = false;
+                break;
+            };
+            if (!available_now) {
+                job.pending = input;
+                return;
+            }
         }
         var bindings: [pm4.max_resources]a.GfxNativeBinding = undefined;
         for (bindings[0..info.resource_count], 0..) |*value, i| {
@@ -323,8 +429,7 @@ pub const Owner = struct {
             const source = job.native[ibs[0].binding_index].?;
             if (source.descriptor.location != a.gfx_buffer_location_system) return error.Unsupported;
             const bytes = @as(u64, ibs[0].dwords) * 4;
-            if (self.memory.?.memory.?.bufferMap(&source.map.reference.reference, a.gfx_buffer_map_read,
-                ibs[0].address - source.map.address, bytes, &job.jpeg_cpu) != 1) return error.Busy;
+            if (self.memory.?.memory.?.bufferMap(&source.map.reference.reference, a.gfx_buffer_map_read, ibs[0].address - source.map.address, bytes, &job.jpeg_cpu) != 1) return error.Busy;
             const cpu = job.jpeg_cpu;
             if (cpu.version != 1 or cpu.size < @sizeOf(a.GfxBufferMap) or cpu.lease.id == 0 or cpu.lease.generation == 0 or cpu.lease.reserved0 != 0 or
                 cpu.cpu_address == 0 or cpu.cpu_address & 3 != 0 or cpu.byte_length != bytes or cpu.reserved0 != 0 or
@@ -345,13 +450,13 @@ pub const Owner = struct {
         if (media) {
             // Timeline now owns the exact retained bindings, including on an
             // uncertain kick. Preflight failures are handled by normal reaping.
-            self.media.?.submit(engine, input.fence,
-                .{ .address = ibs[0].address, .dwords = ibs[0].dwords },
-                if (engine == .jpeg) job.jpeg_commands[0..ibs[0].dwords] else &.{}, @min(deadline, job.until),
-                .{ .context = @intFromPtr(job), .retire = Job.retire }) catch |err| {
-                    for (&self.rt.?.timeline.entries) |*entry| if (entry.phase != .free and !entry.internal and std.meta.eql(entry.fence, input.fence)) { job.enqueued = true; break; };
-                    return err;
+            self.media.?.submit(engine, input.fence, .{ .address = ibs[0].address, .dwords = ibs[0].dwords }, if (engine == .jpeg) job.jpeg_commands[0..ibs[0].dwords] else &.{}, @min(deadline, job.until), .{ .context = @intFromPtr(job), .retire = Job.retire }) catch |err| {
+                for (&self.rt.?.timeline.entries) |*entry| if (entry.phase != .free and !entry.internal and std.meta.eql(entry.fence, input.fence)) {
+                    job.enqueued = true;
+                    break;
                 };
+                return err;
+            };
             job.enqueued = true;
             return;
         }
@@ -359,15 +464,18 @@ pub const Owner = struct {
         try self.contexts.?.enqueue(handle, input.fence, now, deadline, self.commands[0..count], .{ .context = @intFromPtr(job), .retire = Job.retire });
         job.enqueued = true;
     }
-    fn publish(self: *Owner, job: *Job, input: a.GfxDriverJob, offset: usize, count: usize) Error!void {
+    fn publish(self: *Owner, job: *Job, input: a.GfxDriverJob, offset: usize, count: usize, used: usize) Error!void {
         const memory = self.memory.?;
         if (count == 0) {
             job.result = a.gfx_queue_result_complete;
             return;
         }
         self.submit_step = .payload;
-        const bytes: [*]volatile u8 = @ptrFromInt(self.window.value.cpu_address + offset);
-        for (&self.payload, bytes[0..4096]) |src, *dst| dst.* = src;
+        if (used == 0 or used > self.payload.len or used & 3 != 0 or offset & 3 != 0) return error.Invalid;
+        const words: [*]volatile u32 = @ptrFromInt(self.window.value.cpu_address + offset);
+        for (0..used / 4) |i| words[i] = std.mem.readInt(u32, self.payload[i * 4 ..][0..4], .little);
+        self.parameter_bytes +|= used;
+        self.parameter_stores +|= used / 4;
         try @import("start_common.zig").hdpFlush(&memory.registers);
         self.submit_step = .hold;
         for (&job.maps, &job.held) |*map, *held| if (map.ready) {

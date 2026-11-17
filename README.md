@@ -1,6 +1,6 @@
 ﻿# AMDGPU
 
-Version 0.1.98 retains the Picasso display, rendering, compute, video,
+Version 0.1.99 retains the Picasso display, rendering, compute, video,
 power and recovery integration prepared through R4OS 0.80.38.
 The target is PCI1002:15D8. Raven2 passive discovery is implemented. Native
 qualification is now admitted only for the measured Lenovo17AA:3808,PCI C4,
@@ -475,3 +475,34 @@ Ownerorakel bleiben erhalten. Konkrete Host-/Windowskompilat-/native
 Modellbelege und physische Grenzen: Docs/API/ConsumerMigration.txt und
 Research/API-ABI/Migration/0.90.53/Abnahme.json. AMD/NVIDIA-Hardware und
 bekannte NVIDIA-Hang-/Shutdownbefunde werden dadurch nicht abgenommen.
+
+
+## R4OS 0.92.11: bounded render mapping reuse
+
+The ordinary renderer may retain derived GPU mappings and calculated image
+views after the exact draw fence. Keys include the full BO generation and
+descriptor, access side/filter, fixed slot VA, memory epoch, backend epoch and
+producer timeline. At most32 MB is retained across the existing eight slots.
+The canonical queue owns each new execution lease; a cached mapping grants
+no execution permission. An unavailable owner-info tail disables retention.
+
+Closing/gone producer queues, changed identities, budget pressure and joined
+renderer shutdown retire idle mappings through the original PTE removal and
+both hub acknowledgements. Partial cleanup keeps its exact alias and prevents
+that slot from being reused. New native allocations first trim idle derived
+mappings and collect retired UMA extents. Active fences remain held. Existing
+native virtual bindings keep their explicit public lifetime.
+
+Common and YUV draws copy only the complete shader-visible parameter extent:
+1 KB descriptors/color/plane parameters followed by160 bytes per selected
+common push (one push for YUV). Aligned volatile32-bit stores replace4096
+individual byte stores; the existing HDP flush and exact fence remain.
+Other SDMA/display owners and queue capacities retain their existing policy.
+
+Qualification is CPU/MMIO/queue-model and build only. In the existing repeated
+256x128 target case, three jobs reuse one layout/mapping and its32 leaf PTEs,
+then retire it normally. Parameters use3552 bytes/888 dword stores instead of
+12288 bytes/12288 byte stores. All43 original owner groups remain, including
+queue, SDMA, display, reset and failed lifecycle cleanup. No physical AMD
+TLB/cache/IRQ, scanout or rendering speed is inferred. See the workspace
+report Docs/Desktop/Performance092.txt and ExFiles/Reports/Desktop/0.92.11/.

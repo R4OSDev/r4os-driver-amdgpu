@@ -19,6 +19,7 @@ pub const Owner = struct {
     result: ?i32 = null,
     acknowledged: bool = false,
     unregister_result: ?i32 = null,
+    before_allocate: ?struct { context: usize, trim: *const fn (usize) bool } = null,
     scratch: [65536]u8 align(16) = undefined,
     fn notify(raw: usize) callconv(.c) i32 {
         const self: *Owner = @ptrFromInt(raw);
@@ -45,6 +46,9 @@ pub const Owner = struct {
         }
         const job = self.pending.?;
         if (self.result == null) {
+            // Idle derived mappings must not keep released native BOs charged
+            // while a new allocation is being admitted. Active fences survive.
+            if (self.before_allocate) |callback| if (!callback.trim(callback.context)) return false;
             self.result = if (self.closing) a.gfx_queue_error_device_lost else if (job.allocation.deadline_ns <= memory.registers.nowNs()) a.gfx_queue_error_wait_timeout else blk: {
                 if (job.version != 1 or job.size < @sizeOf(a.GfxNativeJob)) break :blk a.gfx_buffer_error_invalid;
                 self.reference = self.allocate(job.allocation) catch |err| break :blk switch (err) {
@@ -81,9 +85,15 @@ pub const Owner = struct {
             if (request.byte_length != 0 or request.layout != 0 or request.usage & a.gfx_buffer_usage_scanout != 0) return error.Unsupported;
             const surface = api.media.Surface.plan(request.width, request.height, if (request.format == a.gfx_buffer_format_p010) 10 else 8) catch return error.Unsupported;
             if (surface.bytes > @import("render_virtual.zig").max_backing_bytes) return error.Unsupported;
-            desc.byte_length = surface.bytes; desc.alignment = 65536; desc.width = request.width; desc.height = request.height;
-            desc.format = request.format; desc.plane_count = 2; desc.plane_offsets[1] = surface.chroma_offset;
-            desc.plane_pitches[0] = surface.pitch; desc.plane_pitches[1] = surface.pitch;
+            desc.byte_length = surface.bytes;
+            desc.alignment = 65536;
+            desc.width = request.width;
+            desc.height = request.height;
+            desc.format = request.format;
+            desc.plane_count = 2;
+            desc.plane_offsets[1] = surface.chroma_offset;
+            desc.plane_pitches[0] = surface.pitch;
+            desc.plane_pitches[1] = surface.pitch;
         } else {
             if (request.byte_length != 0 or request.width == 0 or request.height == 0) return error.Invalid;
             const sw: u32 = if (request.layout == 0) 0 else if (request.usage & a.gfx_buffer_usage_scanout != 0) 9 else 10;
